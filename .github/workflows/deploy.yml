@@ -60,9 +60,9 @@ jobs:
       - name: 触发服务器拉取与更新
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SERVER_HOST || '43.165.64.253' }}
-          username: ${{ secrets.SERVER_USER || 'root' }}
-          key: ${{ secrets.CLOUD || secrets.SSH_PRIVATE_KEY }}
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script_stop: true
           script: |
