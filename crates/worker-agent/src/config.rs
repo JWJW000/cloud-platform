@@ -173,10 +173,29 @@ pub struct SavedIdentity {
 impl WorkerConfig {
     /// 读取本地配置文件。
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("读取 Worker 配置文件失败：{}", path.display()))?;
+        let resolved_path = if path.exists() {
+            path.to_path_buf()
+        } else if Path::new("worker.toml").exists() {
+            PathBuf::from("worker.toml")
+        } else if Path::new("config/worker.toml").exists() {
+            PathBuf::from("config/worker.toml")
+        } else if let Ok(exe) = std::env::current_exe() {
+            let exe_dir = exe.parent().unwrap_or(Path::new("."));
+            if exe_dir.join("worker.toml").exists() {
+                exe_dir.join("worker.toml")
+            } else if exe_dir.join("config/worker.toml").exists() {
+                exe_dir.join("config/worker.toml")
+            } else {
+                path.to_path_buf()
+            }
+        } else {
+            path.to_path_buf()
+        };
+
+        let text = std::fs::read_to_string(&resolved_path)
+            .with_context(|| format!("读取 Worker 配置文件失败：{}（请检查程序目录下是否存在 worker.toml）", resolved_path.display()))?;
         let mut config: Self = toml::from_str(&text)
-            .with_context(|| format!("解析 Worker 配置文件失败：{}", path.display()))?;
+            .with_context(|| format!("解析 Worker 配置文件失败：{}", resolved_path.display()))?;
         config.apply_env();
         config.validate()?;
         Ok(config)

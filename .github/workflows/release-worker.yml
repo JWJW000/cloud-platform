@@ -1,0 +1,165 @@
+name: Release Worker Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release 标签版本号 (例如 v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-worker:
+    name: 构建 ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: worker-agent-macos-arm64
+            archive_format: zip
+            binary_name: worker-agent
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: worker-agent-macos-intel
+            archive_format: zip
+            binary_name: worker-agent
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: worker-agent-windows-x64
+            archive_format: zip
+            binary_name: worker-agent.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: worker-agent-linux-x64
+            archive_format: tar.gz
+            binary_name: worker-agent
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Protobuf 编译器
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust 依赖缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: 编译 Worker Agent 二进制
+        run: cargo build --release -p worker-agent --target ${{ matrix.target }}
+
+      - name: 准备打包产物 (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} staging/
+          chmod +x staging/${{ matrix.binary_name }}
+          cp deploy/worker-package-templates/worker.toml staging/
+          cp deploy/worker-package-templates/README.txt staging/
+          
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp "deploy/worker-package-templates/一键启动Worker.command" staging/
+            chmod +x "staging/一键启动Worker.command"
+          else
+            cp deploy/worker-package-templates/start-worker.sh staging/
+            chmod +x staging/start-worker.sh
+          fi
+
+          if [ "${{ matrix.archive_format }}" = "zip" ]; then
+            cd staging && zip -r "../${{ matrix.artifact_name }}.zip" ./* && cd ..
+          else
+            tar -czvf "${{ matrix.artifact_name }}.tar.gz" -C staging .
+          fi
+
+      - name: 准备打包产物 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -Destination staging/
+          Copy-Item "deploy/worker-package-templates/worker.toml" -Destination staging/
+          Copy-Item "deploy/worker-package-templates/README.txt" -Destination staging/
+          Copy-Item "deploy/worker-package-templates/一键启动Worker.bat" -Destination staging/
+          Compress-Archive -Path staging/* -DestinationPath "${{ matrix.artifact_name }}.zip"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.${{ matrix.archive_format == 'zip' && 'zip' || 'tar.gz' }}
+          if-no-files-found: error
+
+  publish-release:
+    name: 发布 GitHub Release
+    needs: build-worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载所有平台构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: 生成 SHA256 校验和
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          ls -la
+
+      - name: 获取 Tag 名称
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Cloud Platform Worker Agent ${{ steps.tag.outputs.tag }}
+          body: |
+            ## 🚀 Worker Agent 跨平台客户端发布
+
+            局域网 Worker Agent 节点执行端，支持 Windows、macOS (Apple Silicon & Intel) 以及 Linux。
+
+            ### 📦 下载与安装指南
+
+            | 操作系统 | 下载压缩包 | 启动方式 |
+            | :--- | :--- | :--- |
+            | **Windows (x64)** | `worker-agent-windows-x64.zip` | 解压后双击 **`一键启动Worker.bat`** |
+            | **macOS (Apple Silicon M1/M2/M3/M4)** | `worker-agent-macos-arm64.zip` | 解压后双击 **`一键启动Worker.command`** |
+            | **macOS (Intel)** | `worker-agent-macos-intel.zip` | 解压后双击 **`一键启动Worker.command`** |
+            | **Linux (x64)** | `worker-agent-linux-x64.tar.gz` | 解压后运行 **`./start-worker.sh`** |
+
+            ### 📝 快速使用步骤
+            1. 下载对应系统的压缩包并解压。
+            2. 检查并确认 `worker.toml` 中已配置局域网 NAS 挂载路径 `[storage].nas_mount`。
+            3. 双击启动脚本运行，Worker 会自动向云端 Master 主控发起注册。
+            4. 管理员在 Web 控制台「节点管理」页面点击 **批准**，节点将自动获取证书并上线开始任务调度！
+          files: |
+            release-assets/*
+          draft: false
+          prerelease: false

@@ -1,0 +1,30 @@
+# ========================================================
+#   Cloud Platform - 局域网 Worker Agent 节点配置
+# ========================================================
+
+[master]
+# Master 云端 gRPC 接入地址（必须为 HTTPS，请修改为实际域名或保持当前服务地址）
+endpoint = "https://worker.43-165-64-253.nip.io"
+tls_domain = "worker.43-165-64-253.nip.io"
+
+# 本地凭证保存路径（由程序自动生成与维护，无需修改）
+identity_file = "data/identity.json"
+client_cert_file = "data/client.crt"
+client_key_file = "data/client.key"
+node_ca_file = "data/node-ca.crt"
+
+[storage]
+# 本地运行缓存目录
+data_dir = "data"
+
+# 局域网 NAS 挂载路径（下载的图书文件将直接写入该目录）
+# Windows 示例: nas_mount = "\\\\192.168.1.100\\books" 或 "Z:\\books"
+# macOS 示例:   nas_mount = "/Volumes/books"
+# Linux 示例:   nas_mount = "/mnt/nas/books"
+nas_mount = "./data/nas"
+
+[execution]
+# 本机请求开启的最大执行槽位数
+requested_slots = 5
+# 是否启用模拟引擎（生产下载保持 false）
+simulated = false

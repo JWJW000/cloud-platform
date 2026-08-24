@@ -24,11 +24,11 @@ use worker_agent::tls;
 #[command(name = "worker-agent", about = "局域网 Worker Agent", version)]
 struct Cli {
     /// 配置文件路径
-    #[arg(short, long, default_value = "config/worker.toml", global = true)]
+    #[arg(short, long, default_value = "worker.toml", global = true)]
     config: PathBuf,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -64,8 +64,9 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let config = WorkerConfig::load(&cli.config)?;
+    let command = cli.command.unwrap_or(Commands::Run);
 
-    match cli.command {
+    match command {
         Commands::Enroll { code, hostname } => {
             tracing::warn!(
                 "`enroll` 已弃用：V5 起 Worker 只需配置 endpoint 直接 `run`，会自动注册并等待审核，无需注册码。\
