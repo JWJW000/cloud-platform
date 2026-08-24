@@ -191,10 +191,11 @@ async fn preview_books(
             continue;
         }
 
-        let existing_book: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM books WHERE dedup_key = $1")
-            .bind(&dedup_str)
-            .fetch_optional(&state.pool)
-            .await?;
+        let existing_book: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM books WHERE dedup_key = $1")
+                .bind(&dedup_str)
+                .fetch_optional(&state.pool)
+                .await?;
         let is_lib_dup = existing_book.is_some();
         let mut ingested = false;
 
@@ -322,8 +323,16 @@ async fn commit_books(
             let batch = store::catalog::get_batch(&state.pool, batch_id).await?;
             return Ok(Json(CommitBooksResponse {
                 batch,
-                deduplicated: job.summary.get("duplicate_in_library").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                already_ingested: job.summary.get("already_ingested").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                deduplicated: job
+                    .summary
+                    .get("duplicate_in_library")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize,
+                already_ingested: job
+                    .summary
+                    .get("already_ingested")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize,
             }));
         }
     }
@@ -361,15 +370,12 @@ async fn commit_books(
     )
     .await?;
 
-    let batch_id = import_summary.batch_id.ok_or_else(|| AppError::internal("创建批次失败"))?;
+    let batch_id = import_summary
+        .batch_id
+        .ok_or_else(|| AppError::internal("创建批次失败"))?;
 
     if req.start_immediately {
-        store::catalog::set_batch_status(
-            &state.pool,
-            batch_id,
-            BatchStatus::Running,
-        )
-        .await?;
+        store::catalog::set_batch_status(&state.pool, batch_id, BatchStatus::Running).await?;
         let _ = scheduler::trigger_scheduler_sweep(&state).await;
     }
 
@@ -548,8 +554,8 @@ async fn preview_accounts(
     let import_token = hex::encode(token_bytes);
     let token_hash = security::hash_token(&import_token);
 
-    let payload = serde_json::to_string(&valid_accounts)
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    let payload =
+        serde_json::to_string(&valid_accounts).map_err(|e| AppError::internal(e.to_string()))?;
     let payload_encrypted = state.cipher.encrypt(&payload)?;
 
     let summary = serde_json::json!({
@@ -633,10 +639,13 @@ async fn commit_accounts(
 
     let mut created_batch = None;
 
-    if req.create_registration_batch && req.mode == AccountImportMode::PendingRegistration && !account_ids.is_empty() {
-        let batch_name = req.batch_name.unwrap_or_else(|| {
-            format!("注册批次-{}", Utc::now().format("%Y%m%d%H%M%S"))
-        });
+    if req.create_registration_batch
+        && req.mode == AccountImportMode::PendingRegistration
+        && !account_ids.is_empty()
+    {
+        let batch_name = req
+            .batch_name
+            .unwrap_or_else(|| format!("注册批次-{}", Utc::now().format("%Y%m%d%H%M%S")));
 
         let batch = store::account_registration::create_batch(
             &mut *tx,
@@ -650,7 +659,8 @@ async fn commit_accounts(
         .await?;
 
         for acc_id in &account_ids {
-            store::account_registration::create_task(&mut *tx, batch.id, *acc_id, req.priority).await?;
+            store::account_registration::create_task(&mut *tx, batch.id, *acc_id, req.priority)
+                .await?;
         }
 
         if req.start_immediately {
@@ -724,13 +734,12 @@ async fn download_errors_csv(
             .map_err(|e| AppError::internal(e.to_string()))?;
     }
 
-    let csv_data = wtr.into_inner().map_err(|e| AppError::internal(e.to_string()))?;
+    let csv_data = wtr
+        .into_inner()
+        .map_err(|e| AppError::internal(e.to_string()))?;
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        CONTENT_TYPE,
-        "text/csv; charset=utf-8".parse().unwrap(),
-    );
+    headers.insert(CONTENT_TYPE, "text/csv; charset=utf-8".parse().unwrap());
     headers.insert(
         CONTENT_DISPOSITION,
         format!("attachment; filename=\"import_errors_{}.csv\"", job.id)
@@ -838,7 +847,8 @@ pub fn parse_book_csv_bytes(
 
         let first_col = record.get(0).unwrap_or("").trim();
         if first_col.is_empty() {
-            let all_empty = (0..record.len()).all(|i| record.get(i).unwrap_or("").trim().is_empty());
+            let all_empty =
+                (0..record.len()).all(|i| record.get(i).unwrap_or("").trim().is_empty());
             if all_empty {
                 continue;
             }
@@ -860,16 +870,28 @@ pub fn parse_book_csv_bytes(
         }
 
         let title = first_col.to_string();
-        let author = record.get(1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let publisher = record.get(2).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let raw_isbn = record.get(3).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let author = record
+            .get(1)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let publisher = record
+            .get(2)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let raw_isbn = record
+            .get(3)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
         let mut valid_isbn = None;
         if let Some(isbn_str) = raw_isbn {
             if let Some(norm) = normalize_isbn(&isbn_str) {
                 valid_isbn = Some(norm.to_string());
             } else {
-                warnings.push(format!("第 {} 行 ISBN「{}」不合法，已保留原始书名继续处理", line_no, isbn_str));
+                warnings.push(format!(
+                    "第 {} 行 ISBN「{}」不合法，已保留原始书名继续处理",
+                    line_no, isbn_str
+                ));
             }
         }
 

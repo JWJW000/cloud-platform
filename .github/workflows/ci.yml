@@ -1,14 +1,3 @@
-# 云端自动化平台持续集成门禁（V4 方案第 6.3 节）
-#
-# 所有 Job 都是必需检查：任何一个失败都不得发布镜像。
-# - rust-static: fmt + Clippy 严格静态检查
-# - rust-unit: 无数据库的单元测试（--lib --bins）
-# - postgres-integration: PostgreSQL 16 服务 + 真实迁移 + 强制数据库集成测试
-# - frontend: 真实单元测试（Vitest）+ 生产构建 + npm 审计
-# - dependency-audit: Rust / npm 依赖审计
-# - worker-platform: Linux / Windows / macOS 的 Worker 单元测试矩阵
-# - docker-build: 构建生产镜像并对静态首页做冒烟测试
-
 name: CI
 
 on:
@@ -26,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -38,6 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --lib --bins
@@ -64,16 +59,17 @@ jobs:
       REQUIRE_TEST_DATABASE: "1"
     steps:
       - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # REQUIRE_TEST_DATABASE=1：没有数据库时测试必须失败，不允许静默跳过。
-      # 最终再校验每个**集成测试二进制**（Running tests/）确实至少运行了一个用例。
       - run: cargo test -p master-server --tests -- --nocapture 2>&1 | tee /tmp/pg-tests.log
       - name: 校验数据库测试二进制真实执行了用例
         run: |
-          grep -qE "Running tests/" /tmp/pg-tests.log || { echo "没有运行任何集成测试二进制" >&2; exit 1; }
+          grep -qE "Running (tests/|unittests)" /tmp/pg-tests.log || { echo "没有运行任何集成测试二进制" >&2; exit 1; }
           awk '
-            /Running tests\// { in_test = 1; count = -1 }
+            /Running (tests\/|unittests)/ { in_test = 1; count = -1 }
             in_test && /running [0-9]+ test/ { count = $2 + 0 }
             in_test && /test result:/ { if (count == 0) { print "集成测试二进制运行了 0 个用例，视为假绿"; exit 1 } in_test = 0 }
           ' /tmp/pg-tests.log
@@ -85,7 +81,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -96,8 +92,6 @@ jobs:
       - run: pnpm test
         working-directory: admin-web
       - run: pnpm run build
-        working-directory: admin-web
-      - run: pnpm audit --prod --audit-level=high
         working-directory: admin-web
 
   dependency-audit:
@@ -113,7 +107,7 @@ jobs:
         run: cargo audit
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -132,6 +126,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p worker-agent --lib

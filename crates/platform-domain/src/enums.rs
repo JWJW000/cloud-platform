@@ -472,7 +472,10 @@ impl AccountRegistrationTaskStatus {
 
     /// 是否占用调度资源。
     pub const fn is_active(self) -> bool {
-        matches!(self, Self::Claimed | Self::Running | Self::AwaitingManualConfirm | Self::Retrying)
+        matches!(
+            self,
+            Self::Claimed | Self::Running | Self::AwaitingManualConfirm | Self::Retrying
+        )
     }
 }
 

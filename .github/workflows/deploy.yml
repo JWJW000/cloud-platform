@@ -56,16 +56,19 @@ jobs:
     name: 部署至生产服务器
     needs: build-and-push
     runs-on: ubuntu-latest
-    # 只有配置了部署密钥才执行自动 SSH 部署
-    if: "${{ secrets.SERVER_HOST != '' && secrets.SSH_PRIVATE_KEY != '' }}"
     steps:
       - name: 触发服务器拉取与更新
+        if: "${{ env.SSH_KEY != '' && env.SSH_HOST != '' }}"
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SERVER_HOST }}
+          SSH_USER: ${{ secrets.SERVER_USER }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER || 'root' }}
+          username: ${{ secrets.SERVER_USER != '' && secrets.SERVER_USER || 'root' }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SERVER_PORT || 22 }}
+          port: 22
           script_stop: true
           script: |
             set -e
@@ -79,8 +82,7 @@ jobs:
               git reset --hard origin/main || git reset --hard origin/master
             fi
 
-            echo "==> 登录 GHCR 并拉取最新 Master 镜像..."
-            # 如果是公开包可直接拉取，若是私有包需配置 docker login
+            echo "==> 拉取最新 Master 镜像..."
             docker compose -f deploy/docker-compose.yml pull master || true
 
             echo "==> 启动/平滑滚动容器..."

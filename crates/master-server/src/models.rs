@@ -871,4 +871,3 @@ pub struct AccountPreviewRow {
     /// 原因说明。
     pub reason: Option<String>,
 }
-

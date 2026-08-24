@@ -9,7 +9,8 @@ use crate::models::{
     AccountRegistrationBatch, AccountRegistrationBatchProgress, AccountRegistrationTask,
 };
 
-const BATCH_COLUMNS: &str = "id, name, source_file, status, priority, created_by, created_at, updated_at";
+const BATCH_COLUMNS: &str =
+    "id, name, source_file, status, priority, created_by, created_at, updated_at";
 
 const TASK_COLUMNS: &str = "t.id, t.batch_id, t.account_id, a.email, a.nickname, t.status, \
      t.priority, t.attempts, t.max_attempts, t.next_attempt_at, t.lease_node_id, \
@@ -289,7 +290,10 @@ pub async fn cancel_task(executor: impl PgExecutor<'_>, id: Uuid) -> AppResult<(
 }
 
 /// 检查批次是否所有任务均已结束，若是则自动将批次更新为已完成。
-pub async fn check_batch_completion(conn: &mut sqlx::PgConnection, batch_id: Uuid) -> AppResult<bool> {
+pub async fn check_batch_completion(
+    conn: &mut sqlx::PgConnection,
+    batch_id: Uuid,
+) -> AppResult<bool> {
     let non_terminal: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM account_registration_tasks \
          WHERE batch_id = $1 AND status NOT IN ('已完成', '失败', '已取消')",

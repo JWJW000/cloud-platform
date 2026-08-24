@@ -87,16 +87,21 @@ pub async fn dispatch(
             handle_work_request(state, identity, req, outbound).await?;
         }
         Payload::RegistrationTaskAccepted(accepted) => {
-            handle_registration_task_accepted(state, identity, event_id, replayed, accepted, outbound).await?;
+            handle_registration_task_accepted(
+                state, identity, event_id, replayed, accepted, outbound,
+            )
+            .await?;
         }
         Payload::RegistrationTaskProgress(progress) => {
             handle_registration_task_progress(state, identity, progress).await?;
         }
         Payload::RegistrationTaskResult(result) => {
-            handle_registration_task_result(state, identity, event_id, replayed, result, outbound).await?;
+            handle_registration_task_result(state, identity, event_id, replayed, result, outbound)
+                .await?;
         }
         Payload::ManualActionRequired(req) => {
-            handle_manual_action_required(state, identity, event_id, replayed, req, outbound).await?;
+            handle_manual_action_required(state, identity, event_id, replayed, req, outbound)
+                .await?;
         }
         Payload::CommandAccepted(_) | Payload::CommandResult(_) => {
             // 命令确认与结果
@@ -677,11 +682,12 @@ async fn handle_session_ready(
 
     if !ready.exit_ip.trim().is_empty() {
         if let Some(proxy_id) = session.proxy_id {
-            let _ = sqlx::query("UPDATE proxies SET exit_ip = $2, updated_at = now() WHERE id = $1")
-                .bind(proxy_id)
-                .bind(ready.exit_ip.trim())
-                .execute(&state.pool)
-                .await;
+            let _ =
+                sqlx::query("UPDATE proxies SET exit_ip = $2, updated_at = now() WHERE id = $1")
+                    .bind(proxy_id)
+                    .bind(ready.exit_ip.trim())
+                    .execute(&state.pool)
+                    .await;
         }
     }
 
@@ -870,7 +876,11 @@ async fn handle_registration_task_result(
         attempt: clamp_to_i32(res.attempt),
         already_exists: res.already_exists,
         awaiting_verification: res.awaiting_verification,
-        completed_at: if res.completed_at.is_empty() { None } else { Some(res.completed_at) },
+        completed_at: if res.completed_at.is_empty() {
+            None
+        } else {
+            Some(res.completed_at)
+        },
     };
 
     let payload = serde_json::json!({
@@ -921,10 +931,15 @@ async fn handle_manual_action_required(
     req: pb::ManualActionRequired,
     outbound: &mpsc::Sender<pb::MasterMessage>,
 ) -> AppResult<()> {
-    let task_type = req.task_type.parse::<TaskType>().unwrap_or(TaskType::AccountRegister);
+    let task_type = req
+        .task_type
+        .parse::<TaskType>()
+        .unwrap_or(TaskType::AccountRegister);
     let reg_task_id = parse_optional_uuid(&req.registration_task_id, "注册任务")?;
     let exec_id = parse_optional_uuid(&req.execution_id, "执行编号")?;
-    let action_type = req.action_type.parse::<platform_domain::ManualActionType>()
+    let action_type = req
+        .action_type
+        .parse::<platform_domain::ManualActionType>()
         .unwrap_or(platform_domain::ManualActionType::MailCode);
 
     let expires_at = if req.expires_at.is_empty() {
@@ -965,7 +980,11 @@ async fn handle_manual_action_required(
                 session_id: None,
                 action_type,
                 prompt: req.prompt.clone(),
-                artifact_url: if req.optional_artifact_id.is_empty() { None } else { Some(req.optional_artifact_id.clone()) },
+                artifact_url: if req.optional_artifact_id.is_empty() {
+                    None
+                } else {
+                    Some(req.optional_artifact_id.clone())
+                },
                 expires_at,
             };
             store::manual_action::create_action(&state.pool, &new_action).await?;

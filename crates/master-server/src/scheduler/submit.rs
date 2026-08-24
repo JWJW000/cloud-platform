@@ -733,7 +733,17 @@ pub async fn submit_registration_result(
     .fetch_optional(&mut *tx)
     .await?;
 
-    let Some((task_id, batch_id, account_id, _current_status, attempts, max_attempts, current_stage_ver, lease_exec)) = task else {
+    let Some((
+        task_id,
+        batch_id,
+        account_id,
+        _current_status,
+        attempts,
+        max_attempts,
+        current_stage_ver,
+        lease_exec,
+    )) = task
+    else {
         tx.rollback().await?;
         return Ok(SubmitOutcome {
             applied: false,
@@ -744,7 +754,8 @@ pub async fn submit_registration_result(
     };
 
     // 检查版本与执行编号
-    let is_current = lease_exec == Some(report.execution_id) && current_stage_ver == report.stage_version;
+    let is_current =
+        lease_exec == Some(report.execution_id) && current_stage_ver == report.stage_version;
     if !is_current {
         // 迟到结果：记录 task_executions 但不改任务与账号
         store::session::finish_execution(
@@ -758,26 +769,63 @@ pub async fn submit_registration_result(
         tx.commit().await?;
         return Ok(SubmitOutcome {
             applied: false,
-            detail: format!("迟到或过期执行结果（执行={:?}，当前世代={}），已留档", lease_exec, current_stage_ver),
+            detail: format!(
+                "迟到或过期执行结果（执行={:?}，当前世代={}），已留档",
+                lease_exec, current_stage_ver
+            ),
             task_status: None,
             end_session: true,
         });
     }
 
     let reason = &report.reason;
-    let (new_task_status, new_account_status, is_success, end_session) = if report.result == ExecutionResult::Success && !report.already_exists && !report.awaiting_verification {
-        (AccountRegistrationTaskStatus::Completed, AccountStatus::Registered, true, true)
+    let (new_task_status, new_account_status, is_success, end_session) = if report.result
+        == ExecutionResult::Success
+        && !report.already_exists
+        && !report.awaiting_verification
+    {
+        (
+            AccountRegistrationTaskStatus::Completed,
+            AccountStatus::Registered,
+            true,
+            true,
+        )
     } else if report.already_exists {
-        (AccountRegistrationTaskStatus::Completed, AccountStatus::Disabled, false, true)
+        (
+            AccountRegistrationTaskStatus::Completed,
+            AccountStatus::Disabled,
+            false,
+            true,
+        )
     } else if report.awaiting_verification {
-        (AccountRegistrationTaskStatus::AwaitingManualConfirm, AccountStatus::VerificationPending, false, false)
+        (
+            AccountRegistrationTaskStatus::AwaitingManualConfirm,
+            AccountStatus::VerificationPending,
+            false,
+            false,
+        )
     } else if report.result == ExecutionResult::Cancelled {
-        (AccountRegistrationTaskStatus::Cancelled, AccountStatus::PendingRegistration, false, true)
+        (
+            AccountRegistrationTaskStatus::Cancelled,
+            AccountStatus::PendingRegistration,
+            false,
+            true,
+        )
     } else if report.result == ExecutionResult::FatalFailure || attempts >= max_attempts {
-        (AccountRegistrationTaskStatus::Failed, AccountStatus::LoginFailed, false, true)
+        (
+            AccountRegistrationTaskStatus::Failed,
+            AccountStatus::LoginFailed,
+            false,
+            true,
+        )
     } else {
         // 可重试失败
-        (AccountRegistrationTaskStatus::Retrying, AccountStatus::PendingRegistration, false, true)
+        (
+            AccountRegistrationTaskStatus::Retrying,
+            AccountStatus::PendingRegistration,
+            false,
+            true,
+        )
     };
 
     // 1. 更新执行记录
@@ -791,7 +839,11 @@ pub async fn submit_registration_result(
     .await?;
 
     // 2. 更新任务表
-    let retry_secs = if new_task_status == AccountRegistrationTaskStatus::Retrying { "60" } else { "0" };
+    let retry_secs = if new_task_status == AccountRegistrationTaskStatus::Retrying {
+        "60"
+    } else {
+        "0"
+    };
 
     sqlx::query(
         "UPDATE account_registration_tasks SET \

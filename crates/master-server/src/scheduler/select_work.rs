@@ -32,7 +32,10 @@ pub async fn handle_work_request(
     outbound: &mpsc::Sender<pb::MasterMessage>,
 ) -> AppResult<()> {
     let node = store::node::get_node(&state.pool, node_id).await?;
-    let worker_status = node.status.parse::<WorkerStatus>().unwrap_or(WorkerStatus::Offline);
+    let worker_status = node
+        .status
+        .parse::<WorkerStatus>()
+        .unwrap_or(WorkerStatus::Offline);
     if !worker_status.can_accept_work() {
         tracing::debug!(node_id = %node_id, status = %node.status, "节点不可接收工作");
         return Ok(());
@@ -111,7 +114,8 @@ pub async fn trigger_scheduler_sweep(state: &AppState) -> AppResult<()> {
         ];
 
         for slot_index in idle_slots {
-            let _ = handle_work_request(state, node_id, slot_index, &default_supported, &sender).await;
+            let _ =
+                handle_work_request(state, node_id, slot_index, &default_supported, &sender).await;
         }
     }
     Ok(())

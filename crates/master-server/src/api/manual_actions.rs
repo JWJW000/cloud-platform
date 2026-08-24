@@ -42,12 +42,9 @@ async fn list_actions(
     _auth: AuthenticatedUser,
     Query(query): Query<ListActionsQuery>,
 ) -> AppResult<Json<Vec<ManualAction>>> {
-    let actions = store::manual_action::list_actions(
-        &state.pool,
-        query.status.as_deref(),
-        query.limit,
-    )
-    .await?;
+    let actions =
+        store::manual_action::list_actions(&state.pool, query.status.as_deref(), query.limit)
+            .await?;
 
     Ok(Json(actions))
 }
@@ -109,12 +106,7 @@ async fn cancel_action(
 ) -> AppResult<Json<ManualAction>> {
     auth.require_write()?;
 
-    let action = store::manual_action::cancel_action(
-        &state.pool,
-        id,
-        Some(auth.id),
-    )
-    .await?;
+    let action = store::manual_action::cancel_action(&state.pool, id, Some(auth.id)).await?;
 
     state.events.publish(
         "人工确认变更",

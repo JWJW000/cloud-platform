@@ -156,13 +156,12 @@ async fn 图书任务首次执行绑定代理且重试固定同一代理() {
         other => panic!("预期领到任务，实际得到 {other:?}"),
     };
 
-    let book_task: (Option<Uuid>, Option<String>) = sqlx::query_as(
-        "SELECT bound_proxy_id, bound_exit_ip FROM book_tasks WHERE id = $1",
-    )
-    .bind(assigned.task_id)
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let book_task: (Option<Uuid>, Option<String>) =
+        sqlx::query_as("SELECT bound_proxy_id, bound_exit_ip FROM book_tasks WHERE id = $1")
+            .bind(assigned.task_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
 
     assert_eq!(
         book_task.0,
@@ -354,11 +353,19 @@ async fn 账号注册批次任务分配与事务原子状态更新() {
     let task_after = store::account_registration::get_task(&db.pool, reg_task_id)
         .await
         .unwrap();
-    assert_eq!(task_after.status, AccountRegistrationTaskStatus::Completed.as_str());
+    assert_eq!(
+        task_after.status,
+        AccountRegistrationTaskStatus::Completed.as_str()
+    );
 
-    let acc_after = store::resource::get_account(&db.pool, acc1.id).await.unwrap();
+    let acc_after = store::resource::get_account(&db.pool, acc1.id)
+        .await
+        .unwrap();
     assert_eq!(acc_after.status, AccountStatus::Registered.as_str());
-    assert!(acc_after.registered_at.is_some(), "注册成功后 registered_at 必须已填充");
+    assert!(
+        acc_after.registered_at.is_some(),
+        "注册成功后 registered_at 必须已填充"
+    );
 
     // 验证批次进度
     let progress = store::account_registration::batch_progress(&db.pool, batch.id)
