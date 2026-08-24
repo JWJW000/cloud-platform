@@ -16,12 +16,16 @@ ensure_env() {
   fi
 }
 
-reload_caddy() {
-  echo "==> 校验并热加载 Caddy 配置..."
-  docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" exec -T caddy \
-    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-  docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" exec -T caddy \
-    caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+apply_caddy() {
+  echo "==> 使用新挂载校验 Caddy 配置..."
+  docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm --no-deps caddy \
+    validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  echo "==> 重建 Caddy 容器以应用最新配置..."
+  # Caddyfile 是单文件 bind mount。git checkout/reset 会原子替换文件 inode，
+  # 旧容器仍绑定已被替换的旧 inode，单纯 reload 只会再次读取旧配置。
+  docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d \
+    --no-deps --force-recreate caddy
 }
 
 case "$1" in
@@ -29,9 +33,7 @@ case "$1" in
     ensure_env
     echo "==> 启动 cloud-platform 服务..."
     docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d
-    # Caddyfile 是 bind mount。文件内容更新不会改变 Compose 的服务配置哈希，
-    # `up -d` 可能保留旧容器和旧的内存配置，因此部署后必须显式 reload。
-    reload_caddy
+    apply_caddy
     echo "==> 查看服务状态:"
     docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
     ;;
@@ -69,7 +71,7 @@ case "$1" in
     docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --no-deps master
 
     echo "==> 4. 应用最新 Caddy 配置..."
-    reload_caddy
+    apply_caddy
     
     echo "==> 5. 检查服务健康状态..."
     sleep 5
