@@ -46,8 +46,8 @@
     }
     handle @grpc_worker {
         reverse_proxy h2c://master:9443 {
-            # 公网请求不能伪造证书指纹；仅使用 Caddy 从 TLS 客户端证书计算的值。
-            header_up -x-client-cert-fingerprint
+            # header_up 的 set 操作会覆盖公网请求携带的同名头，不能再同时配置
+            # delete；Caddy 会在 set 之后应用 delete，导致真实指纹也被删除。
             # Caddy 的 fingerprint 占位符本身就是客户端证书 DER 的 SHA-256；
             # 不存在 `.sha256` 后缀，使用该后缀会得到空值并让 Master 误判为缺证书。
             header_up x-client-cert-fingerprint {http.request.tls.client.fingerprint}
