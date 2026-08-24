@@ -724,7 +724,7 @@ async fn download_errors_csv(
         .unwrap_or_default();
 
     let mut wtr = csv::WriterBuilder::new().from_writer(vec![]);
-    wtr.write_record(&["行号", "原始内容", "错误原因"])
+    wtr.write_record(["行号", "原始内容", "错误原因"])
         .map_err(|e| AppError::internal(e.to_string()))?;
 
     for inv in invalid_rows {

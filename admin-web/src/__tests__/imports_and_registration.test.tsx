@@ -5,7 +5,6 @@ import {
   commitBooksImport,
   previewAccountsImport,
   commitAccountsImport,
-  listAccountRegistrationBatches,
   startAccountRegistrationBatch,
   resolveManualAction,
 } from "../lib/api";

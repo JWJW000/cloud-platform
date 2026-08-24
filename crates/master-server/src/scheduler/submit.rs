@@ -887,7 +887,7 @@ pub async fn submit_registration_result(
     }
 
     // 4. 检查批次完成状态
-    store::account_registration::check_batch_completion(&mut *tx, batch_id).await?;
+    store::account_registration::check_batch_completion(&mut tx, batch_id).await?;
 
     tx.commit().await?;
 
