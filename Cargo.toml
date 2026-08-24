@@ -82,6 +82,9 @@ hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "htt
 http-body-util = "0.1"
 bytes = "1"
 
+[workspace.lints.clippy]
+result_large_err = "allow"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

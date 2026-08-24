@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "云端 Master：唯一事实来源、调度中心、Worker 接入端与管理后台 API"
 
+[lints]
+workspace = true
+
 [dependencies]
 platform-domain = { workspace = true }
 platform-proto = { workspace = true }

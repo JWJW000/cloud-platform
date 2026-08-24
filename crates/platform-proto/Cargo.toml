@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Worker ⇄ Master gRPC 协议（tonic 代码生成）"
 
+[lints]
+workspace = true
+
 [dependencies]
 prost = { workspace = true }
 tonic = { workspace = true }

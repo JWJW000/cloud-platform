@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "与任务来源解耦的浏览器自动化核心：稳定的输入/事件/结果接口"
 
+[lints]
+workspace = true
+
 [dependencies]
 platform-domain = { workspace = true }
 

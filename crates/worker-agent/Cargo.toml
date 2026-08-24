@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "局域网 Worker Agent：多槽位执行端、NAS 原子持久化、SQLite outbox 与 gRPC 双向长连接"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "worker-agent"
 path = "src/main.rs"
