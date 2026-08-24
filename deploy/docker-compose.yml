@@ -78,7 +78,7 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Shanghai
-      # 两个公网入口域名（V4 方案第 4.1 节）：管理/注册入口与 WorkerLink mTLS 入口
+      # 管理后台与 Worker gRPC 单独使用两个域名；注册和正式链路都走 WORKER_DOMAIN。
       ADMIN_DOMAIN: "${ADMIN_DOMAIN:?ADMIN_DOMAIN必须在环境变量中提供}"
       WORKER_DOMAIN: "${WORKER_DOMAIN:?WORKER_DOMAIN必须在环境变量中提供}"
     ports:

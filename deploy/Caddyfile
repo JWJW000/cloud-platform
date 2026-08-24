@@ -1,21 +1,8 @@
-# 云端 Master 公网入口（V4 方案第 4.1 / 8.5 节）。
+# 云端 Master 公网入口。
 #
-# 推荐拆分两个域名/两个 TLS 入口：
-#   ADMIN_DOMAIN  （默认 admin.example.com）：
-#     - 注册 Enroll gRPC（只做服务端 TLS，不要求客户端证书——注册前 Worker 尚无证书）
-#     - 管理后台 API / SSE / 静态站点
-#   WORKER_DOMAIN （默认 worker.example.com）：
-#     - 仅 OpenLink gRPC，TLS 握手阶段强制要求并校验 Worker 客户端证书（mTLS）
-#     - 删除所有外部伪造的 x-client-cert-fingerprint，只注入真实 TLS 指纹
-#
-# 两个入口的 CA 职责：
-#   - Server CA：用于 Worker/浏览器验证云端服务器。公网 ACME 证书无需分发；
-#     私有部署（tls internal）时，Server CA 根证书必须通过运维渠道预先分发给
-#     Worker 并配置为 server_ca_file（见 docs/部署与运维指南.md）。
-#   - Node CA（/app/data/ca.crt）：仅用于 Caddy 校验 Worker 客户端证书，
-#     绝不加入 Worker 的服务端信任根。
-#
-# 生产模式必须设置环境变量：ADMIN_DOMAIN、WORKER_DOMAIN。
+# ADMIN_DOMAIN：管理后台/API。
+# WORKER_DOMAIN：Worker 的唯一 gRPC 地址；首次注册允许无客户端证书，
+# OpenLink 再由 Master 强制校验证书指纹、节点令牌和批准状态。
 
 {
     servers {
@@ -28,89 +15,44 @@
     redir https://{host}{uri} permanent
 }
 
-# ---------------------------------------------------------------- 管理/注册入口
+# ---------------------------------------------------------------- 管理后台入口
 {$ADMIN_DOMAIN:admin.example.com} {
     encode gzip
 
-    # 1. 注册接口：不要求客户端证书（注册前 Worker 尚无证书）
-    @grpc_enroll {
-        path /platform.worker.v1.WorkerLink/Enroll*
-    }
-    handle @grpc_enroll {
-        reverse_proxy h2c://master:9443 {
-            # 注册通道也清洗指纹头：该域名下不应有任何客户端证书指纹被透传
-            header_up -x-client-cert-fingerprint
-        }
-    }
-
-    # 2. 管理后台 API 与 SSE
     handle /api/* {
         reverse_proxy master:8080
     }
 
-    # 3. 管理后台 SPA（由 Master 提供静态资源与前端路由回退）
     handle {
         reverse_proxy master:8080
     }
 }
 
-# ---------------------------------------------------------------- WorkerLink 入口（mTLS）
+# ---------------------------------------------------------------- Worker 单地址 gRPC 入口
 {$WORKER_DOMAIN:worker.example.com} {
+    # 首次 RegisterNode/WatchRegistration 尚无证书，因此只能请求证书，不能在
+    # TLS 握手阶段强制。OpenLink 的强认证由 Master 按 RPC 方法完成。
     tls {
         client_auth {
-            # 强制要求并验证客户端证书：缺少证书的握手直接失败（fail closed）
-            mode require_and_verify
-            trusted_ca_cert_file /app/data/ca.crt
+            mode request
+            trust_pool file {
+                pem_file /app/data/ca.crt
+            }
         }
     }
 
-    # 只路由 OpenLink 长连接
-    @grpc_open {
-        path /platform.worker.v1.WorkerLink/OpenLink*
+    @grpc_worker {
+        path /platform.worker.v1.WorkerLink/Enroll* /platform.worker.v1.WorkerLink/RegisterNode* /platform.worker.v1.WorkerLink/WatchRegistration* /platform.worker.v1.WorkerLink/OpenLink*
     }
-    handle @grpc_open {
+    handle @grpc_worker {
         reverse_proxy h2c://master:9443 {
-            # 先删除所有外部传入的指纹头，再注入由真实 TLS 客户端证书计算的指纹
+            # 公网请求不能伪造证书指纹；仅使用 Caddy 从 TLS 客户端证书计算的值。
             header_up -x-client-cert-fingerprint
             header_up x-client-cert-fingerprint {http.request.tls.client.fingerprint.sha256}
         }
     }
 
-    # WorkerLink 域名上的其他路径一律拒绝，避免被当作通用代理使用
     handle {
         respond 404 "not found"
     }
 }
-
-# ---------------------------------------------------------------- 单域名降级方案（可选）
-# 若暂时只有一个域名且无法拆分，可改用下面这份单站点配置：
-# 必须同时满足：Master 生产配置 require_client_cert = true、
-# OpenLink 缺指纹时拒绝、代理头不可从公网保留。
-#
-# {
-#     servers { trusted_proxies static private_ranges }
-# }
-# :80 { redir https://{host}{uri} permanent }
-# {$ADMIN_DOMAIN:admin.example.com} {
-#     tls {
-#         client_auth {
-#             mode request
-#             trusted_ca_cert_file /app/data/ca.crt
-#         }
-#     }
-#     @grpc_enroll { path /platform.worker.v1.WorkerLink/Enroll* }
-#     handle @grpc_enroll {
-#         reverse_proxy h2c://master:9443 { header_up -x-client-cert-fingerprint }
-#     }
-#     @grpc_worker { path /platform.worker.v1.WorkerLink/OpenLink* }
-#     handle @grpc_worker {
-#         reverse_proxy h2c://master:9443 {
-#             header_up -x-client-cert-fingerprint
-#             header_up x-client-cert-fingerprint {http.request.tls.client.fingerprint.sha256}
-#         }
-#     }
-#     @grpc protocol grpc
-#     handle @grpc { respond 404 }
-#     handle /api/* { reverse_proxy master:8080 }
-#     handle { reverse_proxy master:8080 }
-# }
