@@ -5,6 +5,7 @@
 
 #![allow(clippy::large_enum_variant)]
 #![allow(clippy::result_large_err)]
+#![allow(clippy::mixed_attributes_style)]
 
 /// 协议技术枚举 → 中文展示值映射（第 10.1 节，唯一实现来源）。
 pub mod display;
