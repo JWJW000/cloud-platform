@@ -19,7 +19,7 @@ ensure_env() {
 apply_caddy() {
   echo "==> 使用新挂载校验 Caddy 配置..."
   docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm --no-deps caddy \
-    validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
   echo "==> 重建 Caddy 容器以应用最新配置..."
   # Caddyfile 是单文件 bind mount。git checkout/reset 会原子替换文件 inode，
