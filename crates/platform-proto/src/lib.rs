@@ -4,6 +4,7 @@
 //! 与 PostgreSQL 存储值一致（设计方案第 13.2 节）。
 
 #![allow(clippy::large_enum_variant)]
+#![allow(clippy::result_large_err)]
 
 /// 协议技术枚举 → 中文展示值映射（第 10.1 节，唯一实现来源）。
 pub mod display;

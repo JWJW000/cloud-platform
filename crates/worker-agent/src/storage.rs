@@ -868,6 +868,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn symlinked_final_path_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let storage = storage_at(dir.path());
@@ -904,6 +905,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn containment_rejects_escape_via_symlinked_parent() {
         let dir = tempfile::tempdir().unwrap();
         let storage = storage_at(dir.path());
