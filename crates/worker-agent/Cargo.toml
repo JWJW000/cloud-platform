@@ -1,0 +1,55 @@
+[package]
+name = "worker-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "局域网 Worker Agent：多槽位执行端、NAS 原子持久化、SQLite outbox 与 gRPC 双向长连接"
+
+[[bin]]
+name = "worker-agent"
+path = "src/main.rs"
+
+[dependencies]
+platform-domain = { workspace = true }
+platform-proto = { workspace = true }
+automation-core = { workspace = true }
+prost = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sysinfo = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+toml = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+rcgen = { workspace = true }
+reqwest = { workspace = true }
+httparse = { workspace = true }
+libc = { workspace = true }
+x509-parser = { workspace = true }
+time = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+ring = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

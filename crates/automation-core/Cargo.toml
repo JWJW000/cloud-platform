@@ -1,0 +1,28 @@
+[package]
+name = "automation-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "与任务来源解耦的浏览器自动化核心：稳定的输入/事件/结果接口"
+
+[dependencies]
+platform-domain = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+regex = { workspace = true }
+rust_drission = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+# `start_paused = true` 需要 test-util：等待逻辑的测试不能真的睡满轮询间隔
+tokio = { workspace = true, features = ["test-util"] }

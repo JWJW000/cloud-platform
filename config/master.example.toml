@@ -1,0 +1,62 @@
+# 云端 Master 配置文件示例（第 16.1 节）
+
+[server]
+http_listen = "0.0.0.0:8080"
+grpc_listen = "0.0.0.0:9443"
+# 生产镜像内的前端构建产物目录（V4-01：必须与 Dockerfile 的 COPY 目标一致）。
+# 本地开发可改为指向 admin-web/dist 的相对路径；配置了但目录/index.html 缺失时
+# Master 会启动失败，而不是假装在线。
+web_root = "/app/admin-web/dist"
+# 目标站点根地址，由 Master 下发给所有 Worker。
+# 必须填真实地址：留空则 Worker 拒绝开启浏览器会话，占位域名（.invalid / example.com）
+# 会让 Master 启动时直接报错（第 3.3 节）。
+site_base = ""
+# 可信反向代理网段（CIDR 或精确 IP，逗号分隔）：只有来自这些地址的
+# X-Forwarded-For 才被信任（第 13.4 节）。Docker 部署示例：trusted_proxies = ["172.16.0.0/12"]
+trusted_proxies = []
+
+[database]
+url = "postgres://postgres:postgres@127.0.0.1:5432/drission_book"
+max_connections = 20
+auto_migrate = true
+
+[security]
+# 管理后台会话签名密钥：至少 32 个随机字节，生产必须拒绝示例弱密钥（第 13.6 节）
+# 可用 `openssl rand -base64 48` 生成后填入
+jwt_secret = "kX8pQ2mN7vR4tW9yA3cF6hJ1lS5uB0eG-dF2gH4jK6lM8nP0qR"
+jwt_hours = 12
+# AES-256-GCM 字段级加密密钥（可通过 `master-server keygen` 命令生成）
+field_key_base64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+# 自签节点 CA 路径（不存在时启动会自动创建）
+ca_cert_path = "data/ca.crt"
+ca_key_path = "data/ca.key"
+node_cert_days = 365
+# 是否强制要求 mTLS 接入（生产必须为 true）
+require_client_cert = true
+# 会话 Cookie 是否带 Secure 属性（生产必须为 true；本地 HTTP 调试可设 false）
+cookie_secure = true
+
+[scheduler]
+heartbeat_interval_secs = 15
+session_renew_secs = 30
+task_lease_secs = 120
+disconnect_protection_secs = 900
+stall_timeout_secs = 120
+reaper_interval_secs = 5
+max_attempts = 3
+retry_backoff_secs = [60, 300, 900]
+session_max_downloads = 10
+session_max_duration_secs = 7200
+progress_min_interval_secs = 2
+progress_min_bytes = 5242880
+offline_missed_heartbeats = 3
+
+[nas]
+minimum_file_bytes = 32768
+free_space_alert_gb = 50
+
+[webshare]
+enabled = false
+api_key = ""
+sync_minutes = 30
+cooldown_minutes = 10

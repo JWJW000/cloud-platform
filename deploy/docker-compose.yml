@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: drission-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?PostgreSQL密码必须在环境变量中提供}
+      POSTGRES_DB: ${POSTGRES_DB:-drission_book}
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Master 与 Caddy 之外的服务不得访问数据库：只暴露到 Docker 内网
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  master:
+    image: ${MASTER_IMAGE:-ghcr.io/jwjw000/cloud-platform-master:latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.master
+    container_name: drission-master
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL必须在环境变量中提供}"
+      MASTER_JWT_SECRET: "${MASTER_JWT_SECRET:?MASTER_JWT_SECRET必须在环境变量中提供}"
+      MASTER_FIELD_KEY: "${MASTER_FIELD_KEY:?MASTER_FIELD_KEY必须在环境变量中提供}"
+      MASTER_SITE_BASE: "${MASTER_SITE_BASE:-}"
+      MASTER_REQUIRE_CLIENT_CERT: "${MASTER_REQUIRE_CLIENT_CERT:-1}"
+      WEBSHARE_API_KEY: "${WEBSHARE_API_KEY:-}"
+      TZ: Asia/Shanghai
+    volumes:
+      # 卷由容器 root 初始化；Dockerfile 已确保 /app/data 属主为 appuser
+      - master_data:/app/data
+    # 公网只暴露 Caddy 的 80/443；Master 仅 Docker 内网可达（第 16.1 节）
+    expose:
+      - "8080"
+      - "9443"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: drission-caddy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      master:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      # 两个公网入口域名（V4 方案第 4.1 节）：管理/注册入口与 WorkerLink mTLS 入口
+      ADMIN_DOMAIN: "${ADMIN_DOMAIN:?ADMIN_DOMAIN必须在环境变量中提供}"
+      WORKER_DOMAIN: "${WORKER_DOMAIN:?WORKER_DOMAIN必须在环境变量中提供}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - master_data:/app/data:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    # Node CA（Master 首次启动自动生成）就绪前不宣称健康；同时检查 Caddy 的
+    # 443 监听与 Master 可达性。不能访问 http://127.0.0.1/...——80 端口会强制
+    # 重定向到 https，且 127.0.0.1 没有匹配的管理域名站点（P1）。
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /app/data/ca.crt && nc -z 127.0.0.1 443 && wget -qO- http://master:8080/health/live >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  pgdata:
+  master_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,74 @@
+# 生产化修复 V5：单地址 gRPC + HTTP 入口（第 6.2 节、第 18 节部署形态）
+#
+# 原则：
+# 1. 对外只暴露一个域名，Worker 只需配置这一个 gRPC 地址即可自动注册；
+# 2. TLS 终止在 Caddy；客户端证书配置为「请求但不强制」
+#    （`client_auth mode request`）——首次注册的 Worker 还没有证书；
+# 3. 正式任务链路（OpenLink）的 mTLS 由 Master 方法级强制（第 6.2 节表格）：
+#    RegisterNode / WatchRegistration 无证书可过，OpenLink 必须有证书指纹且节点已批准；
+# 4. Caddy 把 TLS 握手里拿到的客户端证书指纹写入
+#    `x-client-cert-fingerprint` 头，Master 据此完成指纹-节点绑定校验；
+# 5. 禁用 Caddy 的默认客户端请求头转发（node_token 等凭据只能由 Worker
+#    自己的代码放进 gRPC metadata，不能由代理补发，避免被伪造成已知值）。
+
+{
+	# 生产环境请换成 ACME 域名或显式证书；本地联调可临时用 internal CA
+	# （`tls internal`）。正式部署请删除 admin.example.com / worker.example.com
+	# 的占位域名并改为真实域名。
+	auto_https disable_redirects
+}
+
+# ============================================================ HTTP 管理后台 + REST API
+admin.example.com {
+	encode zstd gzip
+
+	# 管理前端静态资源（admin-web 构建产物）
+	root * /srv/admin-web
+	try_files {path} /index.html
+	file_server
+
+	# REST API 反向代理到 Master（不带客户端证书，管理员走 Cookie/JWT 会话）
+	reverse_proxy /api/* 127.0.0.1:8080
+	reverse_proxy /sse/* 127.0.0.1:8080
+}
+
+# ============================================================ Worker 单地址入口（gRPC）
+worker.example.com {
+	encode zstd gzip
+
+	# 请求客户端证书但不强制：首次注册的 Worker 没有证书也能过 TLS 握手；
+	# 是否真的需要证书由 Master 按 RPC 方法决定（第 6.2 节）。
+	tls {
+		client_auth {
+			mode request
+			# 正式部署建议启用可信 CA 列表：
+			# trusted_ca_certs /srv/ca/node-ca.pem
+		}
+	}
+
+	# 把 TLS 握手中的客户端证书指纹交给 Master（OpenLink 方法级 mTLS 校验用）。
+	# 指纹必须对 DER 计算：Caddy 的 {http.request.tls.client.fingerprint}
+	# 已是 SHA-256 小写十六进制，与 Master `fingerprint_der` 的算法一致。
+	@with_client_cert expression {http.request.tls.client.fingerprint} != ""
+	header_up x-client-cert-fingerprint {http.request.tls.client.fingerprint}
+
+	# gRPC 透明代理到 Master 的 tonic 服务（h2c 由 Caddy 自动协商）
+	reverse_proxy 127.0.0.1:9443 {
+		transport http {
+			versions h2c
+		}
+	}
+}
+
+# ============================================================ 本地联调（可选）
+# 本机没有公网域名时的临时入口：把 9443 明文 gRPC 收进来，走同一套指纹逻辑。
+# 仅限开发环境使用；生产请使用上面的 worker.example.com 块并删除本块。
+:9443 {
+	@with_client_cert expression {http.request.tls.client.fingerprint} != ""
+	header_up x-client-cert-fingerprint {http.request.tls.client.fingerprint}
+	reverse_proxy 127.0.0.1:19443 {
+		transport http {
+			versions h2c
+		}
+	}
+}

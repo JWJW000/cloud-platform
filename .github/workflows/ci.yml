@@ -1,0 +1,156 @@
+# 云端自动化平台持续集成门禁（V4 方案第 6.3 节）
+#
+# 所有 Job 都是必需检查：任何一个失败都不得发布镜像。
+# - rust-static: fmt + Clippy 严格静态检查
+# - rust-unit: 无数据库的单元测试（--lib --bins）
+# - postgres-integration: PostgreSQL 16 服务 + 真实迁移 + 强制数据库集成测试
+# - frontend: 真实单元测试（Vitest）+ 生产构建 + npm 审计
+# - dependency-audit: Rust / npm 依赖审计
+# - worker-platform: Linux / Windows / macOS 的 Worker 单元测试矩阵
+# - docker-build: 构建生产镜像并对静态首页做冒烟测试
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-static:
+    name: Rust 格式化与 Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-unit:
+    name: Rust 单元测试（无数据库）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --lib --bins
+
+  postgres-integration:
+    name: PostgreSQL 集成测试（真实迁移）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      REQUIRE_TEST_DATABASE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # REQUIRE_TEST_DATABASE=1：没有数据库时测试必须失败，不允许静默跳过。
+      # 最终再校验每个**集成测试二进制**（Running tests/）确实至少运行了一个用例。
+      - run: cargo test -p master-server --tests -- --nocapture 2>&1 | tee /tmp/pg-tests.log
+      - name: 校验数据库测试二进制真实执行了用例
+        run: |
+          grep -qE "Running tests/" /tmp/pg-tests.log || { echo "没有运行任何集成测试二进制" >&2; exit 1; }
+          awk '
+            /Running tests\// { in_test = 1; count = -1 }
+            in_test && /running [0-9]+ test/ { count = $2 + 0 }
+            in_test && /test result:/ { if (count == 0) { print "集成测试二进制运行了 0 个用例，视为假绿"; exit 1 } in_test = 0 }
+          ' /tmp/pg-tests.log
+
+  frontend:
+    name: 前端测试与构建（admin-web）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: admin-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: admin-web
+      - run: pnpm test
+        working-directory: admin-web
+      - run: pnpm run build
+        working-directory: admin-web
+      - run: pnpm audit --prod --audit-level=high
+        working-directory: admin-web
+
+  dependency-audit:
+    name: 依赖安全审计
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 安装 cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Rust 依赖审计
+        run: cargo audit
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: admin-web/pnpm-lock.yaml
+      - name: npm 依赖审计（admin-web）
+        run: pnpm audit --prod --audit-level=high
+        working-directory: admin-web
+
+  worker-platform:
+    name: Worker 跨平台单元测试
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p worker-agent --lib
+
+  docker-build:
+    name: 生产镜像构建与静态资源冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建生产镜像
+        run: docker build -f deploy/Dockerfile.master -t drission-master-smoke .
+      - name: 冒烟：镜像内静态资源
+        run: |
+          docker create --name smoke drission-master-smoke
+          docker cp smoke:/app/admin-web/dist/index.html /tmp/index.html
+          if docker cp smoke:/app/admin-web/node_modules /tmp/nm >/dev/null 2>&1; then
+            echo "镜像内存在 node_modules" >&2
+            docker rm -f smoke
+            exit 1
+          fi
+          echo "index.html 存在，且镜像内无 node_modules"
+          docker rm -f smoke

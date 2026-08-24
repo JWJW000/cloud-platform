@@ -1,0 +1,46 @@
+# 阶段 1：构建前端静态产物（无公网 CDN 依赖；V5 起为 admin-web，使用 pnpm）
+# 基础镜像固定到 22-alpine 大版本；如需完全复现可替换为 node:22.x-alpine 的具体 digest。
+FROM node:22-alpine AS frontend-builder
+RUN corepack enable
+WORKDIR /admin-web
+COPY admin-web/package.json admin-web/pnpm-lock.yaml admin-web/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile --no-audit --no-fund
+COPY admin-web/ ./
+RUN pnpm run build
+
+# 阶段 2：编译 Rust Master 二进制
+FROM rust:1.84-alpine AS backend-builder
+RUN apk add --no-cache musl-dev protobuf-dev build-base
+WORKDIR /build
+COPY . .
+RUN cargo build --release -p master-server
+
+# 阶段 3：生产运行时镜像
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata curl
+
+# 安全非 root 用户
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app
+COPY --from=backend-builder /build/target/release/master-server /usr/local/bin/master-server
+# V4-01：只复制前端构建产物，源码与 node_modules 不进镜像
+COPY --from=frontend-builder /admin-web/dist /app/admin-web/dist
+COPY config/master.example.toml /app/config/master.toml
+
+# 全部目录创建与权限调整必须在切换非 root 用户**之前**完成：
+# 普通用户没有 chown 权限（即使目标属主是自己），USER appuser 之后的
+# mkdir/chown 会失败并导致镜像构建中断（P0）。
+RUN chown -R appuser:appgroup /app \
+    && mkdir -p /app/data \
+    && chown appuser:appgroup /app/data
+
+USER appuser
+
+VOLUME ["/app/data"]
+EXPOSE 8080 9443
+
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8080/health/live || exit 1
+
+ENTRYPOINT ["master-server", "--config", "/app/config/master.toml", "serve"]

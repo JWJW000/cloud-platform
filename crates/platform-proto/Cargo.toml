@@ -1,0 +1,13 @@
+[package]
+name = "platform-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Worker ⇄ Master gRPC 协议（tonic 代码生成）"
+
+[dependencies]
+prost = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

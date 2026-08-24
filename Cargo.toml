@@ -1,0 +1,87 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/platform-domain",
+    "crates/platform-proto",
+    "crates/automation-core",
+    "crates/master-server",
+    "crates/worker-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+platform-domain = { path = "crates/platform-domain" }
+platform-proto = { path = "crates/platform-proto" }
+automation-core = { path = "crates/automation-core" }
+
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+futures = "0.3"
+hex = "0.4"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+axum = { version = "0.7", features = ["ws", "macros", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+
+tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
+tonic-build = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "chrono",
+    "uuid",
+    "json",
+    "migrate",
+    # `macros` 只为 `FromRow` 派生与 `migrate!` 而启用；本项目**不使用** `query!` 系列宏，
+    # 因此 `cargo build` 始终不需要一个可连的 DATABASE_URL（见 store/mod.rs 的说明）。
+    "macros",
+] }
+
+argon2 = "0.5"
+jsonwebtoken = "9"
+aes-gcm = "0.10"
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+time = "0.3"
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sysinfo = "0.32"
+rust_drission = "0.2"
+url = "2"
+regex = "1"
+httparse = "1.9"
+libc = "0.2"
+percent-encoding = "2"
+ring = "0.17"
+x509-parser = { version = "0.16", features = ["verify"] }
+ipnet = "2"
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "http1", "tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

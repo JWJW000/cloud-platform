@@ -1,0 +1,91 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: 构建并推送 Docker 镜像 (GHCR)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录到 GitHub Packages (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cloud-platform-master
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=,format=short
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/Dockerfile.master
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: 部署至生产服务器
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    # 只有配置了部署密钥才执行自动 SSH 部署
+    if: "${{ secrets.SERVER_HOST != '' && secrets.SSH_PRIVATE_KEY != '' }}"
+    steps:
+      - name: 触发服务器拉取与更新
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER || 'root' }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            APP_DIR="/data/cloud-platform"
+            echo "==> 进入部署目录: ${APP_DIR}"
+            cd "${APP_DIR}"
+
+            echo "==> 同步最新代码/配置..."
+            if [ -d ".git" ]; then
+              git fetch origin
+              git reset --hard origin/main || git reset --hard origin/master
+            fi
+
+            echo "==> 登录 GHCR 并拉取最新 Master 镜像..."
+            # 如果是公开包可直接拉取，若是私有包需配置 docker login
+            docker compose -f deploy/docker-compose.yml pull master || true
+
+            echo "==> 启动/平滑滚动容器..."
+            docker compose -f deploy/docker-compose.yml up -d --remove-orphans
+
+            echo "==> 验证容器健康状态..."
+            sleep 6
+            docker compose -f deploy/docker-compose.yml ps

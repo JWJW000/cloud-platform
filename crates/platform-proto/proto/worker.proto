@@ -1,0 +1,603 @@
+syntax = "proto3";
+
+// Worker ⇄ Master 通信协议（设计方案第 13 节）。
+//
+// 命名约定：
+//   - 消息与字段名保持英文技术标识，以保证 Protobuf 代码生成兼容性；
+//   - 业务状态、类型与结果一律使用中文字符串（例如 "执行中"、"可重试失败"），
+//     与 PostgreSQL 存储值、REST JSON 完全一致；
+//   - 时间统一为 RFC 3339 字符串（技术标识，不中文化）。
+package platform.worker.v1;
+
+service WorkerLink {
+  // 注册码换取节点身份与客户端证书（第 15.1 节）。该调用先于 mTLS。
+  // V5 弃用：仍保留一个兼容发布周期，新 Worker 使用 RegisterNode / WatchRegistration。
+  rpc Enroll(EnrollRequest) returns (EnrollResponse) {
+    option deprecated = true;
+  }
+
+  // V5 直连注册：Worker 只配置一个公开 gRPC 地址即可提交注册申请（第 6.5 节）。
+  // 先于 mTLS；幂等、限流、CSR 校验与私钥持有证明由 Master 实施。
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // V5 审批结果查询：短期注册会话 + 私钥持有证明，服务端流式返回一条当前状态事件。
+  rpc WatchRegistration(WatchRegistrationRequest) returns (stream RegistrationEvent);
+
+  // 长期双向流：Worker 主动连接，Master 通过同一条流下发指令（第 13.1 节）。
+  // 名称避免使用 Connect —— 生成的客户端已有 `connect` 构造函数。
+  // V5：方法级强制 mTLS——必须携带有效客户端证书（指纹）+ 节点令牌 + 已批准状态。
+  rpc OpenLink(stream WorkerMessage) returns (stream MasterMessage);
+}
+
+// ---------------------------------------------------------------- 节点注册
+
+message EnrollRequest {
+  string enroll_code = 1;          // 管理员创建的一次性注册码
+  string hostname = 2;
+  string os = 3;                   // Windows / macOS / Linux，技术标识
+  string os_version = 4;
+  string agent_version = 5;
+  uint32 requested_slots = 6;
+  string csr_pem = 7;              // 可选：节点自生成密钥的 CSR，Master 签发客户端证书
+}
+
+message EnrollResponse {
+  string node_id = 1;
+  string node_token = 2;           // 长期凭据，用于 gRPC 元数据鉴权
+  string status = 3;               // Worker 状态中文值，首次注册为 "待审核"
+  string certificate_pem = 4;      // 已签发的客户端证书（提供 CSR 时返回）
+  string ca_certificate_pem = 5;   // Master CA 证书，供 Worker 校验服务端
+  string message = 6;
+}
+
+// ---------------------------------------------------------------- V5 直连注册
+
+// 注册申请（V5 第 6.5 节）。先于 mTLS；字段编号从 1 起，永久保留不复用。
+message RegisterNodeRequest {
+  string installation_id = 1;        // Worker 首次启动生成的随机 UUID（唯一身份）
+  string node_name = 2;              // 节点显示名（可读，不作唯一标识）
+  string os_type = 3;                // Windows / macOS / Linux（技术标识）
+  string os_version = 4;
+  string agent_version = 5;
+  uint32 requested_slots = 6;        // Worker 申请槽位数（1..50）
+  string csr_pem = 7;                // Worker 本地生成私钥后的 CSR
+  string public_key_fingerprint = 8; // CSR 公钥 SHA-256（服务端会复核，防伪造）
+  string nonce = 9;                  // 客户端随机挑战值
+  string nonce_signature = 10;       // 用 CSR 私钥对 nonce 的签名（私钥持有证明）
+}
+
+message RegisterNodeResponse {
+  string node_id = 1;
+  string registration_status = 2;    // 中文：待审核 / 已批准 / 已拒绝 / 已过期
+  string registration_session = 3;   // 短期注册会话令牌（明文只出现一次，库中只存哈希）
+  string challenge = 4;              // 服务端挑战值（WatchRegistration 私钥持有证明用）
+  string expires_at = 5;             // RFC 3339
+  uint32 retry_after_seconds = 6;
+}
+
+// 审批结果查询（V5 第 6.5 节）。每次查询都要验证会话令牌与私钥持有证明。
+message WatchRegistrationRequest {
+  string node_id = 1;
+  string registration_session = 2;
+  string challenge = 3;              // 回显 RegisterNodeResponse.challenge
+  string challenge_signature = 4;    // 用 CSR 私钥对 challenge 的签名
+}
+
+message RegistrationEvent {
+  string node_id = 1;
+  string registration_status = 2;    // 中文
+  uint32 approved_slots = 3;         // 批准后为管理员配置的槽位数
+  string client_certificate_pem = 4; // 仅批准后一次性返回
+  string ca_certificate_pem = 5;     // 仅批准后返回
+  string node_token = 6;             // 仅批准后一次性返回
+  string rejection_reason = 7;       // 拒绝原因（中文）
+  uint32 retry_after_seconds = 8;
+  string expires_at = 9;             // RFC 3339
+}
+
+// ---------------------------------------------------------------- Worker → Master
+
+message WorkerMessage {
+  // 事件编号：全局唯一，Master 依此去重（第 3.3 节「至少一次投递 + 幂等提交」）。
+  string event_id = 1;
+  string sent_at = 2;              // RFC 3339
+  // 补报标记：true 表示来自本地 outbox 的迟到事件。
+  bool replayed = 3;
+
+  oneof payload {
+    NodeOnline node_online = 10;
+    Heartbeat heartbeat = 11;
+    SlotStatusReport slot_status = 12;
+    SessionRequest session_request = 13;
+    NextTaskRequest next_task_request = 14;
+    TaskAccepted task_accepted = 15;
+    TaskProgress task_progress = 16;
+    TaskResult task_result = 17;
+    NasCheckResult nas_check_result = 18;
+    ProxyCheckResult proxy_check_result = 19;
+    SessionClosed session_closed = 20;
+    WorkerLog worker_log = 21;
+    SessionReady session_ready = 22;
+    ReconcileAck reconcile_ack = 23;
+    WorkRequest work_request = 24;
+    RegistrationTaskAccepted registration_task_accepted = 25;
+    RegistrationTaskProgress registration_task_progress = 26;
+    RegistrationTaskResult registration_task_result = 27;
+    ManualActionRequired manual_action_required = 28;
+    CommandAccepted command_accepted = 29;
+    CommandResult command_result = 30;
+  }
+}
+
+message NodeOnline {
+  string node_id = 1;
+  string agent_version = 2;
+  string os = 3;
+  string os_version = 4;
+  uint32 max_slots = 5;
+  uint32 available_slots = 6;
+  string applied_config_version = 7;
+  // 重连对账：Worker 报告本地仍在进行的会话与执行（第 14.1 节）。
+  repeated ActiveExecution active_executions = 8;
+}
+
+message ActiveExecution {
+  string session_id = 1;
+  string execution_id = 2;
+  string task_id = 3;
+  string task_status = 4;          // 中文任务状态（展示用）
+  uint32 stage_version = 5;
+  // V4-04：心跳必须上报 SQLite 现场，因此携带完整恢复所需的字段
+  ExecutionStage stage = 6;        // 技术阶段枚举（第 10.1 节）
+  string format = 7;               // pdf / epub
+  string local_file_path = 8;      // 本地文件完成后的源文件路径（可证明恢复）
+  string nas_relative_path = 9;    // NAS 相对路径
+  uint64 source_size_bytes = 10;
+  string source_sha256 = 11;       // 本地源文件 SHA-256
+  string result_event_id = 12;     // 结果已入 Outbox 时的事件编号（定向重放用）
+}
+
+message Heartbeat {
+  string node_id = 1;
+  uint32 available_slots = 2;
+  double cpu_percent = 3;
+  uint64 memory_used_mb = 4;
+  uint64 memory_total_mb = 5;
+  uint64 staging_free_gb = 6;
+  uint64 nas_free_gb = 7;
+  bool nas_healthy = 8;
+  string node_status = 9;          // 中文 Worker 状态，Worker 自评
+  repeated string active_session_ids = 10;
+  repeated ActiveExecution active_executions = 11; // 伴随心跳汇报的进行中执行（用于任务租约续期）
+  // 当前已生效的运行配置版本（第 3.3 节）。放在心跳里而不是只放在 NodeOnline 里，
+  // 是因为 Master 可以在长连接期间随时下发新配置，只在上线时报一次就无法核对生效情况。
+  string applied_config_version = 12;
+}
+
+message SlotStatusReport {
+  string node_id = 1;
+  repeated SlotState slots = 2;
+}
+
+message SlotState {
+  uint32 slot_index = 1;
+  string status = 2;               // 中文槽位状态
+  string session_id = 3;
+  string task_id = 4;
+  string detail = 5;
+}
+
+// 申请创建执行会话：Master 原子锁定槽位 + 账号 + 代理（第 6.2 节）。
+message SessionRequest {
+  string node_id = 1;
+  uint32 slot_index = 2;
+  string task_type = 3;            // 中文任务类型，如 "图书下载"
+}
+
+// 会话已完成本地代理启动、浏览器 Profile 准备与登录，正式进入运行中（第 8.3 节）。
+message SessionReady {
+  string session_id = 1;
+  uint32 slot_index = 2;
+  string exit_ip = 3;
+}
+
+// 会话内申请下一本书。
+message NextTaskRequest {
+  string node_id = 1;
+  string session_id = 2;
+  uint32 completed_in_session = 3;
+}
+
+message TaskAccepted {
+  string session_id = 1;
+  string execution_id = 2;
+  string task_id = 3;
+  string accepted_at = 4;
+}
+
+message TaskProgress {
+  string session_id = 1;
+  string execution_id = 2;
+  string task_id = 3;
+  uint64 downloaded_bytes = 4;
+  uint64 total_bytes = 5;
+  string stage = 6;                // 中文阶段描述，如 "搜索中"、"下载中"、"入库中"
+  uint32 stage_version = 7;        // 递增阶段版本，Master 丢弃旧版本（第 14.5 节）
+}
+
+message TaskResult {
+  string session_id = 1;
+  string execution_id = 2;
+  string task_id = 3;
+  string result = 4;               // 中文执行结果
+  string task_status = 5;          // 中文任务状态（Worker 建议值，Master 有最终决定权）
+  string reason = 6;
+  uint32 stage_version = 7;
+  uint32 attempt = 8;
+  uint64 duration_ms = 9;
+  // 站点配额指示器读数，用于第 10.3 节限额归因
+  uint32 quota_used = 10;
+  uint32 quota_total = 11;
+  FileEvidence file = 12;          // 仅在 NAS 入库完成时填充
+}
+
+message FileEvidence {
+  string nas_relative_path = 1;
+  string file_name = 2;
+  uint64 size_bytes = 3;
+  string sha256 = 4;
+  string format = 5;               // pdf / epub，技术标识
+  string ingested_at = 6;
+}
+
+message NasCheckResult {
+  string node_id = 1;
+  string task_id = 2;              // 核验任务时填写
+  bool mount_present = 3;
+  bool writable = 4;
+  uint64 free_gb = 5;
+  uint64 latency_ms = 6;
+  bool file_exists = 7;            // 检查指定文件时填写
+  FileEvidence file = 8;
+  string detail = 9;
+}
+
+message ProxyCheckResult {
+  string node_id = 1;
+  string proxy_id = 2;
+  bool reachable = 3;
+  uint64 latency_ms = 4;
+  string exit_ip = 5;
+  string proxy_status = 6;         // 中文代理状态建议值
+  string detail = 7;
+}
+
+message SessionClosed {
+  string session_id = 1;
+  string status = 2;               // 中文执行会话状态："已结束" / "失败"
+  string reason = 3;
+  uint32 completed_count = 4;
+}
+
+message WorkerLog {
+  string node_id = 1;
+  string session_id = 2;
+  string level = 3;                // 中文日志级别
+  string message = 4;
+  uint32 repeat_count = 5;         // Worker 侧聚合后的重复次数（第 13.3 节节流）
+}
+
+// ---------------------------------------------------------------- Master → Worker
+
+message MasterMessage {
+  string sent_at = 1;
+
+  oneof payload {
+    EventAck event_ack = 10;
+    NodeConfig node_config = 11;
+    CreateSession create_session = 12;
+    AssignTask assign_task = 13;
+    NoTaskAvailable no_task = 14;
+    PauseNode pause_node = 15;
+    ResumeNode resume_node = 16;
+    EndSession end_session = 17;
+    CancelTask cancel_task = 18;
+    VerifyNasFile verify_nas_file = 19;
+    RefreshConfig refresh_config = 20;
+    PrepareUpgrade prepare_upgrade = 21;
+    ReconcileExecutions reconcile_executions = 22;
+    AssignRegistrationTask assign_registration_task = 23;
+    ContinueManualAction continue_manual_action = 24;
+    CancelRegistrationTask cancel_registration_task = 25;
+    ExecuteCommand execute_command = 26;
+  }
+}
+
+// ---------------------------------------------------------------- 重连对账裁决
+
+// 执行阶段技术枚举（V4 方案第 10.1 节）。
+// 这些名字是技术协议标识，可以使用英文；数据库、日志、UI 仍映射为中文，
+// 映射关系唯一地定义在 platform-domain（见 enums 的 ExecutionStageDisplay）。
+enum ExecutionStage {
+  EXECUTION_STAGE_UNSPECIFIED = 0;
+  ACCEPTED = 1;          // 已接受
+  SEARCHING = 2;         // 搜索中
+  DOWNLOADING = 3;       // 下载中
+  LOCAL_FILE_READY = 4;  // 本地文件完成
+  NAS_UPLOADING = 5;     // NAS 上传中
+  NAS_COMMITTED = 6;     // NAS 已原子落盘
+  RESULT_PENDING = 7;    // 结果待上报
+}
+
+// 对账裁决技术枚举（V4 方案第 10.1 节）。
+enum ReconcileAction {
+  RECONCILE_ACTION_UNSPECIFIED = 0;
+  STOP_AND_RETRY = 1;   // 停止并重试
+  RESUME_INGEST = 2;    // 继续入库
+  VERIFY_NAS = 3;       // 核验 NAS
+  REPLAY_RESULT = 4;    // 重放结果
+  CLEANUP_ONLY = 5;     // 停止并清理
+}
+
+message ExecutionReconcileDecision {
+  string execution_id = 1;
+  string task_id = 2;
+  uint32 stage_version = 3;
+  // 强类型裁决，禁止自由字符串跨组件比较（V4-02 / V4-03）
+  ReconcileAction action = 4;
+  string reason = 5;
+}
+
+message ReconcileExecutions {
+  repeated ExecutionReconcileDecision decisions = 1;
+  // 置 true 表示「所有裁决均已收到逐执行 ACK 且全部完成」。
+  // Worker 只有收到 complete=true 才解除 reconciling 并恢复申请新会话。
+  bool reconciliation_complete = 2;
+}
+
+// Worker 对单条裁决的执行结果（V4 方案第 10.5 节：逐执行 ACK）。
+message ReconcileAck {
+  string execution_id = 1;
+  ReconcileAction action = 2;
+  bool accepted = 3;     // true=裁决已执行，false=无法执行（记录 detail 原因）
+  string detail = 4;
+}
+
+// 事件已持久化，Worker 可从本地 outbox 删除该事件。
+message EventAck {
+  string event_id = 1;
+  bool accepted = 2;
+  string detail = 3;
+}
+
+message NodeConfig {
+  string node_id = 1;
+  string node_name = 2;
+  string node_status = 3;          // 中文 Worker 状态
+  uint32 max_slots = 4;
+  uint32 upload_concurrency = 5;
+  uint32 heartbeat_interval_secs = 6;
+  uint32 session_renew_secs = 7;
+  uint32 progress_min_interval_secs = 8;
+  uint64 progress_min_bytes = 9;
+  uint32 max_session_duration_secs = 10;
+  uint32 stall_timeout_secs = 11;
+  string nas_relative_root = 12;
+  uint64 minimum_free_gb = 13;
+  string site_base = 14;
+  string download_format = 15;     // pdf / epub
+  string config_version = 16;
+  string min_agent_version = 17;
+  bool diagnostics_enabled = 18;   // 开启后上传调试日志（第 13.3 节）
+  // 低于此字节数视为站点错误页，Worker 在本机就拒绝入库（第 11 节）。
+  // 由 Master 下发而不是 Worker 本地配置：Master 记账时用同一个阈值复核证据，
+  // 两端各读一份配置迟早会出现「Worker 认为合格、Master 判为过小」。
+  uint64 minimum_file_bytes = 19;
+}
+
+message CreateSession {
+  string session_id = 1;
+  uint32 slot_index = 2;
+  string task_type = 3;            // 中文任务类型
+  AccountCredential account = 4;
+  ProxyCredential proxy = 5;
+  uint32 local_forward_port = 6;   // 本机固定转发端口（第 10.1 节）
+  uint32 max_downloads = 7;        // 账号当日剩余额度
+  uint32 max_duration_secs = 8;
+  string lease_expires_at = 9;
+}
+
+message AccountCredential {
+  string account_id = 1;
+  string email = 2;
+  string password = 3;
+  string nickname = 4;
+  uint32 daily_used = 5;
+  uint32 daily_limit = 6;
+}
+
+message ProxyCredential {
+  string proxy_id = 1;
+  string label = 2;
+  string scheme = 3;               // http / socks5，技术标识
+  string host = 4;
+  uint32 port = 5;
+  string username = 6;
+  string password = 7;
+}
+
+message AssignTask {
+  string session_id = 1;
+  string execution_id = 2;         // 每次分配唯一（第 3.3 节）
+  string task_id = 3;
+  string task_type = 4;            // 中文任务类型
+  BookTarget book = 5;
+  string nas_relative_path = 6;    // 最终文件相对路径
+  string final_file_name = 7;
+  string uploading_file_name = 8;  // ".上传中-任务编号-节点编号" 临时名
+  uint32 attempt = 9;
+  string lease_expires_at = 10;
+  uint32 stall_timeout_secs = 11;
+  // 本次任务租约世代，由 Master 领取事务返回（第 6.1 节）。
+  // Worker 必须在 ActiveExecution / TaskProgress / TaskResult 中原样回带，
+  // 不得自行递增；只有 Master 在重新领取、回收或人工重试时才会增加它。
+  uint32 stage_version = 12;
+}
+
+message BookTarget {
+  string book_id = 1;
+  int64 book_seq = 2;              // 6 位文件名前缀来源
+  string title = 3;                // 原始书名（搜索词）
+  string author = 4;
+  string publisher = 5;
+  string isbn = 6;                 // 仅用于结果卡片辅助匹配
+  string format = 7;               // pdf / epub
+}
+
+message NoTaskAvailable {
+  string session_id = 1;
+  string reason = 2;
+  uint32 retry_after_secs = 3;
+}
+
+message PauseNode {
+  string reason = 1;
+  bool finish_current_task = 2;
+}
+
+message ResumeNode {
+  string reason = 1;
+}
+
+message EndSession {
+  string session_id = 1;
+  string reason = 2;
+  bool finish_current_task = 3;    // true：完成当前任务后退出（"正在结束"）
+}
+
+message CancelTask {
+  string node_id = 1;              // V4 精确取消：全部字段匹配才取消
+  string session_id = 2;
+  string task_id = 3;
+  string execution_id = 4;
+  uint32 stage_version = 5;        // 执行世代，旧消息不得误伤新执行
+  string reason = 6;               // 中文原因
+}
+
+// 让在线 Worker 核查 NAS 上是否已存在目标文件（第 14.3 节「待确认」处理）。
+message VerifyNasFile {
+  string task_id = 1;
+  string nas_relative_path = 2;
+  string expected_sha256 = 3;
+  uint64 expected_size_bytes = 4;
+  string expected_format = 5;      // pdf / epub
+  string expected_file_name = 6;
+}
+
+message RefreshConfig {
+  string config_version = 1;
+}
+
+message PrepareUpgrade {
+  string target_version = 1;
+  string download_url = 2;
+  string sha256 = 3;
+  bool finish_current_task = 4;
+}
+
+// ---------------------------------------------------------------- V6 统一调度与账号注册
+
+message WorkRequest {
+  string node_id = 1;
+  uint32 slot_index = 2;
+  repeated string supported_task_types = 3;
+  string request_id = 4;
+}
+
+message RegistrationTaskAccepted {
+  string session_id = 1;
+  string execution_id = 2;
+  string registration_task_id = 3;
+  uint32 stage_version = 4;
+  uint32 attempt = 5;
+  string accepted_at = 6;
+}
+
+message RegistrationTaskProgress {
+  string session_id = 1;
+  string execution_id = 2;
+  string registration_task_id = 3;
+  uint32 stage_version = 4;
+  string stage = 5;                // 中文阶段描述
+  uint32 percent = 6;
+  string message = 7;
+  string updated_at = 8;
+}
+
+message RegistrationTaskResult {
+  string session_id = 1;
+  string execution_id = 2;
+  string registration_task_id = 3;
+  uint32 stage_version = 4;
+  uint32 attempt = 5;
+  string result = 6;               // 中文执行结果
+  string reason = 7;
+  bool already_exists = 8;
+  bool awaiting_verification = 9;
+  string completed_at = 10;
+}
+
+message ManualActionRequired {
+  string action_id = 1;
+  string task_type = 2;            // 中文任务类型
+  string registration_task_id = 3;
+  string execution_id = 4;
+  string action_type = 5;          // 邮箱验证码 / 图片验证码 / 人工确认 / 风控
+  string prompt = 6;
+  string expires_at = 7;
+  string optional_artifact_id = 8;
+}
+
+message CommandAccepted {
+  string command_id = 1;
+  string accepted_at = 2;
+}
+
+message CommandResult {
+  string command_id = 1;
+  string status = 2;               // 成功 / 失败
+  string result_json = 3;
+  string completed_at = 4;
+}
+
+message AssignRegistrationTask {
+  string session_id = 1;
+  string execution_id = 2;
+  string registration_task_id = 3;
+  uint32 attempt = 4;
+  uint32 stage_version = 5;
+  string lease_expires_at = 6;
+  bool needs_mail_code = 7;
+}
+
+message ContinueManualAction {
+  string action_id = 1;
+  string execution_id = 2;
+  string action_type = 3;
+  string action_payload = 4;       // 验证码等一次性输入
+}
+
+message CancelRegistrationTask {
+  string node_id = 1;
+  string session_id = 2;
+  string registration_task_id = 3;
+  string execution_id = 4;
+  uint32 stage_version = 5;
+  string reason = 6;
+}
+
+message ExecuteCommand {
+  string command_id = 1;
+  string command_type = 2;
+  string payload_json = 3;
+}

@@ -1,0 +1,50 @@
+# 局域网 Worker Agent 配置文件示例（第 16.1 节、V5 方案第 6 节）
+#
+# V5 起 Worker 只需配置 endpoint 一个 gRPC 地址，首次 `run` 会自动注册
+# （RegisterNode → 待审核 → 管理员批准后自动领取证书与节点令牌并上线），
+# 不再需要注册码，也不需要手动执行 enroll。
+#
+# 生产部署字段说明：
+#   endpoint        ：Worker 唯一 gRPC 入口（必须 HTTPS，且必须与 tls_domain 一致）
+#   enroll_endpoint ：（可选）注册专用入口，默认同 endpoint；单地址部署可省略
+#   tls_domain      ：服务端证书域名校验覆盖值；通常与 endpoint 的主机名一致
+#   identity_file   ：保存 node_id / node_token / installation_id / 证书指纹
+#                     （禁止存私钥；注册会话令牌明文只写本机 0600 文件）
+#   client_cert_file：向云端出示的客户端证书（批准后自动生成）
+#   client_key_file ：客户端私钥（只存在本机，Unix 下必须 0600）
+#   node_ca_file    ：节点客户端证书签发 CA 的公钥证书，仅用于审计，
+#                     绝不用于验证云端服务端证书
+#   server_ca_file  ：仅私有 Server CA 部署需要（Caddy 使用 `tls internal` 时）。
+#                     公网 ACME 证书部署可留空。配置了但文件缺失时启动直接失败。
+
+[master]
+endpoint = "https://worker.example.com"
+tls_domain = "worker.example.com"
+identity_file = "data/identity.json"
+client_cert_file = "data/client.crt"
+client_key_file = "data/client.key"
+node_ca_file = "data/node-ca.crt"
+# 私有 Server CA 部署时取消注释并预先分发根证书：
+# server_ca_file = "data/server-ca.crt"
+# 仅本地开发：允许 http 明文直连 Master（本机无 Caddy 时的联调）。
+# 生产必须保持 false/删除本行——run 会 fail-closed 要求 HTTPS + mTLS。
+insecure = false
+
+# V5 首次启动提示：直接执行 `worker-agent run` 即可自动注册。
+# 如需重装身份（危险操作，需先由管理员在云端拒绝/禁用旧节点）：
+#   worker-agent reset-identity --yes
+
+[storage]
+# 本地运行缓存与数据库目录
+data_dir = "data"
+# 局域网 NAS 挂载路径（跨平台推荐统一使用挂载点或 UNC 路径，避免盘符漂移）
+# Windows 示例：nas_mount = "\\\\192.168.1.100\\books" 或 "Z:\\books"
+# macOS 示例：nas_mount = "/Volumes/books"
+# Linux 示例：nas_mount = "/mnt/nas/books"
+nas_mount = "/mnt/nas/books"
+
+[execution]
+# 本机请求开启的最大槽位数（设备安全上限；最终取 Master 批准数与它的较小值）
+requested_slots = 5
+# 是否启用模拟自动化引擎（生产环境必须为 false，以真实启动 Chromium 执行下载）
+simulated = false
