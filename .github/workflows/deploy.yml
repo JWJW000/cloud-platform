@@ -56,18 +56,13 @@ jobs:
     name: 部署至生产服务器
     needs: build-and-push
     runs-on: ubuntu-latest
-    env:
-      SSH_KEY: ${{ secrets.CLOUD || secrets.SSH_PRIVATE_KEY }}
-      SSH_HOST: ${{ secrets.SERVER_HOST || '43.165.64.253' }}
-      SSH_USER: ${{ secrets.SERVER_USER || 'root' }}
     steps:
       - name: 触发服务器拉取与更新
-        if: env.SSH_KEY != ''
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ env.SSH_HOST }}
-          username: ${{ env.SSH_USER }}
-          key: ${{ env.SSH_KEY }}
+          host: ${{ secrets.SERVER_HOST || '43.165.64.253' }}
+          username: ${{ secrets.SERVER_USER || 'root' }}
+          key: ${{ secrets.CLOUD || secrets.SSH_PRIVATE_KEY }}
           port: 22
           script_stop: true
           script: |
