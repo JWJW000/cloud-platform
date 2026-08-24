@@ -77,7 +77,7 @@ case "$1" in
       echo "用法: $0 create-admin <用户名> <密码>"
       exit 1
     fi
-    docker exec -it drission-master master-server --config /app/config/master.toml create-admin --username "${USERNAME}" --password "${PASSWORD}"
+    docker exec -i drission-master master-server --config /app/config/master.toml create-admin --username "${USERNAME}" --password "${PASSWORD}"
     ;;
 
   *)
