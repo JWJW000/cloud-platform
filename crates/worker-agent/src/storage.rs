@@ -277,6 +277,7 @@ fn commit_noreplace_sync(temp: &Path, final_path: &Path) -> Result<CommitOutcome
 
 /// 判断一个 errno 是否表示「该文件系统不支持该操作」。
 fn is_unsupported_errno(errno: i32) -> bool {
+    #[allow(unreachable_patterns)]
     matches!(
         errno,
         libc::EINVAL | libc::ENOSYS | libc::ENOTSUP | libc::EOPNOTSUPP | libc::ENOTTY

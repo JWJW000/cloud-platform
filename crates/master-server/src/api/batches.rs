@@ -403,9 +403,9 @@ fn parse_csv_rows(csv_text: &str) -> AppResult<Vec<ImportRow>> {
             // 无表头：按位置映射
             header_indices = Some([
                 Some(0),
-                Some(1).filter(|_| cells.len() > 1),
-                Some(2).filter(|_| cells.len() > 2),
-                Some(3).filter(|_| cells.len() > 3),
+                (cells.len() > 1).then_some(1),
+                (cells.len() > 2).then_some(2),
+                (cells.len() > 3).then_some(3),
             ]);
         }
 

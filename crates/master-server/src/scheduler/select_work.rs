@@ -213,6 +213,6 @@ async fn select_best_task_type(
     }
 
     // 按 effective_priority 降序排序
-    candidates.sort_by(|a, b| b.effective_priority.cmp(&a.effective_priority));
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.effective_priority));
     Ok(Some(candidates[0].task_type))
 }
