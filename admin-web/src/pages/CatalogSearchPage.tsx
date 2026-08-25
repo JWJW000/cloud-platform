@@ -23,7 +23,7 @@ export function CatalogSearchPage() {
   const work_type = searchParams.get("work_type") || "";
   const language = searchParams.get("language") || "";
   const format = searchParams.get("format") || "";
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  const cursor = searchParams.get("cursor") || "";
   const limit = 20;
 
   const [inputQuery, setInputQuery] = useState(query);
@@ -42,7 +42,7 @@ export function CatalogSearchPage() {
         language: language || undefined,
         format: format || undefined,
         limit,
-        offset,
+        cursor: cursor || undefined,
       });
       setData(res);
     } catch (err: any) {
@@ -54,7 +54,7 @@ export function CatalogSearchPage() {
 
   useEffect(() => {
     fetchResults();
-  }, [query, acquisition_status, work_type, language, format, offset]);
+  }, [query, acquisition_status, work_type, language, format, cursor]);
 
   const updateParam = (key: string, value: string | null) => {
     const next = new URLSearchParams(searchParams);
@@ -63,7 +63,16 @@ export function CatalogSearchPage() {
     } else {
       next.delete(key);
     }
-    next.set("offset", "0");
+    next.delete("offset");
+    next.delete("cursor");
+    setSearchParams(next);
+  };
+
+  const moveToCursor = (value: string | null | undefined) => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("offset");
+    if (value) next.set("cursor", value);
+    else next.delete("cursor");
     setSearchParams(next);
   };
 
@@ -71,9 +80,6 @@ export function CatalogSearchPage() {
     e.preventDefault();
     updateParam("query", inputQuery.trim() || null);
   };
-
-  const totalPages = data ? Math.ceil(data.total / limit) : 0;
-  const currentPage = Math.floor(offset / limit) + 1;
 
   return (
     <div className="space-y-6">
@@ -224,9 +230,7 @@ export function CatalogSearchPage() {
             <span>
               找到约 <strong className="text-slate-800">{data?.total.toLocaleString() || 0}</strong> 条记录
             </span>
-            <span>
-              第 {currentPage} 页 / 共 {totalPages || 1} 页
-            </span>
+            <span>{cursor ? "游标结果页" : "首屏结果"}</span>
           </div>
 
           {loading ? (
@@ -245,7 +249,7 @@ export function CatalogSearchPage() {
                     <div className="space-y-1.5 flex-1">
                       <div className="flex items-center gap-2">
                         <Link
-                          to={`/catalog/editions/${item.id}`}
+                          to={`/library/editions/${item.id}`}
                           className="font-bold text-slate-900 hover:text-blue-600 text-base"
                         >
                           {item.title}
@@ -327,7 +331,7 @@ export function CatalogSearchPage() {
                     <div className="flex flex-col items-end gap-2 shrink-0">
                       <StatusBadge status={item.acquisition_status} />
                       <Link
-                        to={`/catalog/editions/${item.id}`}
+                        to={`/library/editions/${item.id}`}
                         className="text-xs text-blue-600 hover:text-blue-800 font-medium"
                       >
                         详情与溯源 →
@@ -340,27 +344,27 @@ export function CatalogSearchPage() {
           )}
 
           {/* 分页控制器 */}
-          {data && data.total > limit && (
+          {data && (data.previous_cursor || data.next_cursor) && (
             <div className="flex items-center justify-between pt-4 border-t border-slate-200">
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={offset === 0}
-                onClick={() => updateParam("offset", String(Math.max(0, offset - limit)))}
+                disabled={!data.previous_cursor}
+                onClick={() => moveToCursor(data.previous_cursor)}
               >
                 <ChevronLeft className="h-4 w-4 mr-1" />
                 上一页
               </Button>
 
               <span className="text-xs text-slate-500">
-                第 {currentPage} / {totalPages} 页
+                键集游标分页 · 共 {data.total} 条
               </span>
 
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={offset + limit >= data.total}
-                onClick={() => updateParam("offset", String(offset + limit))}
+                disabled={!data.next_cursor}
+                onClick={() => moveToCursor(data.next_cursor)}
               >
                 下一页
                 <ChevronRight className="h-4 w-4 ml-1" />

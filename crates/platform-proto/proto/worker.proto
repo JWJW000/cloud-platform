@@ -220,6 +220,9 @@ message Heartbeat {
   // 当前已生效的运行配置版本（第 3.3 节）。放在心跳里而不是只放在 NodeOnline 里，
   // 是因为 Master 可以在长连接期间随时下发新配置，只在上线时报一次就无法核对生效情况。
   string applied_config_version = 12;
+  uint64 applied_mail_provider_version = 13;
+  string mail_provider_name = 14;
+  string mail_provider_health = 15; // 健康 / 降级 / 未配置；不得包含邮箱、正文或验证码
 }
 
 message SlotStatusReport {
@@ -626,6 +629,20 @@ message AssignRegistrationTask {
   uint32 stage_version = 5;
   string lease_expires_at = 6;
   bool needs_mail_code = 7;
+  MailProviderLease mail_provider = 8;
+}
+
+// 仅随单个账号注册任务通过 mTLS 链路下发的短生命周期 Provider 租约。
+// API Key 不属于 NodeConfig，也不得写日志或落 Worker 磁盘。
+message MailProviderLease {
+  uint64 version = 1;
+  string provider_type = 2;
+  string endpoint = 3;
+  string api_key = 4;
+  uint32 poll_interval_secs = 5;
+  uint32 timeout_secs = 6;
+  repeated string allowed_hosts = 7;
+  repeated string allowed_senders = 8;
 }
 
 message ContinueManualAction {

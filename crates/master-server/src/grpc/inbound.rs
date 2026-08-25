@@ -490,6 +490,14 @@ async fn handle_heartbeat(
         // Worker 自报的已生效配置版本。空串表示这一跳没报（旧版 Agent），
         // 由 SQL 的 `NULLIF` 保留库里已有的值，而不是把它清空。
         applied_config_version: heartbeat.applied_config_version.trim().to_string(),
+        applied_mail_provider_version: clamp_to_i64(heartbeat.applied_mail_provider_version),
+        mail_provider_name: heartbeat.mail_provider_name.trim().to_string(),
+        mail_provider_health: heartbeat
+            .mail_provider_health
+            .trim()
+            .chars()
+            .take(128)
+            .collect(),
         reported_status,
     };
 
@@ -745,6 +753,77 @@ async fn handle_session_ready(
 
                 tx.commit().await?;
 
+                // Provider 配置按注册尝试生成任务级快照。API Key 只从独立密钥表
+                // 解密到本次 mTLS 下行消息的内存中，不进入 NodeConfig、日志或数据库明文。
+                let provider_record = store::mail_provider::get_active_config(&state.pool).await?;
+                let mail_provider = if let Some(record) = provider_record {
+                    // Outlook 密钥只能通过强制校验客户端证书的 mTLS 连接下发。
+                    // 本地若显式关闭 mTLS，则自动降级为人工模式，绝不在 bearer-only
+                    // 的 Worker 连接中传送第三方密钥。
+                    if record.provider_type == "outlook_http"
+                        && !state.config.security.require_client_cert
+                    {
+                        tracing::warn!(
+                            node_id = %identity.node_id(),
+                            provider_version = record.version,
+                            "当前未强制 Worker 客户端证书，Outlook Provider 已安全降级为人工模式"
+                        );
+                        Some(pb::MailProviderLease {
+                            version: record.version.max(0) as u64,
+                            provider_type: "manual".to_string(),
+                            endpoint: String::new(),
+                            api_key: String::new(),
+                            poll_interval_secs: 5,
+                            timeout_secs: 120,
+                            allowed_hosts: Vec::new(),
+                            allowed_senders: Vec::new(),
+                        })
+                    } else {
+                        let api_key = if record.provider_type == "outlook_http" {
+                            match record.api_key_secret_ref.as_deref() {
+                                Some(secret_ref) => {
+                                    let cipher_text = store::mail_provider::get_secret_ciphertext(
+                                        &state.pool,
+                                        secret_ref,
+                                    )
+                                    .await?;
+                                    match cipher_text {
+                                        Some(cipher_text) => state
+                                            .cipher
+                                            .decrypt(&cipher_text)
+                                            .map_err(AppError::Internal)?,
+                                        None => String::new(),
+                                    }
+                                }
+                                None => String::new(),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        Some(pb::MailProviderLease {
+                            version: record.version.max(0) as u64,
+                            provider_type: record.provider_type,
+                            endpoint: record.endpoint,
+                            api_key,
+                            poll_interval_secs: record.poll_interval_secs.max(1) as u32,
+                            timeout_secs: record.timeout_secs.max(10) as u32,
+                            allowed_hosts: record.allowed_hosts,
+                            allowed_senders: record.allowed_senders,
+                        })
+                    }
+                } else {
+                    Some(pb::MailProviderLease {
+                        version: 0,
+                        provider_type: "manual".to_string(),
+                        endpoint: String::new(),
+                        api_key: String::new(),
+                        poll_interval_secs: 5,
+                        timeout_secs: 120,
+                        allowed_hosts: Vec::new(),
+                        allowed_senders: Vec::new(),
+                    })
+                };
+
                 let msg = convert::assign_registration_task_message(
                     session_id,
                     execution_id,
@@ -752,7 +831,8 @@ async fn handle_session_ready(
                     leased.0,
                     leased.1,
                     leased.2,
-                    false,
+                    true,
+                    mail_provider,
                 );
                 let _ = outbound.send(msg).await;
             } else {
@@ -937,6 +1017,7 @@ async fn handle_manual_action_required(
         .unwrap_or(TaskType::AccountRegister);
     let reg_task_id = parse_optional_uuid(&req.registration_task_id, "注册任务")?;
     let exec_id = parse_optional_uuid(&req.execution_id, "执行编号")?;
+    let action_id = parse_uuid(&req.action_id, "人工事项编号")?;
     let action_type = req
         .action_type
         .parse::<platform_domain::ManualActionType>()
@@ -972,6 +1053,7 @@ async fn handle_manual_action_required(
         },
         || async {
             let new_action = store::manual_action::NewManualAction {
+                id: action_id,
                 task_type,
                 registration_task_id: reg_task_id,
                 book_task_id: None,

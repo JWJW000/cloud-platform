@@ -15,6 +15,7 @@ pub mod admin;
 pub mod catalog;
 pub mod catalog_v1;
 pub mod import_job;
+pub mod mail_provider;
 pub mod manual_action;
 pub mod node;
 pub mod registration;
@@ -45,10 +46,10 @@ pub async fn connect(config: &DatabaseConfig) -> Result<PgPool> {
 
 /// 执行内嵌的迁移脚本。
 ///
-/// `sqlx::migrate!` 在编译期把 `migrations/` 目录嵌进二进制，因此部署时不需要
+/// `sqlx_macros::migrate!` 在编译期把 `migrations/` 目录嵌进二进制，因此部署时不需要
 /// 额外携带 SQL 文件，也不需要容器里装 `psql`。
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
-    sqlx::migrate!("./migrations")
+    sqlx_macros::migrate!("./migrations")
         .run(pool)
         .await
         .context("执行数据库迁移失败")?;

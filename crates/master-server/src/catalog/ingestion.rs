@@ -29,6 +29,8 @@ pub struct ImportManifestRequest {
     pub content: Option<Vec<u8>>,
     /// 文本内容（针对 CSV/TSV 文本输入）。
     pub text_content: Option<String>,
+    /// 已登记服务器目录中的 manifest 文件名（只允许单层安全文件名）。
+    pub server_manifest: Option<String>,
 }
 
 /// 预检报告。
@@ -88,6 +90,8 @@ pub struct StartImportRequest {
     pub sheet_name: Option<String>,
     /// 文本内容或 CSV 内容。
     pub text_content: Option<String>,
+    /// 已登记服务器目录中的 manifest 文件名。
+    pub server_manifest: Option<String>,
 }
 
 /// 数据导入执行结果。

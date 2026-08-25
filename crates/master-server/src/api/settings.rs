@@ -9,13 +9,31 @@ use platform_domain::{
 use serde::{Deserialize, Serialize};
 
 use crate::api::auth::AuthenticatedUser;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::store;
+
+#[derive(Debug, Serialize)]
+pub struct SettingResponse {
+    pub key: String,
+    pub value: serde_json::Value,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PutSettingRequest {
     pub value: serde_json::Value,
+}
+
+fn compatible_setting_value(existing: &serde_json::Value, replacement: &serde_json::Value) -> bool {
+    matches!(
+        (existing, replacement),
+        (serde_json::Value::Bool(_), serde_json::Value::Bool(_))
+            | (serde_json::Value::Number(_), serde_json::Value::Number(_))
+            | (serde_json::Value::String(_), serde_json::Value::String(_))
+            | (serde_json::Value::Array(_), serde_json::Value::Array(_))
+            | (serde_json::Value::Object(_), serde_json::Value::Object(_))
+            | (serde_json::Value::Null, serde_json::Value::Null)
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -38,18 +56,25 @@ pub struct EnumDict {
 /// GET /api/settings
 pub async fn list_settings(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
-) -> AppResult<Json<Vec<(String, serde_json::Value)>>> {
+    auth: AuthenticatedUser,
+) -> AppResult<Json<Vec<SettingResponse>>> {
+    auth.require_super_admin()?;
     let settings = store::admin::list_settings(&state.pool).await?;
-    Ok(Json(settings))
+    Ok(Json(
+        settings
+            .into_iter()
+            .map(|(key, value)| SettingResponse { key, value })
+            .collect(),
+    ))
 }
 
 /// GET /api/settings/:key
 pub async fn get_setting(
     State(state): State<AppState>,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
     Path(key): Path<String>,
 ) -> AppResult<Json<Option<serde_json::Value>>> {
+    auth.require_super_admin()?;
     let val = store::admin::get_setting(&state.pool, &key).await?;
     Ok(Json(val))
 }
@@ -62,6 +87,27 @@ pub async fn put_setting(
     Json(req): Json<PutSettingRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
     auth.require_super_admin()?;
+    let normalized = key.trim().to_ascii_lowercase();
+    if key.len() > 128 || key.is_empty() || normalized == "mail_code_provider" {
+        return Err(AppError::bad("该设置键无效或必须使用类型化设置接口"));
+    }
+    if ["secret", "password", "token", "api_key"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        return Err(AppError::bad("敏感值不得通过通用设置接口保存"));
+    }
+    let serialized =
+        serde_json::to_vec(&req.value).map_err(|error| AppError::Internal(error.into()))?;
+    if serialized.len() > 16 * 1024 {
+        return Err(AppError::bad("设置值超过 16 KiB 上限"));
+    }
+    let existing = store::admin::get_setting(&state.pool, &key)
+        .await?
+        .ok_or_else(|| AppError::bad("未知设置不能通过兼容接口创建"))?;
+    if !compatible_setting_value(&existing, &req.value) {
+        return Err(AppError::bad("设置值类型与现有定义不一致"));
+    }
     store::admin::put_setting(&state.pool, &key, &req.value).await?;
 
     store::admin::log(
@@ -71,7 +117,7 @@ pub async fn put_setting(
         &auth.username,
         "修改系统设置",
         &key,
-        &req.value.to_string(),
+        &format!("value_type=compatible,size_bytes={}", serialized.len()),
     )
     .await?;
 
@@ -95,4 +141,25 @@ pub async fn get_dict() -> Json<EnumDict> {
         verify_status: VerifyStatus::all_values(),
         alert_level: AlertLevel::all_values(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatibility_editor_cannot_change_json_types() {
+        assert!(compatible_setting_value(
+            &serde_json::json!(10),
+            &serde_json::json!(20)
+        ));
+        assert!(!compatible_setting_value(
+            &serde_json::json!(10),
+            &serde_json::json!("20")
+        ));
+        assert!(!compatible_setting_value(
+            &serde_json::Value::Null,
+            &serde_json::json!({})
+        ));
+    }
 }

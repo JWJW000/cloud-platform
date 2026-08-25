@@ -12,6 +12,7 @@
 pub mod browser;
 pub mod cancel;
 pub mod engine;
+pub mod mail_code;
 pub mod matching;
 pub mod real;
 pub mod simulated;
@@ -20,6 +21,7 @@ pub mod verify;
 
 pub use cancel::CancelToken;
 pub use engine::{AutomationEngine, EventSink};
+pub use mail_code::{MailCodeCursor, MailCodeError, MailCodeProvider, MailCodeResult};
 pub use matching::{select_candidate, CandidateBook, MatchBasis, MatchOutcome};
 pub use real::RealAutomationEngine;
 pub use simulated::{SimulatedEngine, SimulationScript};

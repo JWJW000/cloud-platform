@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -46,11 +44,14 @@ services:
       MASTER_FIELD_KEY: "${MASTER_FIELD_KEY:?MASTER_FIELD_KEY必须在环境变量中提供}"
       MASTER_SITE_BASE: "${MASTER_SITE_BASE:-}"
       MASTER_REQUIRE_CLIENT_CERT: "${MASTER_REQUIRE_CLIENT_CERT:-1}"
+      DRISSION_CATALOG_MANIFEST_ROOT: /app/catalog-manifests
       WEBSHARE_API_KEY: "${WEBSHARE_API_KEY:-}"
       TZ: Asia/Shanghai
     volumes:
       # 卷由容器 root 初始化；Dockerfile 已确保 /app/data 属主为 appuser
       - master_data:/app/data
+      # 可选的服务器书单目录：容器内严格只读，页面不能提交任意路径。
+      - ${CATALOG_MANIFEST_HOST_PATH:-./manifests}:/app/catalog-manifests:ro
     ports:
       # 绑定宿主机本地端口供 Nginx 反向代理
       - "127.0.0.1:8080:8080"

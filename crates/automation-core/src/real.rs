@@ -1056,6 +1056,28 @@ impl AutomationEngine for RealAutomationEngine {
             tokio::time::sleep(POLL_INTERVAL).await;
         }
 
+        // 提交前准备邮件提取游标（记录开始时间戳）
+        let mail_cursor = if let Some(provider) = &spec.mail_provider {
+            // 人工 Provider 的有效期与 Worker 创建的人工事项保持一致（10 分钟）。
+            // 自动 Provider 会在自身更短的配置时限内结束，随后由 Router 另开完整
+            // 的人工输入窗口，不会挤占用户处理验证码的时间。
+            match provider
+                .prepare(&spec.account.email, Duration::from_secs(10 * 60))
+                .await
+            {
+                Ok(cursor) => Some(cursor),
+                Err(err) => {
+                    events.log(
+                        "警告",
+                        format!("邮件验证码 Provider 准备失败（{err}），将尝试人工/降级路径"),
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         self.with_session(&session.session_id, |sess| {
             if first_page_element(&sess.page, NICKNAME_SELECTORS).is_some() {
                 fill_field(&sess.page, NICKNAME_SELECTORS, &spec.account.nickname)?;
@@ -1088,15 +1110,95 @@ impl AutomationEngine for RealAutomationEngine {
             })?;
             match verdict {
                 Some(Ok(awaiting_verification)) => {
-                    if awaiting_verification && !spec.needs_mail_code {
-                        events.log(
-                            "警告",
-                            "站点要求邮箱验证码，但本次注册未启用邮箱验证，注册无法自动完成",
-                        );
+                    if awaiting_verification {
+                        if !spec.needs_mail_code {
+                            events.log(
+                                "警告",
+                                "站点要求邮箱验证码，但本次注册未启用邮箱验证，注册无法自动完成",
+                            );
+                            return Ok(RegistrationOutcome {
+                                already_exists: false,
+                                awaiting_verification: true,
+                            });
+                        }
+
+                        // 如果配置了 mail_provider 且拥有 cursor，尝试自动取码并输入
+                        if let (Some(provider), Some(cursor)) = (&spec.mail_provider, &mail_cursor)
+                        {
+                            events.stage("自动提取验证码");
+                            events.log(
+                                "信息",
+                                format!(
+                                    "检测到验证码输入框，通过 Provider [{}] 自动获取验证码...",
+                                    provider.name()
+                                ),
+                            );
+                            match provider.await_code(cursor, &spec.cancel).await {
+                                Ok(res) => {
+                                    events.stage("提交验证码中");
+                                    events.log("信息", "已成功获取验证码，正在输入并提交验证...");
+                                    self.with_session(&session.session_id, |sess| {
+                                        fill_field(&sess.page, MAIL_CODE_SELECTORS, &res.code)?;
+                                        if let Some(btn) =
+                                            first_page_element(&sess.page, SUBMIT_SELECTORS)
+                                        {
+                                            let _ = btn.click();
+                                        }
+                                        Ok(())
+                                    })?;
+
+                                    // 等待登录成功或错误
+                                    let verify_deadline = Instant::now() + Duration::from_secs(15);
+                                    while Instant::now() < verify_deadline {
+                                        let logged_in =
+                                            self.with_session(&session.session_id, |sess| {
+                                                if let Some(message) = form_error_text(&sess.page) {
+                                                    return Err(AutomationError::new(
+                                                        classify_form_error(&message),
+                                                        format!("验证码提交后站点拒绝：{message}"),
+                                                    ));
+                                                }
+                                                Ok(first_page_element(
+                                                    &sess.page,
+                                                    LOGGED_IN_SELECTORS,
+                                                )
+                                                .is_some())
+                                            })?;
+                                        if logged_in {
+                                            events.stage("注册完成");
+                                            return Ok(RegistrationOutcome {
+                                                already_exists: false,
+                                                awaiting_verification: false,
+                                            });
+                                        }
+                                        tokio::time::sleep(POLL_INTERVAL).await;
+                                    }
+                                    return Err(AutomationError::new(
+                                        FailureClass::Retryable,
+                                        "验证码已提交，但站点未在时限内确认注册成功",
+                                    ));
+                                }
+                                Err(crate::mail_code::MailCodeError::ManualFallbackRequired) => {
+                                    events.log("警告", "自动提取邮件验证码已降级为人工处理");
+                                }
+                                Err(err) => {
+                                    events.log(
+                                        "警告",
+                                        format!("自动提取邮件验证码失败（{err}），转为待人工确认"),
+                                    );
+                                }
+                            }
+                        }
+
+                        return Ok(RegistrationOutcome {
+                            already_exists: false,
+                            awaiting_verification: true,
+                        });
                     }
+
                     return Ok(RegistrationOutcome {
                         already_exists: false,
-                        awaiting_verification,
+                        awaiting_verification: false,
                     });
                 }
                 Some(Err(message)) => {

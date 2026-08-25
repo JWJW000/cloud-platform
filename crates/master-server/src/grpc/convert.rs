@@ -217,6 +217,7 @@ pub fn assign_registration_task_message(
     stage_version: i32,
     lease_expires_at: DateTime<Utc>,
     needs_mail_code: bool,
+    mail_provider: Option<pb::MailProviderLease>,
 ) -> pb::MasterMessage {
     pb::MasterMessage::new(
         now_rfc3339(),
@@ -228,6 +229,7 @@ pub fn assign_registration_task_message(
             stage_version: stage_version.max(0) as u32,
             lease_expires_at: to_rfc3339(lease_expires_at),
             needs_mail_code,
+            mail_provider,
         }),
     )
 }

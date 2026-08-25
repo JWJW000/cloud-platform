@@ -142,7 +142,11 @@ pub struct SlotRuntime {
 }
 
 impl SlotRuntime {
-    fn shared(&self, node_id: String) -> SlotShared {
+    fn shared(
+        &self,
+        node_id: String,
+        mail_provider_state: Arc<RwLock<MailProviderState>>,
+    ) -> SlotShared {
         SlotShared {
             index: self.index,
             snapshot: self.snapshot.clone(),
@@ -150,6 +154,7 @@ impl SlotRuntime {
             end_after_task: self.end_after_task.clone(),
             paused: self.paused.clone(),
             node_id,
+            mail_provider_state,
         }
     }
 
@@ -176,6 +181,14 @@ struct SlotShared {
     paused: Arc<AtomicBool>,
     /// 本 Worker 的真实节点编号：NAS 临时文件名必须反映真实 Worker（P2）。
     node_id: String,
+    mail_provider_state: Arc<RwLock<MailProviderState>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MailProviderState {
+    pub version: u64,
+    pub name: String,
+    pub health: String,
 }
 
 impl SlotShared {
@@ -204,6 +217,7 @@ pub struct SlotManager {
     slots: Vec<Arc<SlotRuntime>>,
     /// 云端批准的槽位上限来自这里（第 7.4 节）。
     config_state: Arc<ConfigState>,
+    mail_provider_state: Arc<RwLock<MailProviderState>>,
 }
 
 impl SlotManager {
@@ -220,6 +234,7 @@ impl SlotManager {
         node_id: String,
     ) -> Self {
         let mut slots = Vec::new();
+        let mail_provider_state = Arc::new(RwLock::new(MailProviderState::default()));
         for index in 0..requested_slots {
             let (tx, rx) = mpsc::channel(32);
             let runtime = Arc::new(SlotRuntime {
@@ -241,7 +256,7 @@ impl SlotManager {
                 paused: Arc::new(AtomicBool::new(false)),
             });
 
-            let shared = runtime.shared(node_id.clone());
+            let shared = runtime.shared(node_id.clone(), mail_provider_state.clone());
             let cfg = config.clone();
             let state = config_state.clone();
             let store = outbox.clone();
@@ -256,7 +271,12 @@ impl SlotManager {
         Self {
             slots,
             config_state,
+            mail_provider_state,
         }
+    }
+
+    pub async fn mail_provider_status(&self) -> MailProviderState {
+        self.mail_provider_state.read().await.clone()
     }
 
     /// 云端批准数与本地槽位数的较小值。
@@ -1380,10 +1400,100 @@ async fn execute_registration_session(
 
     let (event_tx, mut event_rx) = mpsc::channel(32);
     let sink = automation_core::EventSink::new(event_tx);
+    // 注册取消必须在开始浏览器自动化前挂到共享现场，人工等待与 Outlook 轮询
+    // 共用同一个令牌，云端取消不会留下悬挂会话。
+    let registration_cancel = CancelToken::new();
+    *lock(&shared.current) = Some(ActiveTask {
+        session_id: session_id.clone(),
+        task_id: reg_task_id.clone(),
+        execution_id: exec_id.clone(),
+        stage_version,
+        cancel: registration_cancel.clone(),
+    });
+
+    let (manual_adapter, mut manual_requests, manual_submissions) =
+        crate::mail::manual::ManualMailCodeAdapter::channel();
+    let manual_provider: Arc<dyn automation_core::mail_code::MailCodeProvider> =
+        Arc::new(manual_adapter);
+    let mail_provider = if assign.needs_mail_code {
+        let lease = assign
+            .mail_provider
+            .clone()
+            .unwrap_or(pb::MailProviderLease {
+                version: 0,
+                provider_type: "manual".to_string(),
+                endpoint: String::new(),
+                api_key: String::new(),
+                poll_interval_secs: 5,
+                timeout_secs: 120,
+                allowed_hosts: Vec::new(),
+                allowed_senders: Vec::new(),
+            });
+        let configured_provider_type = lease.provider_type.clone();
+        let mut applied_provider_name = configured_provider_type.clone();
+        let mut provider_health = "已应用".to_string();
+        let primary: Arc<dyn automation_core::mail_code::MailCodeProvider> =
+            match configured_provider_type.as_str() {
+                "outlook_http" => {
+                    let outlook = crate::mail::outlook_http::OutlookHttpMailCodeAdapter::new(
+                        crate::mail::outlook_http::OutlookConfig {
+                            endpoint: lease.endpoint,
+                            api_key: lease.api_key,
+                            poll_interval: Duration::from_secs(
+                                lease.poll_interval_secs.clamp(1, 60) as u64,
+                            ),
+                            timeout: Duration::from_secs(lease.timeout_secs.clamp(10, 300) as u64),
+                            allowed_hosts: lease.allowed_hosts,
+                            allowed_senders: lease.allowed_senders,
+                        },
+                    );
+                    match outlook {
+                        Ok(provider) => Arc::new(provider),
+                        Err(_) => {
+                            applied_provider_name = "manual".to_string();
+                            provider_health = "Outlook 配置无效，已人工降级".to_string();
+                            manual_provider.clone()
+                        }
+                    }
+                }
+                "mock" if config.execution.simulated && cfg!(debug_assertions) => {
+                    match crate::mail::mock::MockMailCodeAdapter::new(false, "123456") {
+                        Ok(provider) => Arc::new(provider),
+                        Err(_) => manual_provider.clone(),
+                    }
+                }
+                "manual" => {
+                    provider_health = "人工模式已应用".to_string();
+                    manual_provider.clone()
+                }
+                _ => {
+                    applied_provider_name = "manual".to_string();
+                    provider_health = "Provider 类型不可用，已人工降级".to_string();
+                    manual_provider.clone()
+                }
+            };
+        {
+            let mut state = shared.mail_provider_state.write().await;
+            state.version = lease.version;
+            state.name = applied_provider_name;
+            state.health = provider_health;
+        }
+        Some(Arc::new(crate::mail::MailCodeRouter::new_attempt(
+            lease.version,
+            primary,
+            manual_provider,
+        ))
+            as Arc<dyn automation_core::mail_code::MailCodeProvider>)
+    } else {
+        None
+    };
+
     let reg_spec = automation_core::RegistrationSpec {
         execution_id: exec_id.clone(),
         account: spec.account.clone(),
         needs_mail_code: assign.needs_mail_code,
+        mail_provider,
+        cancel: registration_cancel.clone(),
     };
 
     let bus_clone = bus.clone();
@@ -1413,9 +1523,78 @@ async fn execute_registration_session(
         }
     });
 
-    let reg_result = engine
-        .register_account(&session_handle, &reg_spec, &sink)
-        .await;
+    // 一边运行浏览器注册，一边接收人工事项请求与回传验证码。这样人工降级
+    // 不会关闭浏览器，也不会另起一次注册尝试。
+    let register_future = engine.register_account(&session_handle, &reg_spec, &sink);
+    tokio::pin!(register_future);
+    let mut active_action_id: Option<String> = None;
+    let mut command_channel_open = true;
+    let reg_result = loop {
+        tokio::select! {
+            result = &mut register_future => break result,
+            request = manual_requests.recv() => {
+                let Some(request) = request else { continue; };
+                active_action_id = Some(request.action_id.clone());
+                {
+                    let mut state = shared.mail_provider_state.write().await;
+                    state.name = "manual".to_string();
+                    state.health = "自动取码不可用，已人工降级".to_string();
+                }
+                bus.send_volatile(
+                    volatile_id("reg-manual"),
+                    pb::worker_message::Payload::RegistrationTaskProgress(
+                        pb::RegistrationTaskProgress {
+                            session_id: session_id.clone(),
+                            execution_id: exec_id.clone(),
+                            registration_task_id: reg_task_id.clone(),
+                            stage_version,
+                            stage: "人工降级处理中".to_string(),
+                            percent: 50,
+                            message: "等待管理员输入邮箱验证码".to_string(),
+                            updated_at: chrono::Utc::now().to_rfc3339(),
+                        },
+                    ),
+                );
+                let expires_at = chrono::Utc::now() + chrono::Duration::minutes(10);
+                bus.send_reliable(
+                    &format!("evt-manual-{}", request.action_id),
+                    pb::worker_message::Payload::ManualActionRequired(pb::ManualActionRequired {
+                        action_id: request.action_id,
+                        task_type: "账号注册".to_string(),
+                        registration_task_id: reg_task_id.clone(),
+                        execution_id: exec_id.clone(),
+                        action_type: "邮箱验证码".to_string(),
+                        prompt: "自动取码不可用，请输入本次注册收到的 4–8 位邮箱验证码".to_string(),
+                        expires_at: expires_at.to_rfc3339(),
+                        optional_artifact_id: String::new(),
+                    }),
+                ).await;
+            }
+            command = rx.recv(), if command_channel_open => {
+                match command {
+                    Some(SlotCommand::ContinueManualAction(cont))
+                        if cont.execution_id == exec_id
+                            && active_action_id.as_deref() == Some(cont.action_id.as_str()) =>
+                    {
+                        // 验证码仅移动到当前 Adapter 的内存通道，不记录、不打印。
+                        let _ = manual_submissions.send(
+                            crate::mail::manual::ManualCodeSubmission {
+                                action_id: cont.action_id,
+                                code: cont.action_payload,
+                            },
+                        );
+                    }
+                    Some(SlotCommand::Pause) => shared.paused.store(true, Ordering::SeqCst),
+                    Some(SlotCommand::Resume) => shared.paused.store(false, Ordering::SeqCst),
+                    Some(_) => {}
+                    None => {
+                        command_channel_open = false;
+                        registration_cancel.cancel("Worker 命令通道已关闭");
+                    }
+                }
+            }
+        }
+    };
 
     let (exec_result, result_reason, already_exists, awaiting_verification) = match reg_result {
         Ok(outcome) => {
@@ -1442,6 +1621,17 @@ async fn execute_registration_session(
         }
     };
 
+    {
+        let mut state = shared.mail_provider_state.write().await;
+        state.health = if awaiting_verification {
+            "等待人工验证".to_string()
+        } else if exec_result == ExecutionResult::Success {
+            "健康".to_string()
+        } else {
+            "执行异常".to_string()
+        };
+    }
+
     let res_event_id = format!("evt-reg-res-{session_id}-{reg_task_id}");
     bus.send_reliable(
         &res_event_id,
@@ -1459,6 +1649,8 @@ async fn execute_registration_session(
         }),
     )
     .await;
+
+    *lock(&shared.current) = None;
 
     let _ = engine.close_session(&session_handle).await;
     if let Some(mut proxy) = proxy_server {
@@ -1934,7 +2126,10 @@ mod tests {
         assert!(!finishing.is_cancelled(), "这本书应当被允许下完");
         assert_eq!(
             slots.slots[1]
-                .shared("节点-测试".to_string())
+                .shared(
+                    "节点-测试".to_string(),
+                    Arc::new(RwLock::new(MailProviderState::default()))
+                )
                 .take_end_reason()
                 .as_deref(),
             Some("达到单会话上限"),
@@ -1957,7 +2152,10 @@ mod tests {
         assert!(!other.is_cancelled());
         assert_eq!(
             slots.slots[0]
-                .shared("节点-测试".to_string())
+                .shared(
+                    "节点-测试".to_string(),
+                    Arc::new(RwLock::new(MailProviderState::default()))
+                )
                 .take_end_reason(),
             None
         );
@@ -1985,7 +2183,10 @@ mod tests {
         assert!(!slots.node_paused());
         assert_eq!(
             slots.slots[0]
-                .shared("节点-测试".to_string())
+                .shared(
+                    "节点-测试".to_string(),
+                    Arc::new(RwLock::new(MailProviderState::default()))
+                )
                 .take_end_reason(),
             None,
             "恢复时必须清掉收尾原因，否则新会话一开始就想结束"

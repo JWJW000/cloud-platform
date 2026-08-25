@@ -420,6 +420,14 @@ pub struct CommitAccountsResponse {
     pub registration_batch: Option<crate::models::AccountRegistrationBatch>,
 }
 
+fn requires_registration_batch(
+    mode: AccountImportMode,
+    _legacy_client_choice: bool,
+    account_count: usize,
+) -> bool {
+    mode == AccountImportMode::PendingRegistration && account_count > 0
+}
+
 /// 账号文件预检接口。
 async fn preview_accounts(
     State(state): State<AppState>,
@@ -639,10 +647,9 @@ async fn commit_accounts(
 
     let mut created_batch = None;
 
-    if req.create_registration_batch
-        && req.mode == AccountImportMode::PendingRegistration
-        && !account_ids.is_empty()
-    {
+    // 待注册账号必须与注册任务在同一事务创建，兼容字段
+    // create_registration_batch 不再允许客户端绕过队列。
+    if requires_registration_batch(req.mode, req.create_registration_batch, account_ids.len()) {
         let batch_name = req
             .batch_name
             .unwrap_or_else(|| format!("注册批次-{}", Utc::now().format("%Y%m%d%H%M%S")));
@@ -1142,5 +1149,29 @@ mod tests {
         assert_eq!(mask_email("user@example.com"), "u***r@example.com");
         assert_eq!(mask_email("ab@domain.com"), "ab***@domain.com");
         assert_eq!(mask_email("invalid"), "invalid");
+    }
+
+    #[test]
+    fn pending_registration_cannot_bypass_the_registration_queue() {
+        assert!(requires_registration_batch(
+            AccountImportMode::PendingRegistration,
+            false,
+            1,
+        ));
+        assert!(requires_registration_batch(
+            AccountImportMode::PendingRegistration,
+            true,
+            1,
+        ));
+        assert!(!requires_registration_batch(
+            AccountImportMode::Registered,
+            true,
+            1,
+        ));
+        assert!(!requires_registration_batch(
+            AccountImportMode::PendingRegistration,
+            false,
+            0,
+        ));
     }
 }

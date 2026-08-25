@@ -329,8 +329,10 @@ export async function searchCatalog(params: {
   work_type?: string;
   language?: string;
   format?: string;
+  resolution_status?: string;
   limit?: number;
   offset?: number;
+  cursor?: string;
 }): Promise<import("./types").CatalogSearchResponse> {
   return api.get<import("./types").CatalogSearchResponse>("/api/catalog/search", params);
 }
@@ -358,6 +360,7 @@ export async function previewCatalogImport(data: {
   file_name: string;
   sheet_name?: string;
   text_content?: string;
+  server_manifest?: string;
 }): Promise<import("./types").ImportPreviewResult> {
   return api.post<import("./types").ImportPreviewResult>("/api/catalog/imports/preview", data);
 }
@@ -368,8 +371,13 @@ export async function submitCatalogImport(data: {
   file_name: string;
   sheet_name?: string;
   text_content?: string;
+  server_manifest?: string;
 }): Promise<import("./types").ImportExecutionResult> {
   return api.post<import("./types").ImportExecutionResult>("/api/catalog/imports/submit", data);
+}
+
+export async function listCatalogServerManifests(): Promise<Array<{ id: string; size_bytes: number }>> {
+  return api.get<Array<{ id: string; size_bytes: number }>>("/api/catalog/imports/manifests");
 }
 
 export async function listCatalogImportRuns(): Promise<import("./types").ImportRun[]> {
@@ -405,6 +413,7 @@ export async function listCatalogAcquisitions(params: {
   format?: string;
   limit?: number;
   offset?: number;
+  cursor?: string;
 }): Promise<import("./types").CatalogSearchResponse> {
   return api.get<import("./types").CatalogSearchResponse>("/api/catalog/acquisitions", params);
 }
@@ -421,3 +430,39 @@ export async function mergeCatalogWorks(source_work_id: string, target_work_id: 
   return api.post<{ success: boolean }>("/api/catalog/resolutions/merge", { source_work_id, target_work_id });
 }
 
+export interface MergeImpactItem {
+  work_id: string;
+  title: string;
+  editions: number;
+  source_records: number;
+  holdings: number;
+}
+
+export async function previewCatalogWorksMerge(
+  source_work_id: string,
+  target_work_id: string,
+): Promise<{ source: MergeImpactItem; target: MergeImpactItem }> {
+  return api.get("/api/catalog/resolutions/merge-preview", { source_work_id, target_work_id });
+}
+
+// ---------------------------------------------------------------- 邮件验证码 Provider 接口
+
+export async function getMailProviderConfig(): Promise<import("./types").MailProviderConfig | null> {
+  return api.get<import("./types").MailProviderConfig | null>("/api/settings/mail-provider");
+}
+
+export async function getMailProviderStatus(): Promise<import("./types").MailProviderStatus | null> {
+  return api.get<import("./types").MailProviderStatus | null>("/api/mail-provider/status");
+}
+
+export async function updateMailProviderConfig(
+  data: import("./types").UpdateMailProviderPayload
+): Promise<import("./types").MailProviderConfig> {
+  return api.put<import("./types").MailProviderConfig>("/api/settings/mail-provider", data);
+}
+
+export async function testMailProvider(
+  data: import("./types").TestMailProviderPayload
+): Promise<import("./types").TestMailProviderResult> {
+  return api.post<import("./types").TestMailProviderResult>("/api/settings/mail-provider/test", data);
+}

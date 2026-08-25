@@ -14,6 +14,7 @@ pub mod events;
 pub mod health;
 pub mod imports;
 pub mod logs;
+pub mod mail_provider;
 pub mod manual_actions;
 pub mod overview;
 pub mod proxies;
@@ -237,6 +238,10 @@ pub fn router(state: AppState) -> Router {
             post(catalog_v1::preview_import_handler),
         )
         .route(
+            "/api/catalog/imports/manifests",
+            get(catalog_v1::list_server_manifests_handler),
+        )
+        .route(
             "/api/catalog/imports/submit",
             post(catalog_v1::submit_import_handler),
         )
@@ -283,6 +288,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/catalog/resolutions/merge",
             post(catalog_v1::merge_works_handler),
+        )
+        .route(
+            "/api/catalog/resolutions/merge-preview",
+            get(catalog_v1::merge_preview_handler),
         )
         .route(
             "/api/catalog/outbox/process",
@@ -362,6 +371,20 @@ pub fn router(state: AppState) -> Router {
         .route("/api/logs", get(logs::list_logs))
         .route("/api/alerts", get(logs::list_alerts))
         .route("/api/alerts/:id/resolve", post(logs::resolve_alert))
+        // 邮件验证码 Provider 设置
+        .route(
+            "/api/settings/mail-provider",
+            get(mail_provider::get_mail_provider_config)
+                .put(mail_provider::update_mail_provider_config),
+        )
+        .route(
+            "/api/settings/mail-provider/test",
+            post(mail_provider::test_mail_provider),
+        )
+        .route(
+            "/api/mail-provider/status",
+            get(mail_provider::get_mail_provider_status),
+        )
         // 系统设置与字典
         .route("/api/settings", get(settings::list_settings))
         .route(

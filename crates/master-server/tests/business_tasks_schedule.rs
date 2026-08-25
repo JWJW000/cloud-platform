@@ -8,8 +8,8 @@ use master_server::scheduler::submit::{submit_registration_result, RegistrationR
 use master_server::state::AppState;
 use master_server::store;
 use platform_domain::{
-    AccountRegistrationTaskStatus, AccountStatus, BatchStatus, ExecutionResult, ProxyStatus,
-    TaskType, WorkerStatus,
+    AccountRegistrationTaskStatus, AccountStatus, BatchStatus, ExecutionResult, ManualActionType,
+    ProxyStatus, TaskType, WorkerStatus,
 };
 use uuid::Uuid;
 
@@ -331,6 +331,41 @@ async fn 账号注册批次任务分配与事务原子状态更新() {
     .await
     .unwrap();
     drop(conn);
+
+    // 同一注册任务的验证码事项必须幂等：新 Worker action_id 替换旧事项，
+    // 数据库始终只有一条待处理记录；验证码提交也绝不持久化。
+    let old_action_id = Uuid::new_v4();
+    let current_action_id = Uuid::new_v4();
+    for action_id in [old_action_id, current_action_id] {
+        store::manual_action::create_action(
+            &db.pool,
+            &store::manual_action::NewManualAction {
+                id: action_id,
+                task_type: TaskType::AccountRegister,
+                registration_task_id: Some(reg_task_id),
+                book_task_id: None,
+                execution_id: Some(exec_id),
+                node_id: Some(node.id),
+                session_id: Some(grant.session_id),
+                action_type: ManualActionType::MailCode,
+                prompt: "请输入验证码".to_string(),
+                artifact_url: None,
+                expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let pending_actions = store::manual_action::list_actions(&db.pool, Some("待处理"), 10)
+        .await
+        .unwrap();
+    assert_eq!(pending_actions.len(), 1);
+    assert_eq!(pending_actions[0].id, current_action_id);
+    let resolved =
+        store::manual_action::resolve_action(&db.pool, current_action_id, Some("654321"), None)
+            .await
+            .unwrap();
+    assert!(resolved.input_code.is_none(), "验证码不得持久化到数据库");
 
     let report = RegistrationResultReport {
         session_id: grant.session_id,

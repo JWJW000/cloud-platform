@@ -36,6 +36,7 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
         sheet_name: None,
         content: None,
         text_content: Some(csv_content.to_string()),
+        server_manifest: None,
     };
 
     let preview = preview_import(&db.pool, &preview_req).await.unwrap();
@@ -50,6 +51,7 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
         file_name: "cn_books_01.csv".to_string(),
         sheet_name: None,
         text_content: Some(csv_content.to_string()),
+        server_manifest: None,
     };
 
     let import_res = execute_import(&db.pool, &start_req).await.unwrap();
@@ -85,6 +87,42 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
     assert_eq!(search_res.items.len(), 2);
     let first = &search_res.items[0];
     assert!(first.title.contains("算法导论"));
+
+    // 5.1 键集游标必须能稳定前进和返回，不依赖深 offset。
+    let cursor_page_1 = search_catalog(
+        &db.pool,
+        &CatalogSearchParams {
+            limit: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cursor_page_1.items.len(), 1);
+    let cursor_page_2 = search_catalog(
+        &db.pool,
+        &CatalogSearchParams {
+            limit: Some(1),
+            cursor: cursor_page_1.next_cursor.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cursor_page_2.items.len(), 1);
+    assert_ne!(cursor_page_2.items[0].id, cursor_page_1.items[0].id);
+    assert!(cursor_page_2.previous_cursor.is_some());
+    let returned_page = search_catalog(
+        &db.pool,
+        &CatalogSearchParams {
+            limit: Some(1),
+            cursor: cursor_page_2.previous_cursor,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(returned_page.items[0].id, cursor_page_1.items[0].id);
 
     // 6. 详情下钻验证
     let detail = get_catalog_edition_detail(&db.pool, first.id)
@@ -122,6 +160,7 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
         file_name: "acq_test.csv".to_string(),
         sheet_name: None,
         text_content: Some(csv_content.to_string()),
+        server_manifest: None,
     };
     execute_import(&db.pool, &start_req).await.unwrap();
 

@@ -381,6 +381,12 @@ pub struct HeartbeatMetrics {
     pub agent_version: String,
     /// 已应用的配置版本。
     pub applied_config_version: String,
+    /// 最近一次注册任务应用的邮件 Provider 版本与健康摘要。
+    pub applied_mail_provider_version: i64,
+    /// 最近一次注册任务使用的 Provider 名称。
+    pub mail_provider_name: String,
+    /// Worker 上报的 Provider 脱敏健康摘要。
+    pub mail_provider_health: String,
     /// Worker 自评状态；`None` 表示这次心跳不改状态
     /// （没上报、上报了非法值，或该值无权自评——判定见
     /// [`platform_domain::adopt_reported_worker_status`]）。
@@ -410,10 +416,13 @@ pub async fn apply_heartbeat(
              memory_used_mb = $6, memory_total_mb = $7, \
              agent_version = COALESCE(NULLIF($8, ''), agent_version), \
              applied_config_version = COALESCE(NULLIF($9, ''), applied_config_version), \
+             applied_mail_provider_version = CASE WHEN $10 > 0 THEN $10 ELSE applied_mail_provider_version END, \
+             mail_provider_name = COALESCE(NULLIF($11, ''), mail_provider_name), \
+             mail_provider_health = COALESCE(NULLIF($12, ''), mail_provider_health), \
              status = CASE \
-                 WHEN $10::text = '' THEN status \
-                 WHEN status IN ($11, $12, $13, $14) THEN status \
-                 ELSE $10::text END, \
+                 WHEN $13::text = '' THEN status \
+                 WHEN status IN ($14, $15, $16, $17) THEN status \
+                 ELSE $13::text END, \
              connected = TRUE, last_heartbeat_at = now(), updated_at = now() \
          WHERE id = $1 \
          RETURNING status",
@@ -427,6 +436,9 @@ pub async fn apply_heartbeat(
     .bind(metrics.memory_total_mb)
     .bind(&metrics.agent_version)
     .bind(&metrics.applied_config_version)
+    .bind(metrics.applied_mail_provider_version)
+    .bind(&metrics.mail_provider_name)
+    .bind(&metrics.mail_provider_health)
     .bind(metrics.reported_status.map(|s| s.as_str()).unwrap_or(""))
     .bind(WorkerStatus::PendingApproval.as_str())
     .bind(WorkerStatus::Maintenance.as_str())

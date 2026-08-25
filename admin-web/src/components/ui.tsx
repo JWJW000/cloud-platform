@@ -1,6 +1,12 @@
 // 轻量 UI 基元（shadcn-admin 视觉风格：圆角、弱边框、明确状态色）。
 import { clsx } from "clsx";
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import type {
+  ButtonHTMLAttributes,
+  HTMLAttributes,
+  InputHTMLAttributes,
+  ReactNode,
+  SelectHTMLAttributes,
+} from "react";
 
 // ---------------------------------------------------------------- Button
 
@@ -44,9 +50,16 @@ export function Button({
 
 // ---------------------------------------------------------------- Card
 
-export function Card({ children, className }: { children: ReactNode; className?: string }) {
+export function Card({
+  children,
+  className,
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & { children: ReactNode }) {
   return (
-    <div className={clsx("rounded-xl border border-slate-200 bg-white shadow-sm", className)}>
+    <div
+      className={clsx("rounded-xl border border-slate-200 bg-white shadow-sm", className)}
+      {...rest}
+    >
       {children}
     </div>
   );
@@ -74,13 +87,30 @@ export function CardHeader({
 
 // ---------------------------------------------------------------- Badge
 
-export function Badge({ children, className }: { children: ReactNode; className?: string }) {
+type BadgeVariant = "neutral" | "success" | "warning" | "danger" | "info";
+
+const badgeVariants: Record<BadgeVariant, string> = {
+  neutral: "bg-slate-100 text-slate-700",
+  success: "bg-green-100 text-green-700",
+  warning: "bg-amber-100 text-amber-700",
+  danger: "bg-red-100 text-red-700",
+  info: "bg-blue-100 text-blue-700",
+};
+
+export function Badge({
+  children,
+  className,
+  variant = "neutral",
+  ...rest
+}: HTMLAttributes<HTMLSpanElement> & { children: ReactNode; variant?: BadgeVariant }) {
   return (
     <span
       className={clsx(
         "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+        badgeVariants[variant],
         className,
       )}
+      {...rest}
     >
       {children}
     </span>
@@ -128,9 +158,16 @@ export function Table({
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-50">{children}</tbody>
+        <tbody className="divide-y divide-slate-50">
+          {children}
+          {empty &&
+            (typeof empty === "string" ? (
+              <EmptyRow colSpan={headers.length} text={empty} />
+            ) : (
+              empty
+            ))}
+        </tbody>
       </table>
-      {empty}
     </div>
   );
 }

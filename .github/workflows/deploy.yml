@@ -71,6 +71,10 @@ jobs:
             echo "==> 进入部署目录: ${APP_DIR}"
             cd "${APP_DIR}"
 
+            echo "==> 部署前备份数据库..."
+            chmod +x deploy/manage.sh
+            ./deploy/manage.sh backup
+
             echo "==> 同步最新代码与配置..."
             if [ -d ".git" ]; then
               git fetch origin
@@ -81,7 +85,6 @@ jobs:
             docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull master
 
             echo "==> 启动/更新服务..."
-            chmod +x deploy/manage.sh
             ./deploy/manage.sh start
 
             echo "==> 验证容器健康状态..."

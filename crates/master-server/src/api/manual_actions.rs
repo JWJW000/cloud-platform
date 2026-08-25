@@ -66,30 +66,30 @@ async fn resolve_action(
 ) -> AppResult<Json<ManualAction>> {
     auth.require_write()?;
 
-    if req.input_code.trim().is_empty() {
-        return Err(AppError::bad("验证码或确认内容不能为空"));
+    let code = req.input_code.trim();
+    if !(4..=8).contains(&code.len()) || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(AppError::bad("邮箱验证码必须是 4–8 位数字"));
     }
 
-    let action = store::manual_action::resolve_action(
-        &state.pool,
-        id,
-        Some(req.input_code.trim()),
-        Some(auth.id),
-    )
-    .await?;
-
-    // 如果关联的 Worker 节点在线，下发 ContinueManualAction 消息
-    if let (Some(node_id), Some(exec_id)) = (action.node_id, action.execution_id) {
-        if state.links.is_online(node_id) {
-            let msg = convert::continue_manual_action_message(
-                action.id,
-                exec_id,
-                &action.action_type,
-                req.input_code.trim(),
-            );
-            state.links.try_dispatch(node_id, msg);
-        }
+    let pending = store::manual_action::get_action(&state.pool, id).await?;
+    let (Some(node_id), Some(exec_id)) = (pending.node_id, pending.execution_id) else {
+        return Err(AppError::conflict("事项没有可继续的 Worker 执行现场"));
+    };
+    if !state.links.is_online(node_id) {
+        return Err(AppError::conflict(
+            "原 Worker 已离线，验证码未消费，请稍后重试",
+        ));
     }
+    let msg =
+        convert::continue_manual_action_message(pending.id, exec_id, &pending.action_type, code);
+    if !state.links.try_dispatch(node_id, msg) {
+        return Err(AppError::conflict(
+            "Worker 下行通道繁忙，验证码未消费，请重试",
+        ));
+    }
+
+    // 下发成功后才标记已解决，且验证码字段始终写 NULL。
+    let action = store::manual_action::resolve_action(&state.pool, id, None, Some(auth.id)).await?;
 
     state.events.publish(
         "人工确认变更",

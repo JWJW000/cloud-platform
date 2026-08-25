@@ -54,10 +54,11 @@ sqlx = { version = "0.8", default-features = false, features = [
     "uuid",
     "json",
     "migrate",
-    # `macros` 只为 `FromRow` 派生与 `migrate!` 而启用；本项目**不使用** `query!` 系列宏，
-    # 因此 `cargo build` 始终不需要一个可连的 DATABASE_URL（见 store/mod.rs 的说明）。
-    "macros",
+    # 只启用 `FromRow` 派生；`migrate` feature 会单独提供 `migrate!`。
+    # 不启用完整 `macros`，避免把未使用的在线查询展开器编进构建链。
+    "derive",
 ] }
+sqlx-macros = { version = "0.8", default-features = false, features = ["migrate"] }
 
 argon2 = "0.5"
 jsonwebtoken = "9"

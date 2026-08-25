@@ -31,7 +31,7 @@ describe("图书馆总库页面渲染与交互测试", () => {
 
     render(
       <ToastProvider>
-        <MemoryRouter>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <CatalogOverviewPage />
         </MemoryRouter>
       </ToastProvider>
@@ -73,7 +73,7 @@ describe("图书馆总库页面渲染与交互测试", () => {
 
     render(
       <ToastProvider>
-        <MemoryRouter>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <CatalogSearchPage />
         </MemoryRouter>
       </ToastProvider>

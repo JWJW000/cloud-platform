@@ -15,6 +15,8 @@ const ACTION_COLUMNS: &str = "id, task_type, registration_task_id, book_task_id,
 /// 新建待确认事项。
 #[derive(Debug, Clone)]
 pub struct NewManualAction {
+    /// Worker 生成的幂等编号；Master 回传时必须保持一致。
+    pub id: Uuid,
     /// 任务类型。
     pub task_type: TaskType,
     /// 注册任务编号。
@@ -42,15 +44,19 @@ pub async fn create_action(
     executor: impl PgExecutor<'_>,
     new: &NewManualAction,
 ) -> AppResult<ManualAction> {
-    let id = Uuid::new_v4();
     let action = sqlx::query_as::<_, ManualAction>(&format!(
         "INSERT INTO manual_actions \
              (id, task_type, registration_task_id, book_task_id, execution_id, node_id, \
               session_id, action_type, prompt, status, artifact_url, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         ON CONFLICT (registration_task_id, action_type) \
+             WHERE status = '待处理' AND registration_task_id IS NOT NULL AND action_type = '邮箱验证码' \
+         DO UPDATE SET id = EXCLUDED.id, execution_id = EXCLUDED.execution_id, \
+             node_id = EXCLUDED.node_id, session_id = EXCLUDED.session_id, \
+             prompt = EXCLUDED.prompt, expires_at = EXCLUDED.expires_at, updated_at = now() \
          RETURNING {ACTION_COLUMNS}"
     ))
-    .bind(id)
+    .bind(new.id)
     .bind(new.task_type.as_str())
     .bind(new.registration_task_id)
     .bind(new.book_task_id)
@@ -101,7 +107,7 @@ pub async fn list_actions(
 pub async fn resolve_action(
     executor: impl PgExecutor<'_>,
     id: Uuid,
-    input_code: Option<&str>,
+    _input_code: Option<&str>,
     user_id: Option<Uuid>,
 ) -> AppResult<ManualAction> {
     let action = sqlx::query_as::<_, ManualAction>(&format!(
@@ -112,7 +118,8 @@ pub async fn resolve_action(
     ))
     .bind(id)
     .bind(ManualActionStatus::Resolved.as_str())
-    .bind(input_code)
+    // 验证码只用于本次 Master → Worker 转发，禁止写入数据库。
+    .bind(Option::<&str>::None)
     .bind(user_id)
     .bind(ManualActionStatus::Pending.as_str())
     .fetch_optional(executor)

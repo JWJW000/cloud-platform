@@ -502,6 +502,18 @@ pub struct EditionSearchItem {
     pub holding_formats: Vec<String>,
     /// 获取状态。
     pub acquisition_status: String,
+    /// 当前 Worker 与执行阶段（仅获取任务页使用）。
+    pub worker_name: Option<String>,
+    /// 当前获取任务的技术阶段。
+    pub acquisition_stage: String,
+    /// 尝试/重试现场。
+    pub attempts: i32,
+    /// 最大尝试次数。
+    pub max_attempts: i32,
+    /// 下一次允许重试的时间。
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    /// 最近一次失败的脱敏摘要。
+    pub last_error: Option<String>,
     /// 消歧状态。
     pub resolution_status: String,
     /// 更新时间。
@@ -860,37 +872,63 @@ pub async fn search_editions(
     work_type: Option<&str>,
     language: Option<&str>,
     format: Option<&str>,
+    resolution_status: Option<&str>,
     limit: i64,
-    offset: i64,
-) -> AppResult<Vec<EditionSearchItem>> {
+    cursor_updated_at: Option<DateTime<Utc>>,
+    cursor_id: Option<Uuid>,
+    forward: bool,
+) -> AppResult<(Vec<EditionSearchItem>, bool)> {
     let kw_like = keyword.map(|k| format!("%{}%", k.trim().to_lowercase()));
     let fmt_like = format.map(|f| format!("%{}%", f.trim().to_lowercase()));
 
-    let rows: Vec<(Uuid, Uuid, String, String, Option<String>, Option<i32>, String, String, String, DateTime<Utc>)> = sqlx::query_as(
+    let fetch_limit = limit.clamp(1, 100) + 1;
+    let mut rows: Vec<(Uuid, Uuid, String, String, Option<String>, Option<i32>, String, String, String, DateTime<Utc>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
         "SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publish_year, e.language, \
-                coalesce(at.status, '待下载') as acq_status, w.resolution_status, e.updated_at \
+                coalesce(at.status, '待下载') as acq_status, w.resolution_status, e.updated_at, \
+                wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
          FROM editions e \
          JOIN works w ON w.id = e.work_id \
          LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
+         LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
+         LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
          WHERE ($1::text IS NULL OR e.edition_title ILIKE $1 OR w.preferred_title ILIKE $1 OR e.publisher ILIKE $1 \
                 OR EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.raw_value ILIKE $1) \
                 OR EXISTS (SELECT 1 FROM edition_contributors ec JOIN contributors c ON c.id = ec.contributor_id WHERE ec.edition_id = e.id AND c.name ILIKE $1)) \
-           AND ($2::text IS NULL OR coalesce(at.status, '待下载') = $2) \
+           AND ($2::text IS NULL \
+                OR ($2 = '__actionable__' AND coalesce(at.status, '待下载') NOT IN ('已下载', '已完成', '已取消')) \
+                OR coalesce(at.status, '待下载') = $2) \
            AND ($3::text IS NULL OR w.work_type = $3) \
            AND ($4::text IS NULL OR e.language = $4) \
            AND ($5::text IS NULL OR e.format_summary ILIKE $5) \
-         ORDER BY e.updated_at DESC, e.id DESC \
-         LIMIT $6 OFFSET $7"
+           AND ($6::text IS NULL OR w.resolution_status = $6) \
+           AND ($7::timestamptz IS NULL OR \
+                ($9::bool AND (e.updated_at, e.id) < ($7, $8)) OR \
+                (NOT $9::bool AND (e.updated_at, e.id) > ($7, $8))) \
+         ORDER BY \
+           CASE WHEN $9::bool THEN e.updated_at END DESC, \
+           CASE WHEN $9::bool THEN e.id END DESC, \
+           CASE WHEN NOT $9::bool THEN e.updated_at END ASC, \
+           CASE WHEN NOT $9::bool THEN e.id END ASC \
+         LIMIT $10"
     )
     .bind(kw_like)
     .bind(acquisition_status)
     .bind(work_type)
     .bind(language)
     .bind(fmt_like)
-    .bind(limit.clamp(1, 100))
-    .bind(offset.max(0))
+    .bind(resolution_status)
+    .bind(cursor_updated_at)
+    .bind(cursor_id)
+    .bind(forward)
+    .bind(fetch_limit)
     .fetch_all(pool)
     .await?;
+
+    let has_more = rows.len() as i64 > limit.clamp(1, 100);
+    rows.truncate(limit.clamp(1, 100) as usize);
+    if !forward {
+        rows.reverse();
+    }
 
     let mut items = Vec::with_capacity(rows.len());
     for (
@@ -904,6 +942,12 @@ pub async fn search_editions(
         acq_status,
         res_status,
         updated_at,
+        worker_name,
+        acquisition_stage,
+        attempts,
+        max_attempts,
+        next_attempt_at,
+        last_error,
     ) in rows
     {
         let authors: Vec<String> = sqlx::query_scalar(
@@ -955,12 +999,18 @@ pub async fn search_editions(
             source_formats,
             holding_formats,
             acquisition_status: acq_status,
+            worker_name,
+            acquisition_stage: acquisition_stage.unwrap_or_default(),
+            attempts: attempts.unwrap_or(0),
+            max_attempts: max_attempts.unwrap_or(5),
+            next_attempt_at,
+            last_error,
             resolution_status: res_status,
             updated_at,
         });
     }
 
-    Ok(items)
+    Ok((items, has_more))
 }
 
 /// 查询版本完整详情聚合。

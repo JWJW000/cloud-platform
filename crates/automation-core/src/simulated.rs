@@ -308,9 +308,24 @@ impl AutomationEngine for SimulatedEngine {
         tokio::time::sleep(self.script.step_delay).await;
         // 约定：邮箱含 "exists" 的账号模拟「站点已存在该邮箱」
         let already_exists = spec.account.email.contains("exists");
+        let awaiting_verification = if spec.needs_mail_code && !already_exists {
+            if let Some(provider) = &spec.mail_provider {
+                match provider
+                    .prepare(&spec.account.email, Duration::from_secs(5))
+                    .await
+                {
+                    Ok(cursor) => provider.await_code(&cursor, &spec.cancel).await.is_err(),
+                    Err(_) => true,
+                }
+            } else {
+                true
+            }
+        } else {
+            false
+        };
         Ok(RegistrationOutcome {
             already_exists,
-            awaiting_verification: spec.needs_mail_code && !already_exists,
+            awaiting_verification,
         })
     }
 
@@ -335,7 +350,12 @@ impl AutomationEngine for SimulatedEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail_code::{MailCodeCursor, MailCodeError, MailCodeProvider, MailCodeResult};
     use crate::types::{AccountCredential, BookTarget};
+    use async_trait::async_trait;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::time::SystemTime;
 
     fn session_spec(root: &std::path::Path) -> SessionSpec {
         SessionSpec {
@@ -557,5 +577,69 @@ mod tests {
         assert!(spec.profile_dir.exists());
         engine.close_session(&session).await.unwrap();
         assert!(!spec.profile_dir.exists());
+    }
+
+    struct SuccessfulMailProvider;
+
+    #[async_trait]
+    impl MailCodeProvider for SuccessfulMailProvider {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        async fn prepare(
+            &self,
+            email: &str,
+            timeout: Duration,
+        ) -> Result<MailCodeCursor, MailCodeError> {
+            let now = std::time::Instant::now();
+            Ok(MailCodeCursor {
+                email: email.to_string(),
+                start_time: now,
+                started_at: SystemTime::now(),
+                deadline: now + timeout,
+                provider_version: 1,
+                prepared_by: self.name(),
+                baseline_codes: HashSet::new(),
+            })
+        }
+
+        async fn await_code(
+            &self,
+            _cursor: &MailCodeCursor,
+            _cancel: &CancelToken,
+        ) -> Result<MailCodeResult, MailCodeError> {
+            Ok(MailCodeResult {
+                code: "123456".to_string(),
+            })
+        }
+
+        async fn health(&self) -> Result<(), MailCodeError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn registration_calls_mail_provider_and_finishes_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = SimulatedEngine::with_defaults();
+        let session_specification = session_spec(dir.path());
+        let session = engine.open_session(&session_specification).await.unwrap();
+        let outcome = engine
+            .register_account(
+                &session,
+                &RegistrationSpec {
+                    execution_id: "exec-registration".to_string(),
+                    account: session_specification.account,
+                    needs_mail_code: true,
+                    mail_provider: Some(Arc::new(SuccessfulMailProvider)),
+                    cancel: CancelToken::new(),
+                },
+                &EventSink::discarding(),
+            )
+            .await
+            .unwrap();
+        assert!(!outcome.awaiting_verification);
+        assert!(!outcome.already_exists);
     }
 }

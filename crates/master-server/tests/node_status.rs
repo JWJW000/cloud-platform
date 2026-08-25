@@ -50,6 +50,9 @@ fn 心跳(reported: Option<WorkerStatus>) -> HeartbeatMetrics {
         memory_total_mb: 16384,
         agent_version: String::new(),
         applied_config_version: String::new(),
+        applied_mail_provider_version: 0,
+        mail_provider_name: String::new(),
+        mail_provider_health: String::new(),
         reported_status: reported,
     }
 }

@@ -38,7 +38,7 @@ describe("批次操作接口映射", () => {
       });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <ToastProvider>
             <BatchesPage />
@@ -100,7 +100,7 @@ describe("批次页操作按钮可见性", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
           <ToastProvider>
             <BatchesPage />

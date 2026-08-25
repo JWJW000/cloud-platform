@@ -124,7 +124,7 @@ pub struct DownloadOutcome {
 }
 
 /// 账号注册规格。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RegistrationSpec {
     /// 执行编号。
     pub execution_id: String,
@@ -132,6 +132,25 @@ pub struct RegistrationSpec {
     pub account: AccountCredential,
     /// 是否需要邮箱验证码。
     pub needs_mail_code: bool,
+    /// 邮件验证码 Provider（可选，用于自动提取邮件验证码）。
+    pub mail_provider: Option<std::sync::Arc<dyn crate::mail_code::MailCodeProvider>>,
+    /// 注册任务取消令牌；自动取码与人工等待必须共享它。
+    pub cancel: crate::cancel::CancelToken,
+}
+
+impl std::fmt::Debug for RegistrationSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistrationSpec")
+            .field("execution_id", &self.execution_id)
+            .field("account", &self.account)
+            .field("needs_mail_code", &self.needs_mail_code)
+            .field(
+                "mail_provider",
+                &self.mail_provider.as_ref().map(|p| p.name()),
+            )
+            .field("cancelled", &self.cancel.is_cancelled())
+            .finish()
+    }
 }
 
 /// 注册结果。

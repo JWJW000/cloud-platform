@@ -372,6 +372,7 @@ impl Connection<'_> {
             };
         }
         let snapshot = self.config_state.snapshot();
+        let mail_provider = self.slots.mail_provider_status().await;
         let available = self.slots.available_slots().await;
         let status = self.self_assessed_status(&health, available).await;
 
@@ -389,6 +390,15 @@ impl Connection<'_> {
             // V4-04：心跳上报合并后的现场（SQLite + 内存），不能只报内存任务
             active_executions: self.merged_active_executions().await,
             applied_config_version: snapshot.config_version.clone(),
+            // 邮件 Provider 按注册任务租约固定版本，不作为普通节点配置持久化。
+            // 具体版本和健康阶段通过注册任务进度上报；空闲心跳不携带敏感配置。
+            applied_mail_provider_version: mail_provider.version,
+            mail_provider_name: mail_provider.name,
+            mail_provider_health: if mail_provider.health.is_empty() {
+                "未执行注册任务".to_string()
+            } else {
+                mail_provider.health
+            },
         };
 
         if stream_tx

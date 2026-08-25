@@ -41,6 +41,7 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 rcgen = { workspace = true }
 reqwest = { workspace = true }
+regex = { workspace = true }
 httparse = { workspace = true }
 libc = { workspace = true }
 x509-parser = { workspace = true }

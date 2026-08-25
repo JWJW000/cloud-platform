@@ -15,7 +15,7 @@ export function CatalogAcquisitionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get("query") || "";
   const acquisition_status = searchParams.get("status") || "";
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  const cursor = searchParams.get("cursor") || "";
   const limit = 20;
 
   const [inputQuery, setInputQuery] = useState(query);
@@ -32,7 +32,7 @@ export function CatalogAcquisitionsPage() {
         query: query || undefined,
         acquisition_status: acquisition_status || undefined,
         limit,
-        offset,
+        cursor: cursor || undefined,
       });
       setData(res);
     } catch (err: any) {
@@ -44,7 +44,7 @@ export function CatalogAcquisitionsPage() {
 
   useEffect(() => {
     fetchResults();
-  }, [query, acquisition_status, offset]);
+  }, [query, acquisition_status, cursor]);
 
   const updateParam = (key: string, value: string | null) => {
     const next = new URLSearchParams(searchParams);
@@ -53,7 +53,16 @@ export function CatalogAcquisitionsPage() {
     } else {
       next.delete(key);
     }
-    next.set("offset", "0");
+    next.delete("offset");
+    next.delete("cursor");
+    setSearchParams(next);
+  };
+
+  const moveToCursor = (value: string | null | undefined) => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("offset");
+    if (value) next.set("cursor", value);
+    else next.delete("cursor");
     setSearchParams(next);
   };
 
@@ -71,9 +80,6 @@ export function CatalogAcquisitionsPage() {
       toastError(err.message || "重试失败");
     }
   };
-
-  const totalPages = data ? Math.ceil(data.total / limit) : 0;
-  const currentPage = Math.floor(offset / limit) + 1;
 
   return (
     <div className="space-y-6">
@@ -116,12 +122,12 @@ export function CatalogAcquisitionsPage() {
         <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-100 mt-3">
           <span className="text-xs text-slate-400 mr-1">快捷状态：</span>
           {[
-            { label: "全部", val: "" },
+            { label: "默认可行动", val: "" },
             { label: "待下载", val: "待下载" },
             { label: "正在下载/校验", val: "下载中" },
             { label: "暂时失败", val: "暂时失败" },
             { label: "待人工确认", val: "人工确认" },
-            { label: "已下载", val: "已下载" },
+            { label: "已完成历史", val: "已下载" },
           ].map((item) => (
             <button
               key={item.val}
@@ -161,9 +167,9 @@ export function CatalogAcquisitionsPage() {
               <thead className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500 uppercase">
                 <tr>
                   <th className="py-3 px-4">书名 / 版本</th>
-                  <th className="py-3 px-4">责任者</th>
-                  <th className="py-3 px-4">出版社 / 年份</th>
-                  <th className="py-3 px-4">来源格式</th>
+                  <th className="py-3 px-4">Worker</th>
+                  <th className="py-3 px-4">执行阶段</th>
+                  <th className="py-3 px-4">尝试 / 重试</th>
                   <th className="py-3 px-4">获取状态</th>
                   <th className="py-3 px-4 text-right">操作</th>
                 </tr>
@@ -173,7 +179,7 @@ export function CatalogAcquisitionsPage() {
                   <tr key={item.id} className="hover:bg-slate-50/50">
                     <td className="py-3 px-4">
                       <Link
-                        to={`/catalog/editions/${item.id}`}
+                        to={`/library/editions/${item.id}`}
                         className="font-bold text-slate-900 hover:text-blue-600"
                       >
                         {item.title}
@@ -185,19 +191,25 @@ export function CatalogAcquisitionsPage() {
                       )}
                     </td>
                     <td className="py-3 px-4 text-slate-600 text-xs">
-                      {item.authors.length > 0 ? item.authors.join(", ") : "未提供"}
+                      {item.worker_name || "等待分配"}
                     </td>
                     <td className="py-3 px-4 text-slate-600 text-xs">
-                      {item.publisher || "未知"} {item.publish_year ? `(${item.publish_year})` : ""}
+                      {item.acquisition_stage || item.acquisition_status}
                     </td>
                     <td className="py-3 px-4">
-                      <div className="flex gap-1">
-                        {item.source_formats.map((f, i) => (
-                          <span key={i} className="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded font-mono text-[11px]">
-                            {f}
-                          </span>
-                        ))}
+                      <div className="text-xs text-slate-600">
+                        {item.attempts ?? 0}/{item.max_attempts ?? 5} 次
                       </div>
+                      {item.next_attempt_at && item.acquisition_status === "暂时失败" && (
+                        <div className="mt-0.5 text-[11px] text-amber-700">
+                          {new Date(item.next_attempt_at).toLocaleString()} 后重试
+                        </div>
+                      )}
+                      {item.last_error && (
+                        <div className="mt-0.5 max-w-52 truncate text-[11px] text-rose-600" title={item.last_error}>
+                          {item.last_error}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-4">
                       <span
@@ -222,7 +234,7 @@ export function CatalogAcquisitionsPage() {
                           </Button>
                         )}
                         <Link
-                          to={`/catalog/editions/${item.id}`}
+                          to={`/library/editions/${item.id}`}
                           className="text-xs text-blue-600 hover:text-blue-800 font-medium"
                         >
                           详情
@@ -237,25 +249,25 @@ export function CatalogAcquisitionsPage() {
         )}
 
         {/* 分页 */}
-        {data && data.total > limit && (
+        {data && (data.previous_cursor || data.next_cursor) && (
           <div className="p-4 border-t border-slate-200 flex items-center justify-between">
             <Button
               variant="secondary"
               size="sm"
-              disabled={offset === 0}
-              onClick={() => updateParam("offset", String(Math.max(0, offset - limit)))}
+              disabled={!data.previous_cursor}
+              onClick={() => moveToCursor(data.previous_cursor)}
             >
               <ChevronLeft className="h-4 w-4 mr-1" />
               上一页
             </Button>
             <span className="text-xs text-slate-500">
-              第 {currentPage} / {totalPages} 页 (共 {data.total} 条)
+              键集游标分页 · 共 {data.total} 条
             </span>
             <Button
               variant="secondary"
               size="sm"
-              disabled={offset + limit >= data.total}
-              onClick={() => updateParam("offset", String(offset + limit))}
+              disabled={!data.next_cursor}
+              onClick={() => moveToCursor(data.next_cursor)}
             >
               下一页
               <ChevronRight className="h-4 w-4 ml-1" />

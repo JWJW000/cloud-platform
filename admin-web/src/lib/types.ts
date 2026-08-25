@@ -242,7 +242,7 @@ export interface Alert {
 
 export interface Setting {
   key: string;
-  value: string;
+  value: unknown;
 }
 
 export interface Dict {
@@ -460,6 +460,12 @@ export interface EditionSearchItem {
   source_formats: string[];
   holding_formats: string[];
   acquisition_status: string;
+  worker_name?: string | null;
+  acquisition_stage?: string;
+  attempts?: number;
+  max_attempts?: number;
+  next_attempt_at?: string | null;
+  last_error?: string | null;
   resolution_status: string;
   updated_at: string;
 }
@@ -474,9 +480,58 @@ export interface CatalogSearchResponse {
   total: number;
   limit: number;
   offset: number;
+  next_cursor?: string | null;
+  previous_cursor?: string | null;
   status_facets: FacetCount[];
   language_facets: FacetCount[];
   format_facets: FacetCount[];
+}
+
+export interface MailProviderConfig {
+  provider_type: "manual" | "outlook_http" | "mock" | string;
+  endpoint: string;
+  has_api_key: boolean;
+  poll_interval_secs: number;
+  timeout_secs: number;
+  allowed_hosts: string[];
+  allowed_senders: string[];
+  version: number;
+  is_active: boolean;
+  updated_by: string;
+  updated_at: string;
+}
+
+export interface UpdateMailProviderPayload {
+  provider_type: string;
+  endpoint: string;
+  api_key?: string;
+  poll_interval_secs?: number;
+  timeout_secs?: number;
+  allowed_hosts?: string[];
+  allowed_senders?: string[];
+}
+
+export interface MailProviderStatus {
+  provider_type: "manual" | "outlook_http" | "mock" | string;
+  version: number;
+  is_active: boolean;
+  has_api_key: boolean;
+  health: string;
+  workers_applied: number;
+  workers_online: number;
+}
+
+export interface TestMailProviderPayload {
+  provider_type: string;
+  endpoint: string;
+  api_key?: string;
+  allowed_hosts?: string[];
+}
+
+export interface TestMailProviderResult {
+  success: boolean;
+  message: string;
+  latency_ms?: number | null;
 }
 
 export interface WorkRow {

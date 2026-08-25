@@ -11,6 +11,7 @@ import {
   listCatalogSources,
   listCatalogImportRuns,
   listCatalogQuarantined,
+  listCatalogServerManifests,
   previewCatalogImport,
   submitCatalogImport,
   resolveCatalogQuarantine,
@@ -36,6 +37,9 @@ export function CatalogImportsPage() {
   const [sourceName, setSourceName] = useState("");
   const [fileName, setFileName] = useState("");
   const [textContent, setTextContent] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [serverManifests, setServerManifests] = useState<Array<{ id: string; size_bytes: number }>>([]);
+  const [serverManifest, setServerManifest] = useState("");
   const [preview, setPreview] = useState<ImportPreviewResult | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -49,14 +53,16 @@ export function CatalogImportsPage() {
     try {
       setLoading(true);
       setError(null);
-      const [srcs, rns, quar] = await Promise.all([
+      const [srcs, rns, quar, manifests] = await Promise.all([
         listCatalogSources(),
         listCatalogImportRuns(),
         listCatalogQuarantined(),
+        listCatalogServerManifests().catch(() => []),
       ]);
       setSources(srcs);
       setRuns(rns);
       setQuarantined(quar);
+      setServerManifests(manifests);
       if (srcs.length > 0 && !sourceName) {
         setSourceName(srcs[0].name);
       }
@@ -72,8 +78,8 @@ export function CatalogImportsPage() {
   }, []);
 
   const handlePreview = async () => {
-    if (!sourceName.trim() || !fileName.trim() || !textContent.trim()) {
-      toastError("请填写来源名称、文件名和数据内容");
+    if (!sourceName.trim() || (!serverManifest && (!fileName.trim() || !textContent.trim()))) {
+      toastError("请选择补充书单、服务器 manifest，或填写少量录入内容");
       return;
     }
     try {
@@ -81,7 +87,8 @@ export function CatalogImportsPage() {
       const res = await previewCatalogImport({
         source_name: sourceName,
         file_name: fileName,
-        text_content: textContent,
+        text_content: serverManifest ? undefined : textContent,
+        server_manifest: serverManifest || undefined,
       });
       setPreview(res);
       success(`预检成功，识别出 ${res.total_rows} 行数据`);
@@ -92,20 +99,47 @@ export function CatalogImportsPage() {
     }
   };
 
+  const handleFileSelection = async (file: File | null) => {
+    setSelectedFile(file);
+    setServerManifest("");
+    setPreview(null);
+    if (!file) {
+      setTextContent("");
+      setFileName("");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toastError("单个补充书单暂限 8 MiB；更大清单请先拆分或登记服务器 manifest");
+      setSelectedFile(null);
+      return;
+    }
+    try {
+      const text = await file.text();
+      setFileName(file.name);
+      setTextContent(text);
+    } catch {
+      toastError("无法读取所选文件，请使用 UTF-8 CSV/TSV/TXT 文件");
+      setSelectedFile(null);
+    }
+  };
+
   const handleSubmitImport = async () => {
-    if (!sourceName.trim() || !fileName.trim() || !textContent.trim()) return;
+    if (!sourceName.trim() || (!serverManifest && (!fileName.trim() || !textContent.trim()))) return;
     try {
       setImporting(true);
       const res = await submitCatalogImport({
         source_name: sourceName,
         file_name: fileName,
-        text_content: textContent,
+        text_content: serverManifest ? undefined : textContent,
+        server_manifest: serverManifest || undefined,
       });
       success(
         `导入完成：成功 ${res.imported_count} 行，重复 ${res.duplicate_count} 行，隔离 ${res.quarantined_count} 行`
       );
       setShowModal(false);
       setTextContent("");
+      setSelectedFile(null);
+      setServerManifest("");
       setPreview(null);
       loadData();
     } catch (err: any) {
@@ -307,20 +341,74 @@ export function CatalogImportsPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">文件名称标识</label>
-                <Input value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="如 cn_books_01.csv" />
+                <label className="block text-xs font-semibold text-slate-700 mb-1">已登记服务器目录 manifest</label>
+                <select
+                  value={serverManifest}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setServerManifest(value);
+                    if (value) {
+                      setSelectedFile(null);
+                      setTextContent("");
+                      setFileName(value);
+                    }
+                  }}
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">不使用服务器 manifest</option>
+                  {serverManifests.map((manifest) => (
+                    <option key={manifest.id} value={manifest.id}>
+                      {manifest.id} · {(manifest.size_bytes / 1024).toFixed(1)} KiB
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  运维通过 DRISSION_CATALOG_MANIFEST_ROOT 登记；这里只显示安全文件名，不接受任意服务器路径。
+                </p>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">CSV / 文本内容（粘贴表格或 CSV 行）</label>
-                <textarea
-                  rows={6}
-                  value={textContent}
-                  onChange={(e) => setTextContent(e.target.value)}
-                  placeholder="title,author,publisher,isbn,format,md5,filesize&#10;算法导论,Thomas Cormen,机械工业出版社,9787111407010,epub,d41d8cd98f00b204e9800998ecf8427e,1024000"
-                  className="w-full rounded-md border border-slate-300 p-2 font-mono text-xs"
-                />
+                <label className="block text-xs font-semibold text-slate-700 mb-1">上传补充书单（主流程）</label>
+                <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-7 text-center hover:border-blue-400 hover:bg-blue-50/40">
+                  <UploadCloud className="mb-2 h-7 w-7 text-blue-500" />
+                  <span className="text-sm font-medium text-slate-700">
+                    {selectedFile ? selectedFile.name : "选择 CSV、TSV 或 TXT 文件"}
+                  </span>
+                  <span className="mt-1 text-xs text-slate-400">UTF-8，单文件不超过 8 MiB</span>
+                  <input
+                    type="file"
+                    accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain"
+                    className="sr-only"
+                    disabled={!!serverManifest}
+                    onChange={(event) => handleFileSelection(event.target.files?.[0] ?? null)}
+                  />
+                </label>
               </div>
+
+              <details className="rounded-lg border border-slate-200 p-3">
+                <summary className="cursor-pointer text-xs font-medium text-slate-600">
+                  少量临时录入（次要方式，最多 200 行）
+                </summary>
+                <div className="mt-3 space-y-2">
+                  <Input
+                    value={fileName}
+                    onChange={(e) => setFileName(e.target.value)}
+                    placeholder="临时录入名称，如 supplement.csv"
+                    disabled={!!selectedFile || !!serverManifest}
+                  />
+                  <textarea
+                    rows={5}
+                    value={selectedFile || serverManifest ? "" : textContent}
+                    onChange={(e) => {
+                      const lines = e.target.value.split(/\r?\n/);
+                      if (lines.length <= 200) setTextContent(e.target.value);
+                    }}
+                    disabled={!!selectedFile || !!serverManifest}
+                    placeholder="title,author,publisher,isbn,format"
+                    className="w-full rounded-md border border-slate-300 p-2 font-mono text-xs disabled:bg-slate-100"
+                  />
+                </div>
+              </details>
 
               {preview && (
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs space-y-1.5">

@@ -5,6 +5,7 @@ pub mod client;
 pub mod config;
 pub mod credential_store;
 pub mod dynamic;
+pub mod mail;
 pub mod master_port;
 pub mod outbox;
 pub mod proxy_forward;
