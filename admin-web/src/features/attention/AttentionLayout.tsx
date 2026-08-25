@@ -1,9 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { KeyRound, Sparkles, AlertTriangle } from "lucide-react";
+import { KeyRound, FileCheck, Sparkles, AlertTriangle } from "lucide-react";
 
 export function AttentionLayout() {
   const tabs = [
     { to: "/attention/manual", label: "人工验证", icon: KeyRound },
+    { to: "/attention/inventory-reviews", label: "馆藏审核", icon: FileCheck },
     { to: "/attention/quality", label: "数据质量", icon: Sparkles },
     { to: "/attention/alerts", label: "系统告警", icon: AlertTriangle },
   ];

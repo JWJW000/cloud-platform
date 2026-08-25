@@ -6,10 +6,11 @@ members = [
     "crates/automation-core",
     "crates/master-server",
     "crates/worker-agent",
+    "crates/catalog-importer",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 
@@ -33,6 +34,7 @@ sha2 = "0.10"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync", "net"] }
+tokio-util = { version = "0.7" }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

@@ -1886,6 +1886,7 @@ mod tests {
                 requested_slots: 3,
                 simulated: true,
             },
+            inventory: crate::inventory::InventoryConfig::default(),
         }
     }
 

@@ -317,6 +317,50 @@ export async function cancelBatch(id: string): Promise<Batch> {
   return api.post<Batch>(`/api/batches/${id}/cancel`);
 }
 
+// ---------------------------------------------------------------- 馆藏扫描与审核
+
+export async function listStorageLocations(): Promise<{ success: boolean; locations: import("./types").StorageLocation[] }> {
+  return api.get<{ success: boolean; locations: import("./types").StorageLocation[] }>("/api/catalog/storage-locations");
+}
+
+export async function listInventoryScans(): Promise<{ success: boolean; jobs: import("./types").InventoryScanJob[] }> {
+  return api.get<{ success: boolean; jobs: import("./types").InventoryScanJob[] }>("/api/catalog/inventory/scans");
+}
+
+export async function createInventoryScan(data: {
+  node_id: string;
+  storage_location_id: string;
+  scan_mode: string;
+}): Promise<{ success: boolean; job: import("./types").InventoryScanJob }> {
+  return api.post<{ success: boolean; job: import("./types").InventoryScanJob }>("/api/catalog/inventory/scans", data);
+}
+
+export async function cancelInventoryScan(id: string): Promise<{ success: boolean; message: string }> {
+  return api.post<{ success: boolean; message: string }>(`/api/catalog/inventory/scans/${id}/cancel`);
+}
+
+export async function listInventoryReviews(): Promise<{ success: boolean; reviews: import("./types").InventoryReviewDetail[] }> {
+  return api.get<{ success: boolean; reviews: import("./types").InventoryReviewDetail[] }>("/api/catalog/inventory/reviews");
+}
+
+export async function confirmInventoryReview(
+  id: string,
+  edition_id: string
+): Promise<{ success: boolean; message: string }> {
+  return api.post<{ success: boolean; message: string }>(`/api/catalog/inventory/reviews/${id}/confirm`, {
+    edition_id,
+  });
+}
+
+export async function ignoreInventoryReview(id: string): Promise<{ success: boolean; message: string }> {
+  return api.post<{ success: boolean; message: string }>(`/api/catalog/inventory/reviews/${id}/ignore`);
+}
+
+export async function recomputeInventoryState(edition_id: string): Promise<{ success: boolean; status: string }> {
+  return api.post<{ success: boolean; status: string }>(`/api/catalog/inventory/recompute/${edition_id}`);
+}
+
+
 // ---------------------------------------------------------------- 图书馆总库与索引 V1 接口
 
 export async function getCatalogStats(): Promise<import("./types").CatalogStats> {

@@ -199,6 +199,130 @@ pub async fn dispatch(
                 }
             }
         }
+        Payload::InventoryRootStatus(status) => {
+            let node_id = identity.node_id();
+            tracing::info!(node_id = %node_id, roots_count = status.roots.len(), "收到节点馆藏存储根状态上报");
+            for root in status.roots {
+                let avail = if root.is_available {
+                    "在线"
+                } else {
+                    "离线"
+                };
+                let _ = store::inventory::upsert_storage_location(
+                    &state.pool,
+                    node_id,
+                    &root.root_id,
+                    &root.backend,
+                    &root.display_name,
+                    avail,
+                )
+                .await;
+            }
+        }
+        Payload::InventoryScanStarted(started) => {
+            tracing::info!(job_id = %started.scan_job_id, root_id = %started.root_id, "节点已启动馆藏扫描");
+            if let Ok(job_uuid) = started.scan_job_id.parse::<Uuid>() {
+                let _ =
+                    store::inventory::update_scan_job_status(&state.pool, job_uuid, "扫描中", None)
+                        .await;
+            }
+        }
+        Payload::InventoryEvidenceBatch(batch) => {
+            tracing::debug!(job_id = %batch.scan_job_id, count = batch.entries.len(), "收到馆藏扫描证据批次");
+            if let Ok(job_uuid) = batch.scan_job_id.parse::<Uuid>() {
+                if let Ok(Some(job)) = store::inventory::get_scan_job(&state.pool, job_uuid).await {
+                    let entries = batch
+                        .entries
+                        .into_iter()
+                        .map(|e| crate::catalog::InventoryFileEvidenceItem {
+                            object_key: e.object_key,
+                            file_name: e.file_name,
+                            extension: e.extension,
+                            actual_size_bytes: e.actual_size_bytes as i64,
+                            modified_at: chrono::DateTime::parse_from_rfc3339(&e.modified_at)
+                                .ok()
+                                .map(|dt| dt.with_timezone(&chrono::Utc)),
+                            sha256: e.sha256,
+                            md5: if e.md5.is_empty() { None } else { Some(e.md5) },
+                            embedded_metadata_json: Some(e.embedded_metadata_json),
+                        })
+                        .collect();
+
+                    let outcome_res = crate::catalog::ingest_inventory_batch(
+                        &state.pool,
+                        crate::catalog::InventoryEvidenceBatch {
+                            scan_job_id: job_uuid,
+                            storage_location_id: job.storage_location_id,
+                            batch_seq: batch.batch_seq,
+                            entries,
+                        },
+                    )
+                    .await;
+
+                    let ack = pb::MasterMessage::new(
+                        convert::now_rfc3339(),
+                        pb::master_message::Payload::InventoryBatchAck(pb::InventoryBatchAck {
+                            scan_job_id: batch.scan_job_id,
+                            batch_seq: batch.batch_seq,
+                            accepted: outcome_res.is_ok(),
+                            message: outcome_res
+                                .as_ref()
+                                .err()
+                                .map(|e| e.to_string())
+                                .unwrap_or_default(),
+                        }),
+                    );
+                    let _ = outbound.send(ack).await;
+                }
+            }
+        }
+        Payload::InventoryScanProgress(prog) => {
+            tracing::debug!(job_id = %prog.scan_job_id, hashed = prog.hashed_count, "馆藏扫描进度");
+            if let Ok(job_uuid) = prog.scan_job_id.parse::<Uuid>() {
+                let _ = sqlx::query(
+                    "UPDATE inventory_scan_jobs SET
+                         discovered_count = $2,
+                         hashed_count = $3,
+                         updated_at = now()
+                     WHERE id = $1",
+                )
+                .bind(job_uuid)
+                .bind(prog.discovered_count as i64)
+                .bind(prog.hashed_count as i64)
+                .execute(&state.pool)
+                .await;
+            }
+        }
+        Payload::InventoryScanFinished(fin) => {
+            tracing::info!(job_id = %fin.scan_job_id, status = %fin.status, "馆藏扫描完成");
+            if let Ok(job_uuid) = fin.scan_job_id.parse::<Uuid>() {
+                let _ = sqlx::query(
+                    "UPDATE inventory_scan_jobs SET
+                         status = $2,
+                         discovered_count = $3,
+                         hashed_count = $4,
+                         skipped_count = $5,
+                         error_count = $6,
+                         finished_at = now(),
+                         last_error = $7,
+                         updated_at = now()
+                     WHERE id = $1",
+                )
+                .bind(job_uuid)
+                .bind(&fin.status)
+                .bind(fin.discovered_count as i64)
+                .bind(fin.hashed_count as i64)
+                .bind(fin.skipped_count as i64)
+                .bind(fin.error_count as i64)
+                .bind(if fin.error_message.is_empty() {
+                    None
+                } else {
+                    Some(fin.error_message)
+                })
+                .execute(&state.pool)
+                .await;
+            }
+        }
     }
 
     Ok(())

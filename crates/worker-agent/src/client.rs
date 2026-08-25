@@ -194,6 +194,18 @@ impl Connection<'_> {
         self.reconciling.store(true, Ordering::SeqCst);
         stream_tx.send(self.node_online().await).await?;
 
+        // 1.1 上报本地配置的馆藏根目录（方案第 9 节）
+        let roots_report = self.inventory_roots_report();
+        if !roots_report.roots.is_empty() {
+            let _ = stream_tx
+                .send(pb::WorkerMessage::new(
+                    format!("evt-inv-roots-{}", Uuid::new_v4()),
+                    Utc::now().to_rfc3339(),
+                    pb::worker_message::Payload::InventoryRootStatus(roots_report),
+                ))
+                .await;
+        }
+
         // 2. 补报 Outbox 中的可靠事件
         self.replay_outbox(&stream_tx, 64).await;
 
@@ -643,9 +655,154 @@ impl Connection<'_> {
                 );
                 Ok(())
             }
+            P::AssignInventoryScan(assign) => {
+                tracing::info!(
+                    scan_job_id = %assign.scan_job_id,
+                    root_id = %assign.root_id,
+                    "收到馆藏扫描指令"
+                );
+                let config = self.config.clone();
+                let data_dir = self.config.storage.data_dir.clone();
+                let stream_tx_clone = stream_tx.clone();
+                let job_id = assign.scan_job_id.clone();
+                let root_id = assign.root_id.clone();
+
+                tokio::spawn(async move {
+                    let (batch_tx, mut batch_rx) = mpsc::channel(16);
+                    let (progress_tx, mut progress_rx) = mpsc::channel(32);
+                    let cancel_token = tokio_util::sync::CancellationToken::new();
+
+                    let forward_tx = stream_tx_clone.clone();
+                    tokio::spawn(async move {
+                        while let Some(batch) = batch_rx.recv().await {
+                            let _ = forward_tx
+                                .send(pb::WorkerMessage::new(
+                                    format!("evt-inv-batch-{}", Uuid::new_v4()),
+                                    Utc::now().to_rfc3339(),
+                                    pb::worker_message::Payload::InventoryEvidenceBatch(batch),
+                                ))
+                                .await;
+                        }
+                    });
+
+                    let forward_tx2 = stream_tx_clone.clone();
+                    tokio::spawn(async move {
+                        while let Some(progress) = progress_rx.recv().await {
+                            let _ = forward_tx2
+                                .send(pb::WorkerMessage::new(
+                                    format!("evt-inv-prog-{}", Uuid::new_v4()),
+                                    Utc::now().to_rfc3339(),
+                                    pb::worker_message::Payload::InventoryScanProgress(progress),
+                                ))
+                                .await;
+                        }
+                    });
+
+                    let _ = stream_tx_clone
+                        .send(pb::WorkerMessage::new(
+                            format!("evt-inv-start-{}", Uuid::new_v4()),
+                            Utc::now().to_rfc3339(),
+                            pb::worker_message::Payload::InventoryScanStarted(
+                                pb::InventoryScanStarted {
+                                    scan_job_id: job_id.clone(),
+                                    root_id: root_id.clone(),
+                                    started_at: Utc::now().to_rfc3339(),
+                                },
+                            ),
+                        ))
+                        .await;
+
+                    let summary = crate::inventory::run_inventory_scan(
+                        &config.inventory,
+                        &data_dir,
+                        assign,
+                        batch_tx,
+                        progress_tx,
+                        cancel_token,
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        crate::inventory::InventoryScanSummary {
+                            status: "失败".to_string(),
+                            error_message: Some(e.to_string()),
+                            ..Default::default()
+                        }
+                    });
+
+                    let _ = stream_tx_clone
+                        .send(pb::WorkerMessage::new(
+                            format!("evt-inv-finish-{}", Uuid::new_v4()),
+                            Utc::now().to_rfc3339(),
+                            pb::worker_message::Payload::InventoryScanFinished(
+                                pb::InventoryScanFinished {
+                                    scan_job_id: job_id,
+                                    root_id,
+                                    status: summary.status,
+                                    discovered_count: summary.discovered_count,
+                                    hashed_count: summary.hashed_count,
+                                    sent_count: summary.sent_count,
+                                    skipped_count: summary.skipped_count,
+                                    error_count: summary.error_count,
+                                    error_message: summary.error_message.unwrap_or_default(),
+                                    finished_at: Utc::now().to_rfc3339(),
+                                },
+                            ),
+                        ))
+                        .await;
+                });
+                Ok(())
+            }
+            P::CancelInventoryScan(cancel) => {
+                tracing::warn!(
+                    scan_job_id = %cancel.scan_job_id,
+                    reason = %cancel.reason,
+                    "收到取消馆藏扫描指令"
+                );
+                Ok(())
+            }
+            P::InventoryBatchAck(ack) => {
+                tracing::debug!(
+                    scan_job_id = %ack.scan_job_id,
+                    batch_seq = ack.batch_seq,
+                    accepted = ack.accepted,
+                    "收到馆藏扫描批次 ACK"
+                );
+                Ok(())
+            }
         };
 
         result
+    }
+
+    /// 馆藏扫描本地存储根上报。
+    fn inventory_roots_report(&self) -> pb::InventoryRootStatus {
+        let roots = self
+            .config
+            .inventory
+            .roots
+            .iter()
+            .map(|r| {
+                let is_available = r.path.exists() && r.path.is_dir();
+                let free_space_bytes = if is_available {
+                    // 探测剩余可用空间（可选）
+                    0
+                } else {
+                    0
+                };
+                pb::InventoryRoot {
+                    root_id: r.id.clone(),
+                    backend: r.backend.clone(),
+                    display_name: r.display_name.clone(),
+                    is_available,
+                    free_space_bytes,
+                }
+            })
+            .collect();
+
+        pb::InventoryRootStatus {
+            node_id: self.node_id.to_string(),
+            roots,
+        }
     }
 
     /// 执行一条对账裁决（V4 方案第 10.5 节）。

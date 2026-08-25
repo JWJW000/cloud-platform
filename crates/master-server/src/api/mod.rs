@@ -13,6 +13,7 @@ pub mod enroll_codes;
 pub mod events;
 pub mod health;
 pub mod imports;
+pub mod inventory;
 pub mod logs;
 pub mod mail_provider;
 pub mod manual_actions;
@@ -297,6 +298,8 @@ pub fn router(state: AppState) -> Router {
             "/api/catalog/outbox/process",
             post(catalog_v1::process_outbox_handler),
         )
+        // 馆藏扫描与审核（方案第 10 节）
+        .nest("/api/catalog", inventory::inventory_routes())
         // 批次
         .route("/api/batches", get(batches::list_batches))
         .route("/api/batches/:id", get(batches::get_batch))

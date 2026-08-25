@@ -261,6 +261,21 @@ async fn probe_outlook(
         Ok(response) if response.status() == StatusCode::TOO_MANY_REQUESTS => {
             (false, "邮件服务当前限流，请稍后重试".to_string())
         }
+        Ok(response) if response.status() == StatusCode::NOT_FOUND => {
+            let body = response.text().await.unwrap_or_default();
+            // assast/outlookEmail 等服务在 API Key 鉴权通过但探测用虚拟账号不存在时返回 404 {"success": false, "error": "邮箱账号不存在"}
+            // 这说明接口连通与鉴权均已正常通过。
+            if body.contains("邮箱账号不存在")
+                || (body.contains("\"error\"") && body.contains("\"success\""))
+            {
+                (true, "连接与鉴权测试成功".to_string())
+            } else {
+                (
+                    false,
+                    "邮件服务返回 HTTP 404（请确认接口路径是否正确）".to_string(),
+                )
+            }
+        }
         Ok(response) => (
             false,
             format!("邮件服务返回 HTTP {}", response.status().as_u16()),

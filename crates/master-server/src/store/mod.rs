@@ -15,6 +15,7 @@ pub mod admin;
 pub mod catalog;
 pub mod catalog_v1;
 pub mod import_job;
+pub mod inventory;
 pub mod mail_provider;
 pub mod manual_action;
 pub mod node;

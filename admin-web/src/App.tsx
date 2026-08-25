@@ -11,6 +11,8 @@ import { CatalogSearchPage } from "./pages/CatalogSearchPage";
 import { CatalogDetailPage } from "./pages/CatalogDetailPage";
 import { CatalogAcquisitionsPage } from "./pages/CatalogAcquisitionsPage";
 import { CatalogImportsPage } from "./pages/CatalogImportsPage";
+import { InventoryScansPage } from "./features/catalog/InventoryScansPage";
+import { InventoryReviewPage } from "./features/catalog/InventoryReviewPage";
 import { AccountCenterPage } from "./features/accounts/AccountCenterPage";
 import {
   RegistrationQueuePage,
@@ -69,6 +71,8 @@ export function App() {
               <Route path="/library/editions/:id" element={<CatalogDetailPage />} />
               <Route path="/acquisitions" element={<CatalogAcquisitionsPage />} />
               <Route path="/imports" element={<CatalogImportsPage />} />
+              <Route path="/inventory-scans" element={<InventoryScansPage />} />
+              <Route path="/inventory-reviews" element={<InventoryReviewPage />} />
 
               {/* 2. 运行分组 */}
               <Route path="/accounts" element={<AccountCenterPage />} />
@@ -79,6 +83,7 @@ export function App() {
                 <Route index element={<Navigate to="workers" replace />} />
                 <Route path="workers" element={<WorkersPage />} />
                 <Route path="workers/:id" element={<WorkerDetailPage />} />
+                <Route path="inventory-scans" element={<InventoryScansPage />} />
                 <Route path="proxies" element={<ProxiesPage />} />
                 <Route path="sessions" element={<SessionsPage />} />
               </Route>
@@ -86,6 +91,7 @@ export function App() {
               <Route path="/attention" element={<AttentionLayout />}>
                 <Route index element={<Navigate to="manual" replace />} />
                 <Route path="manual" element={<ManualActionsPage />} />
+                <Route path="inventory-reviews" element={<InventoryReviewPage />} />
                 <Route path="quality" element={<CatalogQualityPage />} />
                 <Route path="alerts" element={<AlertsPage />} />
               </Route>
@@ -98,6 +104,8 @@ export function App() {
               </Route>
 
               {/* 旧版路由全兼容重定向 (Legacy Redirects) */}
+              <Route path="/inventory-scans" element={<Navigate to="/operations/inventory-scans" replace />} />
+              <Route path="/inventory-reviews" element={<Navigate to="/attention/inventory-reviews" replace />} />
               <Route path="/catalog/overview" element={<Navigate to="/" replace />} />
               <Route path="/catalog/search" element={<RedirectWithQuery to="/library" />} />
               <Route path="/catalog/editions/:id" element={<RedirectWithId to="/library/editions" />} />

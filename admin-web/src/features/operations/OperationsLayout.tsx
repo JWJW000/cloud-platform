@@ -1,9 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { Server, Plug, Boxes } from "lucide-react";
+import { Server, FolderSearch, Plug, Boxes } from "lucide-react";
 
 export function OperationsLayout() {
   const tabs = [
     { to: "/operations/workers", label: "Worker 节点", icon: Server },
+    { to: "/operations/inventory-scans", label: "馆藏扫描", icon: FolderSearch },
     { to: "/operations/proxies", label: "代理管理", icon: Plug },
     { to: "/operations/sessions", label: "执行会话", icon: Boxes },
   ];

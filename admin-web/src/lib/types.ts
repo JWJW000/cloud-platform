@@ -307,6 +307,67 @@ export interface AccountPreviewRow {
   reason: string | null;
 }
 
+// ---------------------------------------------------------------- 馆藏扫描与审核
+
+export interface StorageLocation {
+  id: string;
+  node_id: string | null;
+  root_key: string;
+  backend: string;
+  display_name: string;
+  availability: "在线" | "离线" | "未知" | "已停用";
+  last_seen_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InventoryScanJob {
+  id: string;
+  node_id: string;
+  storage_location_id: string;
+  status: "待下发" | "扫描中" | "暂停" | "已完成" | "部分失败" | "已取消" | "失败";
+  scan_mode: "增量" | "全量复核";
+  checkpoint: Record<string, unknown>;
+  discovered_count: number;
+  hashed_count: number;
+  matched_count: number;
+  review_count: number;
+  unmatched_count: number;
+  skipped_count: number;
+  error_count: number;
+  started_at: string | null;
+  finished_at: string | null;
+  last_error: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InventoryCandidateDetail {
+  candidate_id: string;
+  edition_id: string;
+  edition_title: string;
+  publisher: string | null;
+  publish_year: number | null;
+  match_score: number;
+  matched_fields: string[];
+  conflict_fields: string[];
+}
+
+export interface InventoryReviewDetail {
+  id: string;
+  scan_job_id: string;
+  object_key: string;
+  file_name: string;
+  extension: string;
+  actual_size_bytes: number;
+  sha256: string;
+  md5: string | null;
+  error_reason: string | null;
+  candidates: InventoryCandidateDetail[];
+}
+
+
 export interface AccountImportPreview {
   import_token: string;
   file_name: string;

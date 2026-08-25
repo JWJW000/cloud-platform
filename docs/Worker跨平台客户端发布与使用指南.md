@@ -45,8 +45,8 @@ worker-agent.exe          worker-agent (ARM64)    worker-agent (x86_64)   worker
 ```toml
 [master]
 # Master 云端 gRPC 接入地址（必须为 HTTPS）
-endpoint = "https://worker.43-165-64-253.nip.io"
-tls_domain = "worker.43-165-64-253.nip.io"
+endpoint = "https://grpc.5wjw.cn"
+tls_domain = "grpc.5wjw.cn"
 
 # 本地凭据存储路径（程序自动管理，无需修改）
 identity_file = "data/identity.json"

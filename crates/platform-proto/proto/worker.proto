@@ -174,6 +174,12 @@ message WorkerMessage {
     ManualActionRequired manual_action_required = 28;
     CommandAccepted command_accepted = 29;
     CommandResult command_result = 30;
+    // 馆藏扫描上报事件（方案第 9 节）
+    InventoryRootStatus inventory_root_status = 31;
+    InventoryScanStarted inventory_scan_started = 32;
+    InventoryEvidenceBatch inventory_evidence_batch = 33;
+    InventoryScanProgress inventory_scan_progress = 34;
+    InventoryScanFinished inventory_scan_finished = 35;
   }
 }
 
@@ -361,6 +367,10 @@ message MasterMessage {
     ContinueManualAction continue_manual_action = 24;
     CancelRegistrationTask cancel_registration_task = 25;
     ExecuteCommand execute_command = 26;
+    // 馆藏扫描下发指令与确认（方案第 9 节）
+    AssignInventoryScan assign_inventory_scan = 27;
+    CancelInventoryScan cancel_inventory_scan = 28;
+    InventoryBatchAck inventory_batch_ack = 29;
   }
 }
 
@@ -666,3 +676,96 @@ message ExecuteCommand {
   string command_type = 2;
   string payload_json = 3;
 }
+
+// ---------------------------------------------------------------- 馆藏扫描协议（方案第 9 节）
+
+// Worker 上报本地配置的根目录状态
+message InventoryRootStatus {
+  string node_id = 1;
+  repeated InventoryRoot roots = 2;
+}
+
+message InventoryRoot {
+  string root_id = 1;
+  string backend = 2;
+  string display_name = 3;
+  bool is_available = 4;
+  uint64 free_space_bytes = 5;
+}
+
+// Master 下发扫描任务
+message AssignInventoryScan {
+  string scan_job_id = 1;
+  string root_id = 2;
+  string scan_mode = 3;             // 增量 / 全量复核
+  repeated string allowed_formats = 4;
+  uint32 batch_size = 5;
+  string checkpoint_json = 6;
+  string lease_expires_at = 7;
+}
+
+// Master 取消扫描任务
+message CancelInventoryScan {
+  string scan_job_id = 1;
+  string reason = 2;
+}
+
+// Worker 上报扫描已开始
+message InventoryScanStarted {
+  string scan_job_id = 1;
+  string root_id = 2;
+  string started_at = 3;
+}
+
+// Worker 上报一批文件证据
+message InventoryEvidenceBatch {
+  string scan_job_id = 1;
+  string root_id = 2;
+  uint64 batch_seq = 3;
+  repeated InventoryFileEvidence entries = 4;
+  string checkpoint_json = 5;
+}
+
+message InventoryFileEvidence {
+  string object_key = 1;           // 相对路径
+  string file_name = 2;
+  string extension = 3;
+  uint64 actual_size_bytes = 4;
+  string modified_at = 5;          // RFC 3339
+  string sha256 = 6;
+  string md5 = 7;
+  string embedded_metadata_json = 8;
+}
+
+// Master 确认批次已持久化
+message InventoryBatchAck {
+  string scan_job_id = 1;
+  uint64 batch_seq = 2;
+  bool accepted = 3;
+  string message = 4;
+}
+
+// Worker 上报扫描实时进度
+message InventoryScanProgress {
+  string scan_job_id = 1;
+  uint64 discovered_count = 2;
+  uint64 hashed_count = 3;
+  uint64 sent_count = 4;
+  string current_relative_path = 5;
+  string stage = 6;                // 发现中 / 哈希中 / 上报中
+}
+
+// Worker 上报扫描已完成
+message InventoryScanFinished {
+  string scan_job_id = 1;
+  string root_id = 2;
+  string status = 3;               // 已完成 / 部分失败 / 已取消 / 失败
+  uint64 discovered_count = 4;
+  uint64 hashed_count = 5;
+  uint64 sent_count = 6;
+  uint64 skipped_count = 7;
+  uint64 error_count = 8;
+  string error_message = 9;
+  string finished_at = 10;
+}
+

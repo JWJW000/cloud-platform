@@ -9,7 +9,10 @@
 //! - `outbox`：搜索投影事务外发。
 
 pub mod acquisition;
+pub mod acquisition_state;
 pub mod ingestion;
+pub mod inventory;
+pub mod inventory_matcher;
 pub mod outbox;
 pub mod resolution;
 pub mod search;
@@ -19,9 +22,14 @@ pub use acquisition::{
     claim_acquisition_task, report_acquisition_task, retry_acquisition_target,
     set_acquisition_priority, AcquisitionAssignment, AcquisitionReportRequest, WorkerClaimRequest,
 };
+pub use acquisition_state::recompute_acquisition_state;
 pub use ingestion::{
     execute_import, parse_csv_stream, preview_import, ImportExecutionResult, ImportManifestRequest,
     ImportPreviewResult, ParsedCatalogItemSummary, StartImportRequest,
+};
+pub use inventory::{
+    confirm_inventory_review, ingest_inventory_batch, InventoryBatchOutcome,
+    InventoryEvidenceBatch, InventoryFileEvidenceItem,
 };
 pub use outbox::process_outbox_events;
 pub use resolution::{resolve_item, ParsedCatalogItem, ResolutionResult};

@@ -19,6 +19,9 @@ pub struct WorkerConfig {
     /// 槽位与并发设置。
     #[serde(default)]
     pub execution: ExecutionConfig,
+    /// 馆藏扫描配置。
+    #[serde(default)]
+    pub inventory: crate::inventory::InventoryConfig,
 }
 
 /// 连接 Master 的配置。
