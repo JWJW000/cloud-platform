@@ -825,14 +825,16 @@ async fn handle_session_ready(
                 };
 
                 let msg = convert::assign_registration_task_message(
-                    session_id,
-                    execution_id,
-                    reg_task_id,
-                    leased.0,
-                    leased.1,
-                    leased.2,
-                    true,
-                    mail_provider,
+                    convert::RegistrationTaskAssignment {
+                        session_id,
+                        execution_id,
+                        registration_task_id: reg_task_id,
+                        attempt: leased.0,
+                        stage_version: leased.1,
+                        lease_expires_at: leased.2,
+                        needs_mail_code: true,
+                        mail_provider,
+                    },
                 );
                 let _ = outbound.send(msg).await;
             } else {

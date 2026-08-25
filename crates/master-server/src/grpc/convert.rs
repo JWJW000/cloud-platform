@@ -208,28 +208,41 @@ pub fn cancel_task_message(
     )
 }
 
+/// 下发账号注册任务所需的完整快照。
+pub struct RegistrationTaskAssignment {
+    /// 承载本次注册执行的 Worker 会话。
+    pub session_id: Uuid,
+    /// 本次租约执行世代，用于拒绝旧结果。
+    pub execution_id: Uuid,
+    /// 待执行的账号注册任务编号。
+    pub registration_task_id: Uuid,
+    /// 当前重试次数。
+    pub attempt: i32,
+    /// 注册任务的阶段版本。
+    pub stage_version: i32,
+    /// Worker 必须续租或结束执行的时间。
+    pub lease_expires_at: DateTime<Utc>,
+    /// 此注册流程是否需要邮件验证码。
+    pub needs_mail_code: bool,
+    /// 固定到本次任务的邮件 Provider 配置快照。
+    pub mail_provider: Option<pb::MailProviderLease>,
+}
+
 /// 下发账号注册任务。
 pub fn assign_registration_task_message(
-    session_id: Uuid,
-    execution_id: Uuid,
-    registration_task_id: Uuid,
-    attempt: i32,
-    stage_version: i32,
-    lease_expires_at: DateTime<Utc>,
-    needs_mail_code: bool,
-    mail_provider: Option<pb::MailProviderLease>,
+    assignment: RegistrationTaskAssignment,
 ) -> pb::MasterMessage {
     pb::MasterMessage::new(
         now_rfc3339(),
         pb::master_message::Payload::AssignRegistrationTask(pb::AssignRegistrationTask {
-            session_id: session_id.to_string(),
-            execution_id: execution_id.to_string(),
-            registration_task_id: registration_task_id.to_string(),
-            attempt: attempt.max(1) as u32,
-            stage_version: stage_version.max(0) as u32,
-            lease_expires_at: to_rfc3339(lease_expires_at),
-            needs_mail_code,
-            mail_provider,
+            session_id: assignment.session_id.to_string(),
+            execution_id: assignment.execution_id.to_string(),
+            registration_task_id: assignment.registration_task_id.to_string(),
+            attempt: assignment.attempt.max(1) as u32,
+            stage_version: assignment.stage_version.max(0) as u32,
+            lease_expires_at: to_rfc3339(assignment.lease_expires_at),
+            needs_mail_code: assignment.needs_mail_code,
+            mail_provider: assignment.mail_provider,
         }),
     )
 }
