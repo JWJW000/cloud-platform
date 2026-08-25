@@ -425,6 +425,290 @@ export interface TaskExecution {
   finished_at: string | null;
 }
 
+// ---------------------------------------------------------------- 图书馆总库与索引 V1
+
+export interface CatalogStats {
+  total_sources: number;
+  total_source_records: number;
+  total_works: number;
+  total_editions: number;
+  total_chapters: number;
+  total_holdings: number;
+  total_library_files: number;
+  total_library_bytes: number;
+  acquired_targets: number;
+  pending_targets: number;
+  downloading_targets: number;
+  failed_targets: number;
+  needs_confirm_targets: number;
+  total_quarantined: number;
+  missing_isbn_count: number;
+  missing_author_count: number;
+  ambiguous_works_count: number;
+}
+
+export interface EditionSearchItem {
+  id: string;
+  work_id: string;
+  work_type: string;
+  title: string;
+  authors: string[];
+  publisher: string | null;
+  publish_year: number | null;
+  language: string;
+  identifiers: string[];
+  source_formats: string[];
+  holding_formats: string[];
+  acquisition_status: string;
+  resolution_status: string;
+  updated_at: string;
+}
+
+export interface FacetCount {
+  key: string;
+  count: number;
+}
+
+export interface CatalogSearchResponse {
+  items: EditionSearchItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  status_facets: FacetCount[];
+  language_facets: FacetCount[];
+  format_facets: FacetCount[];
+}
+
+export interface WorkRow {
+  id: string;
+  work_type: string;
+  preferred_title: string;
+  normalized_title: string;
+  primary_language: string;
+  parent_work_id: string | null;
+  resolution_status: string;
+  merged_into_work_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EditionRow {
+  id: string;
+  work_id: string;
+  edition_title: string;
+  language: string;
+  publisher: string | null;
+  publish_year: number | null;
+  publish_date_text: string | null;
+  edition_number: string | null;
+  intro: string | null;
+  format_summary: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IdentifierRow {
+  id: string;
+  object_type: string;
+  object_id: string;
+  identifier_type: string;
+  raw_value: string;
+  normalized_value: string;
+  is_valid: boolean;
+  created_at: string;
+}
+
+export interface ContributorRow {
+  id: string;
+  name: string;
+  normalized_name: string;
+  created_at: string;
+}
+
+export interface SubjectRow {
+  id: string;
+  subject_type: string;
+  code: string | null;
+  name: string;
+  created_at: string;
+}
+
+export interface SourceRecordRow {
+  id: string;
+  source_id: string;
+  import_file_id: string;
+  external_id: string | null;
+  sheet_name: string;
+  row_number: number;
+  raw_payload: Record<string, any>;
+  normalized_title: string;
+  normalized_author: string | null;
+  normalized_publisher: string | null;
+  raw_isbn: string | null;
+  raw_doi: string | null;
+  raw_year: string | null;
+  raw_language: string | null;
+  raw_category: string | null;
+  import_version: string;
+  created_at: string;
+}
+
+export interface SourceAssetRow {
+  id: string;
+  source_record_id: string;
+  format: string;
+  declared_size_bytes: number | null;
+  md5: string | null;
+  download_url: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface LibraryFileRow {
+  id: string;
+  storage_backend: string;
+  object_key: string;
+  format: string;
+  actual_size_bytes: number;
+  sha256: string;
+  md5: string | null;
+  verify_status: string;
+  verified_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HoldingRow {
+  id: string;
+  edition_id: string;
+  library_file_id: string;
+  source_asset_id: string | null;
+  match_type: string;
+  meets_strategy: boolean;
+  created_at: string;
+}
+
+export interface AcquisitionTargetRow {
+  id: string;
+  edition_id: string;
+  preferred_formats: string[];
+  status: string;
+  priority: number;
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string;
+  lease_node_id: string | null;
+  lease_session_id: string | null;
+  lease_execution_id: string | null;
+  lease_expires_at: string | null;
+  active_source_asset_id: string | null;
+  satisfied_holding_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AcquisitionExecutionRow {
+  id: string;
+  target_id: string;
+  source_asset_id: string | null;
+  node_id: string | null;
+  session_id: string | null;
+  slot_index: number | null;
+  stage: string;
+  result: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface EditionDetail {
+  edition: EditionRow;
+  work: WorkRow;
+  sibling_editions: EditionRow[];
+  identifiers: IdentifierRow[];
+  contributors: ContributorRow[];
+  subjects: SubjectRow[];
+  source_records: SourceRecordRow[];
+  source_assets: SourceAssetRow[];
+  holdings: [HoldingRow, LibraryFileRow][];
+  acquisition_target: AcquisitionTargetRow | null;
+  executions: AcquisitionExecutionRow[];
+}
+
+export interface CatalogSource {
+  id: string;
+  name: string;
+  source_type: string;
+  description: string | null;
+  priority: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ImportRun {
+  id: string;
+  import_file_id: string;
+  status: string;
+  checkpoint_row: number;
+  total_rows: number;
+  imported_count: number;
+  quarantined_count: number;
+  duplicate_count: number;
+  error_summary: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QuarantinedRecord {
+  id: string;
+  import_run_id: string | null;
+  import_file_id: string;
+  sheet_name: string;
+  row_number: number;
+  raw_content: Record<string, any>;
+  error_reason: string;
+  resolved: boolean;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+export interface ImportPreviewResult {
+  source_id: string;
+  source_name: string;
+  detected_structure: string;
+  column_mapping: Record<string, string>;
+  total_rows: number;
+  sample_rows: Array<{
+    line: number;
+    title: string;
+    author?: string;
+    publisher?: string;
+    isbn?: string;
+    doi?: string;
+    year?: string;
+    format?: string;
+    md5?: string;
+  }>;
+  file_sha256: string;
+  is_duplicate_file: boolean;
+}
+
+export interface ImportExecutionResult {
+  run_id: string;
+  import_file_id: string;
+  total_rows: number;
+  imported_count: number;
+  duplicate_count: number;
+  quarantined_count: number;
+  status: string;
+}
+
 // ---------------------------------------------------------------- 统一错误
 
 /** API 错误：优先展示后端中文 message，其次稳定的 code。 */

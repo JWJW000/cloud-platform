@@ -9,14 +9,14 @@ use crate::error::{AppError, AppResult};
 use crate::models::{EnrollCode, NodeCertificate, WorkerNode, WorkerSlot};
 use crate::security::{constant_time_eq, hash_node_token};
 
-/// 节点表全部列（含 V5 直连注册字段），供 FromRow 查询复用。
+/// 节点表全部列（含 V5/V7 直连注册与凭据模式字段），供 FromRow 查询复用。
 pub const NODE_COLUMNS: &str = "id, name, hostname, os, os_version, agent_version, status, \
      max_slots, available_slots, upload_concurrency, config_version, applied_config_version, \
      diagnostics_enabled, nas_healthy, nas_free_gb, staging_free_gb, cpu_percent, \
      memory_used_mb, memory_total_mb, connected, last_heartbeat_at, approved_at, approved_by, \
      installation_id, public_key_fingerprint, registration_status, requested_slots, \
      configured_slots, registration_expires_at, first_seen_ip, last_registration_at, \
-     rejected_at, rejected_by, reject_reason, created_at, updated_at";
+     rejected_at, rejected_by, reject_reason, credential_mode, created_at, updated_at";
 
 const SLOT_COLUMNS: &str = "id, node_id, slot_index, status, session_id, detail, updated_at";
 
@@ -667,6 +667,22 @@ pub async fn record_certificate(
     Ok(cert)
 }
 
+/// 查找节点当前最有效的一张证书（未撤销且未过期），返回 (fingerprint, certificate_pem, not_after)。
+pub async fn find_active_certificate(
+    executor: impl PgExecutor<'_>,
+    node_id: Uuid,
+) -> AppResult<Option<(String, String, DateTime<Utc>)>> {
+    let row: Option<(String, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT fingerprint, certificate_pem, not_after FROM node_certificates \
+         WHERE node_id = $1 AND revoked_at IS NULL AND not_after > now() \
+         ORDER BY issued_at DESC LIMIT 1",
+    )
+    .bind(node_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
 /// 某节点的证书历史。响应里不含证书 PEM 本体，避免无谓地把它散播出去。
 pub async fn list_certificates(
     executor: impl PgExecutor<'_>,
@@ -679,6 +695,16 @@ pub async fn list_certificates(
     .fetch_all(executor)
     .await?;
     Ok(certs)
+}
+
+/// 统计当前处于「待审核」状态的节点数量。
+pub async fn count_pending_nodes(executor: impl PgExecutor<'_>) -> AppResult<i64> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM worker_nodes WHERE registration_status = '待审核'",
+    )
+    .fetch_one(executor)
+    .await?;
+    Ok(count)
 }
 
 /// 撤销证书。撤销后该指纹立即不被接受。

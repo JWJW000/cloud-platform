@@ -316,3 +316,108 @@ export async function resumeBatch(id: string): Promise<Batch> {
 export async function cancelBatch(id: string): Promise<Batch> {
   return api.post<Batch>(`/api/batches/${id}/cancel`);
 }
+
+// ---------------------------------------------------------------- 图书馆总库与索引 V1 接口
+
+export async function getCatalogStats(): Promise<import("./types").CatalogStats> {
+  return api.get<import("./types").CatalogStats>("/api/catalog/stats");
+}
+
+export async function searchCatalog(params: {
+  query?: string;
+  acquisition_status?: string;
+  work_type?: string;
+  language?: string;
+  format?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<import("./types").CatalogSearchResponse> {
+  return api.get<import("./types").CatalogSearchResponse>("/api/catalog/search", params);
+}
+
+export async function getCatalogEdition(id: string): Promise<import("./types").EditionDetail> {
+  return api.get<import("./types").EditionDetail>(`/api/catalog/editions/${id}`);
+}
+
+export async function listCatalogSources(): Promise<import("./types").CatalogSource[]> {
+  return api.get<import("./types").CatalogSource[]>("/api/catalog/sources");
+}
+
+export async function createCatalogSource(data: {
+  name: string;
+  source_type?: string;
+  description?: string;
+  priority?: number;
+}): Promise<import("./types").CatalogSource> {
+  return api.post<import("./types").CatalogSource>("/api/catalog/sources", data);
+}
+
+export async function previewCatalogImport(data: {
+  source_name: string;
+  source_type?: string;
+  file_name: string;
+  sheet_name?: string;
+  text_content?: string;
+}): Promise<import("./types").ImportPreviewResult> {
+  return api.post<import("./types").ImportPreviewResult>("/api/catalog/imports/preview", data);
+}
+
+export async function submitCatalogImport(data: {
+  source_name: string;
+  source_type?: string;
+  file_name: string;
+  sheet_name?: string;
+  text_content?: string;
+}): Promise<import("./types").ImportExecutionResult> {
+  return api.post<import("./types").ImportExecutionResult>("/api/catalog/imports/submit", data);
+}
+
+export async function listCatalogImportRuns(): Promise<import("./types").ImportRun[]> {
+  return api.get<import("./types").ImportRun[]>("/api/catalog/imports/runs");
+}
+
+export async function getCatalogImportRun(id: string): Promise<import("./types").ImportRun> {
+  return api.get<import("./types").ImportRun>(`/api/catalog/imports/runs/${id}`);
+}
+
+export async function listCatalogQuarantined(): Promise<import("./types").QuarantinedRecord[]> {
+  return api.get<import("./types").QuarantinedRecord[]>("/api/catalog/imports/quarantine");
+}
+
+export async function resolveCatalogQuarantine(
+  id: string,
+  data: {
+    corrected_title?: string;
+    corrected_author?: string;
+    corrected_publisher?: string;
+    corrected_isbn?: string;
+  }
+): Promise<{ success: boolean; work_id: string; edition_id: string }> {
+  return api.post<{ success: boolean; work_id: string; edition_id: string }>(
+    `/api/catalog/imports/quarantine/${id}/resolve`,
+    data
+  );
+}
+
+export async function listCatalogAcquisitions(params: {
+  query?: string;
+  acquisition_status?: string;
+  format?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<import("./types").CatalogSearchResponse> {
+  return api.get<import("./types").CatalogSearchResponse>("/api/catalog/acquisitions", params);
+}
+
+export async function retryCatalogAcquisition(id: string): Promise<{ success: boolean }> {
+  return api.post<{ success: boolean }>(`/api/catalog/acquisitions/${id}/retry`);
+}
+
+export async function updateCatalogAcquisitionPriority(id: string, priority: number): Promise<{ success: boolean }> {
+  return api.post<{ success: boolean }>(`/api/catalog/acquisitions/${id}/priority`, { priority });
+}
+
+export async function mergeCatalogWorks(source_work_id: string, target_work_id: string): Promise<{ success: boolean }> {
+  return api.post<{ success: boolean }>("/api/catalog/resolutions/merge", { source_work_id, target_work_id });
+}
+

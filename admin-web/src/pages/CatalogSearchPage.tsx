@@ -1,0 +1,374 @@
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import {
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  Layers,
+  Search,
+  Tag,
+  AlertCircle,
+  FileCheck,
+} from "lucide-react";
+import { searchCatalog } from "../lib/api";
+import { CatalogSearchResponse } from "../lib/types";
+import { Card, Spinner, StatusBadge, Button, Input } from "../components/ui";
+
+export function CatalogSearchPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const query = searchParams.get("query") || "";
+  const acquisition_status = searchParams.get("status") || "";
+  const work_type = searchParams.get("work_type") || "";
+  const language = searchParams.get("language") || "";
+  const format = searchParams.get("format") || "";
+  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  const limit = 20;
+
+  const [inputQuery, setInputQuery] = useState(query);
+  const [data, setData] = useState<CatalogSearchResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchResults = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const res = await searchCatalog({
+        query: query || undefined,
+        acquisition_status: acquisition_status || undefined,
+        work_type: work_type || undefined,
+        language: language || undefined,
+        format: format || undefined,
+        limit,
+        offset,
+      });
+      setData(res);
+    } catch (err: any) {
+      setError(err.message || "检索图书总库失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchResults();
+  }, [query, acquisition_status, work_type, language, format, offset]);
+
+  const updateParam = (key: string, value: string | null) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) {
+      next.set(key, value);
+    } else {
+      next.delete(key);
+    }
+    next.set("offset", "0");
+    setSearchParams(next);
+  };
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateParam("query", inputQuery.trim() || null);
+  };
+
+  const totalPages = data ? Math.ceil(data.total / limit) : 0;
+  const currentPage = Math.floor(offset / limit) + 1;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-xl font-bold text-slate-900">图书总库检索与分面索引</h1>
+        <p className="text-xs text-slate-500">
+          多源归并后的规范书目检索：支持题名、作者、ISBN/DOI、来源编号与全维度分面过滤。
+        </p>
+      </div>
+
+      {/* 顶部搜索条 */}
+      <Card className="p-4">
+        <form onSubmit={handleSearchSubmit} className="flex gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+            <Input
+              value={inputQuery}
+              onChange={(e) => setInputQuery(e.target.value)}
+              placeholder="输入书名、作者、出版社、ISBN、DOI 或来源编号进行检索..."
+              className="pl-9"
+            />
+          </div>
+          <Button type="submit" variant="primary">
+            检索
+          </Button>
+          {(query || acquisition_status || work_type || language || format) && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setInputQuery("");
+                setSearchParams({});
+              }}
+            >
+              重置筛选
+            </Button>
+          )}
+        </form>
+      </Card>
+
+      {error && (
+        <div className="rounded-lg bg-red-50 p-4 border border-red-200 text-sm text-red-700 flex items-center gap-2">
+          <AlertCircle className="h-5 w-5" />
+          {error}
+        </div>
+      )}
+
+      {/* 检索内容区（左侧分面，右侧结果） */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        {/* 左侧分面过滤器 */}
+        <div className="space-y-4">
+          <Card className="p-4 space-y-4">
+            <div>
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                <Filter className="h-3.5 w-3.5" />
+                获取状态
+              </div>
+              <div className="space-y-1">
+                {[
+                  { label: "全部状态", val: "" },
+                  { label: "已下载 (经过核验)", val: "已下载" },
+                  { label: "待下载 / 排队中", val: "待下载" },
+                  { label: "正在下载 / 校验", val: "下载中" },
+                  { label: "暂时失败 / 重试", val: "暂时失败" },
+                  { label: "待人工确认", val: "人工确认" },
+                ].map((item) => (
+                  <button
+                    key={item.val}
+                    type="button"
+                    onClick={() => updateParam("status", item.val || null)}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs transition flex items-center justify-between ${
+                      acquisition_status === item.val
+                        ? "bg-blue-50 text-blue-700 font-semibold"
+                        : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    {acquisition_status === item.val && (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-blue-600" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 pt-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                <Layers className="h-3.5 w-3.5" />
+                作品类型
+              </div>
+              <div className="space-y-1">
+                {[
+                  { label: "全部类型", val: "" },
+                  { label: "整书专著", val: "整书" },
+                  { label: "专著章节", val: "章节" },
+                  { label: "论文", val: "论文" },
+                  { label: "合集", val: "合集" },
+                ].map((item) => (
+                  <button
+                    key={item.val}
+                    type="button"
+                    onClick={() => updateParam("work_type", item.val || null)}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs transition flex items-center justify-between ${
+                      work_type === item.val
+                        ? "bg-blue-50 text-blue-700 font-semibold"
+                        : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 pt-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                <Tag className="h-3.5 w-3.5" />
+                语种过滤
+              </div>
+              <div className="space-y-1">
+                {[
+                  { label: "全部语种", val: "" },
+                  { label: "中文 (zh)", val: "zh" },
+                  { label: "英文 (en)", val: "en" },
+                  { label: "其他 (ot)", val: "ot" },
+                ].map((item) => (
+                  <button
+                    key={item.val}
+                    type="button"
+                    onClick={() => updateParam("language", item.val || null)}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs transition flex items-center justify-between ${
+                      language === item.val
+                        ? "bg-blue-50 text-blue-700 font-semibold"
+                        : "text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {/* 右侧结果列表 */}
+        <div className="md:col-span-3 space-y-4">
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>
+              找到约 <strong className="text-slate-800">{data?.total.toLocaleString() || 0}</strong> 条记录
+            </span>
+            <span>
+              第 {currentPage} 页 / 共 {totalPages || 1} 页
+            </span>
+          </div>
+
+          {loading ? (
+            <Card className="p-12 text-center">
+              <Spinner label="正在检索总库书目..." />
+            </Card>
+          ) : data?.items.length === 0 ? (
+            <Card className="p-12 text-center text-slate-500">
+              未找到匹配的书目记录，请尝试调整检索关键词或分面筛选条件。
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {data?.items.map((item) => (
+                <Card key={item.id} className="p-4 hover:border-blue-300 transition shadow-sm">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1.5 flex-1">
+                      <div className="flex items-center gap-2">
+                        <Link
+                          to={`/catalog/editions/${item.id}`}
+                          className="font-bold text-slate-900 hover:text-blue-600 text-base"
+                        >
+                          {item.title}
+                        </Link>
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+                          {item.work_type}
+                        </span>
+                        {item.resolution_status === "待消歧" && (
+                          <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium">
+                            待消歧
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-xs text-slate-600 flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <span>
+                          作者：
+                          <strong className="text-slate-800">
+                            {item.authors.length > 0 ? item.authors.join(", ") : "未知"}
+                          </strong>
+                        </span>
+                        <span>
+                          出版社：
+                          <strong className="text-slate-800">
+                            {item.publisher || "未知"}
+                          </strong>
+                        </span>
+                        {item.publish_year && (
+                          <span>
+                            年份：<strong>{item.publish_year}</strong>
+                          </span>
+                        )}
+                        <span>
+                          语种：<strong className="uppercase">{item.language}</strong>
+                        </span>
+                      </div>
+
+                      {item.identifiers.length > 0 && (
+                        <div className="text-xs text-slate-500 flex items-center gap-1.5 font-mono">
+                          <span>ISBN/标识符：</span>
+                          {item.identifiers.slice(0, 3).map((id, idx) => (
+                            <span key={idx} className="bg-slate-100 px-1.5 py-0.5 rounded">
+                              {id}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-4 text-xs pt-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">来源候选格式：</span>
+                          {item.source_formats.length > 0 ? (
+                            item.source_formats.map((f, i) => (
+                              <span key={i} className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded font-mono text-[11px]">
+                                {f}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-slate-400">无来源文件</span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">馆藏已入库：</span>
+                          {item.holding_formats.length > 0 ? (
+                            item.holding_formats.map((f, i) => (
+                              <span key={i} className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded font-mono text-[11px] flex items-center gap-0.5">
+                                <FileCheck className="h-3 w-3" />
+                                {f}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-slate-400">尚未入库</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col items-end gap-2 shrink-0">
+                      <StatusBadge status={item.acquisition_status} />
+                      <Link
+                        to={`/catalog/editions/${item.id}`}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                      >
+                        详情与溯源 →
+                      </Link>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+
+          {/* 分页控制器 */}
+          {data && data.total > limit && (
+            <div className="flex items-center justify-between pt-4 border-t border-slate-200">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={offset === 0}
+                onClick={() => updateParam("offset", String(Math.max(0, offset - limit)))}
+              >
+                <ChevronLeft className="h-4 w-4 mr-1" />
+                上一页
+              </Button>
+
+              <span className="text-xs text-slate-500">
+                第 {currentPage} / {totalPages} 页
+              </span>
+
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={offset + limit >= data.total}
+                onClick={() => updateParam("offset", String(offset + limit))}
+              >
+                下一页
+                <ChevronRight className="h-4 w-4 ml-1" />
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

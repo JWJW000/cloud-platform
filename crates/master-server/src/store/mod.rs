@@ -13,10 +13,12 @@
 pub mod account_registration;
 pub mod admin;
 pub mod catalog;
+pub mod catalog_v1;
 pub mod import_job;
 pub mod manual_action;
 pub mod node;
 pub mod registration;
+pub mod registration_request;
 pub mod resource;
 pub mod session;
 pub mod task;

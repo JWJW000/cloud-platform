@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 
 pub mod api;
+pub mod catalog;
 pub mod config;
 pub mod error;
 pub mod events;

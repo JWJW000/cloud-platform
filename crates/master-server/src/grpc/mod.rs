@@ -7,7 +7,9 @@
 pub mod auth;
 pub mod convert;
 pub mod enroll;
+pub mod ensure_registration;
 pub mod inbound;
+pub mod link_identity;
 pub mod registration;
 
 use std::pin::Pin;
@@ -50,7 +52,18 @@ impl WorkerLink for WorkerLinkService {
     type OpenLinkStream = MasterMessageStream;
     type WatchRegistrationStream = RegistrationEventStream;
 
-    /// 节点初次注册（第 15.1 节，V5 起标记弃用，保留兼容）。
+    /// V7 幂等注册与状态查询（先于 mTLS）。
+    async fn ensure_registration(
+        &self,
+        request: Request<pb::EnsureRegistrationRequest>,
+    ) -> Result<Response<pb::EnsureRegistrationResponse>, Status> {
+        ensure_registration::ensure_registration(&self.state, request)
+            .await
+            .map(Response::new)
+            .map_err(convert::to_status)
+    }
+
+    /// 节点初次注册（第 15.1 节，标记弃用，保留兼容）。
     async fn enroll(
         &self,
         request: Request<pb::EnrollRequest>,
@@ -90,15 +103,13 @@ impl WorkerLink for WorkerLinkService {
 
     /// 节点双向长连接（第 13.1 节）。
     ///
-    /// V5（第 6.2 节）：正式任务链路**强制 mTLS**——即使入口代理配置为
-    /// 「请求但不强制」客户端证书，Master 方法级也要求携带有效证书指纹，
-    /// 且节点必须已批准、未禁用、证书未吊销。
+    /// V7：正式任务链路通过可信客户端证书指纹鉴权。
     async fn open_link(
         &self,
         request: Request<Streaming<pb::WorkerMessage>>,
     ) -> Result<Response<Self::OpenLinkStream>, Status> {
         let metadata = request.metadata();
-        let identity = auth::authenticate(&self.state, metadata, true)
+        let identity = link_identity::authenticate_link(&self.state, metadata, true)
             .await
             .map_err(convert::to_status)?;
 

@@ -42,7 +42,7 @@ const STREAM_CAPACITY: usize = 128;
 /// 启动 Worker Agent 主循环。
 pub async fn run_agent_loop(config: WorkerConfig, identity: SavedIdentity) -> Result<()> {
     let node_id = identity.node_id.clone();
-    let node_token = identity.node_token.clone();
+    let _node_token = identity.node_token.clone();
 
     std::fs::create_dir_all(&config.storage.data_dir)?;
     let outbox = LocalStore::open(&config.storage.data_dir.join("worker.db"))?;
@@ -78,7 +78,6 @@ pub async fn run_agent_loop(config: WorkerConfig, identity: SavedIdentity) -> Re
         let session = Connection {
             config: &config,
             node_id: &node_id,
-            node_token: &node_token,
             identity: &identity,
             outbox: &outbox,
             config_state: &config_state,
@@ -105,11 +104,32 @@ pub async fn run_agent_loop(config: WorkerConfig, identity: SavedIdentity) -> Re
     }
 }
 
-/// 一次连接所需的全部借用。
-struct Connection<'a> {
+/// 构造长连接会话对象。
+pub fn create_connection<'a>(
     config: &'a WorkerConfig,
     node_id: &'a str,
-    node_token: &'a str,
+    identity: &'a SavedIdentity,
+    outbox: &'a LocalStore,
+    config_state: &'a Arc<ConfigState>,
+    slots: &'a Arc<SlotManager>,
+    nas_probe: &'a NasProbeManager,
+) -> Connection<'a> {
+    Connection {
+        config,
+        node_id,
+        identity,
+        outbox,
+        config_state,
+        slots,
+        nas_probe,
+        reconciling: Arc::new(AtomicBool::new(true)),
+    }
+}
+
+/// 一次连接所需的全部借用。
+pub struct Connection<'a> {
+    config: &'a WorkerConfig,
+    node_id: &'a str,
     identity: &'a SavedIdentity,
     outbox: &'a LocalStore,
     config_state: &'a Arc<ConfigState>,
@@ -120,7 +140,7 @@ struct Connection<'a> {
 
 impl Connection<'_> {
     /// 建立一次长连接并服务到断开为止。
-    async fn serve(
+    pub async fn serve(
         &self,
         bus_rx: &mut mpsc::Receiver<pb::WorkerMessage>,
         sys: &mut System,
@@ -132,11 +152,16 @@ impl Connection<'_> {
 
         let mut req = Request::new(ReceiverStream::new(stream_rx));
         let meta = req.metadata_mut();
-        meta.insert(METADATA_NODE_ID, MetadataValue::try_from(self.node_id)?);
-        meta.insert(
-            METADATA_NODE_TOKEN,
-            MetadataValue::try_from(self.node_token)?,
-        );
+        if !self.node_id.trim().is_empty() {
+            if let Ok(val) = MetadataValue::try_from(self.node_id) {
+                meta.insert(METADATA_NODE_ID, val);
+            }
+        }
+        if !self.identity.node_token.trim().is_empty() {
+            if let Ok(val) = MetadataValue::try_from(self.identity.node_token.as_str()) {
+                meta.insert(METADATA_NODE_TOKEN, val);
+            }
+        }
         meta.insert(
             METADATA_AGENT_VERSION,
             MetadataValue::try_from(AGENT_VERSION)?,

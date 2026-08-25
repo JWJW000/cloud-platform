@@ -493,6 +493,162 @@ impl WorkerStatus {
     }
 }
 
+chinese_enum! {
+    /// 图书馆总库：作品类型。
+    WorkType("作品类型") {
+        Book => "整书",
+        Chapter => "章节",
+        Paper => "论文",
+        Collection => "合集",
+        Other => "其他",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：规范书目消歧与合并状态。
+    ResolutionStatus("消歧状态") {
+        Confirmed => "已确认",
+        Ambiguous => "待消歧",
+        Merged => "已合并",
+        Split => "已拆分",
+        Ignored => "已忽略",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：全局获取状态（设计方案第 6.1 节）。
+    AcquisitionStatus("获取状态") {
+        Pending => "待下载",
+        Queued => "排队中",
+        Claimed => "已领取",
+        Downloading => "下载中",
+        Verifying => "校验中",
+        Acquired => "已下载",
+        RetryableFailure => "暂时失败",
+        SourceInvalid => "来源无效",
+        NeedsConfirm => "人工确认",
+        Excluded => "暂不获取",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：数据导入运行状态。
+    ImportRunStatus("导入运行状态") {
+        Preparing => "准备中",
+        Running => "运行中",
+        Paused => "已暂停",
+        Completed => "已完成",
+        PartiallyFailed => "部分失败",
+        Failed => "失败",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：馆藏文件校验状态。
+    CatalogFileVerifyStatus("馆藏文件状态") {
+        Pending => "待校验",
+        Valid => "有效",
+        Corrupt => "损坏",
+        Missing => "丢失",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：存储后端。
+    StorageBackend("存储后端") {
+        Nas => "NAS",
+        S3 => "S3",
+        Oss => "OSS",
+        Local => "Local",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：贡献者角色。
+    ContributorRole("贡献者角色") {
+        Author => "作者",
+        Translator => "译者",
+        Editor => "编者",
+        Other => "其他",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：主题分类类型。
+    SubjectType("主题类型") {
+        Clc => "中图分类号",
+        Subject => "主题词",
+        Keyword => "关键词",
+        Category => "分类",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：标识符类型。
+    IdentifierType("标识符类型") {
+        Isbn13 => "isbn13",
+        Isbn10 => "isbn10",
+        Doi => "doi",
+        ExternalId => "external_id",
+        DamsCode => "dams_code",
+        Custom => "custom",
+    }
+}
+
+chinese_enum! {
+    /// 图书馆总库：来源文件候选状态。
+    SourceAssetStatus("来源资产状态") {
+        Available => "可用",
+        Unavailable => "不可用",
+        Corrupted => "已损坏",
+        Unknown => "未知",
+    }
+}
+
+impl Default for WorkType {
+    fn default() -> Self {
+        Self::Book
+    }
+}
+
+impl Default for ResolutionStatus {
+    fn default() -> Self {
+        Self::Confirmed
+    }
+}
+
+impl Default for AcquisitionStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+impl AcquisitionStatus {
+    /// 是否为终态。
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Acquired | Self::SourceInvalid | Self::Excluded
+        )
+    }
+
+    /// 是否占用调度资源。
+    pub const fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Claimed | Self::Downloading | Self::Verifying
+        )
+    }
+
+    /// 是否可被全局调度池领取。
+    pub const fn is_claimable(self) -> bool {
+        matches!(
+            self,
+            Self::Pending | Self::Queued | Self::RetryableFailure
+        )
+    }
+}
+
 impl SessionStatus {
     /// 会话是否仍然持有账号与代理租约。
     pub const fn holds_lease(self) -> bool {

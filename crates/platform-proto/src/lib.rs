@@ -25,6 +25,26 @@ pub const METADATA_NODE_TOKEN: &str = "x-node-token";
 pub const METADATA_AGENT_VERSION: &str = "x-agent-version";
 /// 反向代理转发客户端证书指纹时使用的元数据键（mTLS 在边缘终止时）。
 pub const METADATA_CLIENT_CERT_FINGERPRINT: &str = "x-client-cert-fingerprint";
+/// 协议版本元数据键。
+pub const METADATA_PROTOCOL_VERSION: &str = "x-protocol-version";
+
+/// 构造 EnsureRegistration 私钥持有证明的规范化待签名消息（V7 第 5.2 节）。
+pub fn format_ensure_registration_proof(
+    protocol_version: u32,
+    installation_id: &str,
+    csr_sha256: &str,
+    nonce: &str,
+    requested_at: &str,
+) -> String {
+    format!(
+        "v{}:{}:{}:{}:{}",
+        protocol_version,
+        installation_id.trim(),
+        csr_sha256.trim(),
+        nonce.trim(),
+        requested_at.trim()
+    )
+}
 
 impl WorkerMessage {
     /// 构造一条带唯一事件编号与发送时间的 Worker 上行消息。

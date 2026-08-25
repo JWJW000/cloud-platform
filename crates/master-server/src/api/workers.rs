@@ -106,12 +106,14 @@ pub async fn approve_worker(
     let has_session = store::registration::find_active_session(&state.pool, id)
         .await?
         .is_some();
+    let reg_req = store::registration_request::find_request_by_node_id(&state.pool, id).await?;
+
+    let configured_slots = req
+        .configured_slots
+        .unwrap_or_else(|| node.requested_slots.or(Some(node.max_slots)).unwrap_or(5));
 
     let node = if has_session {
-        // 直连注册：批准时才签发证书与令牌（单事务、行锁、幂等）
-        let configured_slots = req
-            .configured_slots
-            .unwrap_or_else(|| node.requested_slots.or(Some(node.max_slots)).unwrap_or(5));
+        // V5 直连注册：批准时才签发证书与令牌（单事务、行锁、幂等）
         let node_id = id;
         let (approved, _session, _token) = store::registration::approve_registration(
             &state.pool,
@@ -128,6 +130,46 @@ pub async fn approve_worker(
         )
         .await?;
         approved
+    } else if let Some(r_req) = reg_req {
+        // V7 直连注册：单事务更新批准状态并签发证书
+        let mut tx = state.pool.begin().await?;
+        let active_cert = store::node::find_active_certificate(&mut *tx, id).await?;
+        if active_cert.is_none() {
+            let issued = state
+                .ca
+                .sign_csr(&r_req.csr_pem, &id.to_string())
+                .map_err(|e| crate::error::AppError::bad(format!("签发客户端证书失败：{e}")))?;
+            store::node::record_certificate(
+                &mut *tx,
+                id,
+                &issued.fingerprint,
+                &issued.certificate_pem,
+                issued.not_after,
+            )
+            .await?;
+        }
+
+        sqlx::query(
+            "UPDATE worker_nodes SET \
+                 registration_status = '已批准', \
+                 configured_slots = $2, \
+                 max_slots = $2, \
+                 approved_at = now(), \
+                 approved_by = $3, \
+                 status = CASE WHEN status = '待审核' THEN '离线' ELSE status END, \
+                 updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(configured_slots.clamp(1, 50))
+        .bind(auth.id)
+        .execute(&mut *tx)
+        .await?;
+
+        store::node::ensure_slots(&mut tx, id, configured_slots.clamp(1, 50)).await?;
+        tx.commit().await?;
+
+        store::node::get_node(&state.pool, id).await?
     } else {
         // 旧注册码节点：证书已签发，这里只置为离线 + 刷新在线
         let approved = store::node::approve_node(&state.pool, id, Some(auth.id)).await?;

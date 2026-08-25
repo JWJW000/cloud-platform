@@ -3,6 +3,12 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "rea
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
 import { AppLayout } from "./components/layout";
+import { CatalogOverviewPage } from "./pages/CatalogOverviewPage";
+import { CatalogSearchPage } from "./pages/CatalogSearchPage";
+import { CatalogDetailPage } from "./pages/CatalogDetailPage";
+import { CatalogAcquisitionsPage } from "./pages/CatalogAcquisitionsPage";
+import { CatalogImportsPage } from "./pages/CatalogImportsPage";
+import { CatalogQualityPage } from "./pages/CatalogQualityPage";
 import { LoginPage } from "./pages/LoginPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { WorkersPage } from "./pages/WorkersPage";
@@ -49,6 +55,12 @@ export function App() {
             </Route>
             <Route element={<Guard />}>
               <Route index element={<DashboardPage />} />
+              <Route path="/catalog/overview" element={<CatalogOverviewPage />} />
+              <Route path="/catalog/search" element={<CatalogSearchPage />} />
+              <Route path="/catalog/editions/:id" element={<CatalogDetailPage />} />
+              <Route path="/catalog/acquisitions" element={<CatalogAcquisitionsPage />} />
+              <Route path="/catalog/imports" element={<CatalogImportsPage />} />
+              <Route path="/catalog/quality" element={<CatalogQualityPage />} />
               <Route path="/workers" element={<WorkersPage />} />
               <Route path="/workers/:id" element={<WorkerDetailPage />} />
               <Route path="/batches" element={<BatchesPage />} />

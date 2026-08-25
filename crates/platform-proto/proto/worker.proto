@@ -10,23 +10,71 @@ syntax = "proto3";
 package platform.worker.v1;
 
 service WorkerLink {
+  // V7: 幂等注册与证书签发/查询（先于 mTLS）。
+  rpc EnsureRegistration(EnsureRegistrationRequest) returns (EnsureRegistrationResponse);
+
+  // 长期双向流：Worker 主动连接，Master 通过同一条流下发指令（第 13.1 节）。
+  // 名称避免使用 Connect —— 生成的客户端已有 `connect` 构造函数。
+  // V7：方法级 mTLS——由实际客户端证书确定唯一节点身份。
+  rpc OpenLink(stream WorkerMessage) returns (stream MasterMessage);
+
   // 注册码换取节点身份与客户端证书（第 15.1 节）。该调用先于 mTLS。
-  // V5 弃用：仍保留一个兼容发布周期，新 Worker 使用 RegisterNode / WatchRegistration。
+  // 弃用：仍保留一个兼容发布周期。
   rpc Enroll(EnrollRequest) returns (EnrollResponse) {
     option deprecated = true;
   }
 
   // V5 直连注册：Worker 只配置一个公开 gRPC 地址即可提交注册申请（第 6.5 节）。
   // 先于 mTLS；幂等、限流、CSR 校验与私钥持有证明由 Master 实施。
-  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  // 弃用：仍保留一个兼容发布周期。
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse) {
+    option deprecated = true;
+  }
 
   // V5 审批结果查询：短期注册会话 + 私钥持有证明，服务端流式返回一条当前状态事件。
-  rpc WatchRegistration(WatchRegistrationRequest) returns (stream RegistrationEvent);
+  // 弃用：仍保留一个兼容发布周期。
+  rpc WatchRegistration(WatchRegistrationRequest) returns (stream RegistrationEvent) {
+    option deprecated = true;
+  }
+}
 
-  // 长期双向流：Worker 主动连接，Master 通过同一条流下发指令（第 13.1 节）。
-  // 名称避免使用 Connect —— 生成的客户端已有 `connect` 构造函数。
-  // V5：方法级强制 mTLS——必须携带有效客户端证书（指纹）+ 节点令牌 + 已批准状态。
-  rpc OpenLink(stream WorkerMessage) returns (stream MasterMessage);
+// ---------------------------------------------------------------- V7 幂等直连注册
+
+message EnsureRegistrationRequest {
+  uint32 protocol_version = 1;
+  string installation_id = 2;
+  NodeProfile profile = 3;
+  string csr_pem = 4;
+  string request_nonce = 5;
+  string requested_at = 6;
+  string proof_signature = 7;
+  uint32 wait_seconds = 8;
+}
+
+message NodeProfile {
+  string node_name = 1;
+  string os_type = 2;
+  string os_version = 3;
+  string agent_version = 4;
+  uint32 requested_slots = 5;
+}
+
+enum RegistrationState {
+  REGISTRATION_STATE_UNSPECIFIED = 0;
+  REGISTRATION_STATE_PENDING = 1;
+  REGISTRATION_STATE_APPROVED = 2;
+  REGISTRATION_STATE_REJECTED = 3;
+  REGISTRATION_STATE_EXPIRED = 4;
+}
+
+message EnsureRegistrationResponse {
+  string node_id = 1;
+  RegistrationState state = 2;
+  uint32 approved_slots = 3;
+  string client_certificate_pem = 4;
+  string rejection_reason = 5;
+  uint32 retry_after_seconds = 6;
+  string registration_expires_at = 7;
 }
 
 // ---------------------------------------------------------------- 节点注册

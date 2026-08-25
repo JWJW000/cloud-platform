@@ -18,10 +18,107 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 use x509_parser::certificate::X509Certificate;
 use x509_parser::prelude::FromDer;
 
-use crate::config::{SavedIdentity, WorkerConfig};
+use crate::config::{MasterLinkConfig, SavedIdentity, WorkerConfig};
 
 /// 连接超时。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 校验磁盘上的私钥与证书文件。
+pub fn validate_client_pair(key_path: &Path, cert_path: &Path) -> Result<()> {
+    let key_pem = std::fs::read_to_string(key_path)
+        .with_context(|| format!("读取私钥文件失败: {}", key_path.display()))?;
+    let cert_pem = std::fs::read_to_string(cert_path)
+        .with_context(|| format!("读取证书文件失败: {}", cert_path.display()))?;
+    validate_cert_key_pair(&cert_pem, &key_pem, cert_path)?;
+    validate_cert_not_expired(&cert_pem, cert_path)?;
+    Ok(())
+}
+
+/// 计算 PEM 格式证书的 SHA-256 指纹（小写无分隔符）。
+pub fn fingerprint_of_pem(pem: &str) -> Result<String> {
+    fingerprint_der(pem)
+}
+
+/// 通用 TLS / mTLS 连接 Endpoint。
+pub async fn connect_tls_endpoint(
+    config: &MasterLinkConfig,
+    endpoint_str: &str,
+    client_auth: Option<(&str, &str)>,
+) -> Result<Channel> {
+    let is_loopback = endpoint_str.starts_with("http://127.0.0.1")
+        || endpoint_str.starts_with("http://localhost");
+
+    if config.insecure {
+        return Endpoint::from_shared(endpoint_str.to_string())
+            .with_context(|| format!("非法的 Master endpoint: {endpoint_str}"))?
+            .connect_timeout(CONNECT_TIMEOUT)
+            .connect()
+            .await
+            .with_context(|| format!("连接 Master 失败: {endpoint_str}"));
+    }
+
+    if !endpoint_str.starts_with("https://") && !is_loopback {
+        bail!("endpoint 必须是 https://（当前：{endpoint_str}）——生产接入边界不允许明文");
+    }
+
+    let mut endpoint = Endpoint::from_shared(endpoint_str.to_string())
+        .with_context(|| format!("非法的 Master endpoint: {endpoint_str}"))?
+        .connect_timeout(CONNECT_TIMEOUT);
+
+    if endpoint_str.starts_with("https://") {
+        let mut tls = ClientTlsConfig::new();
+
+        if let Some((cert_pem, key_pem)) = client_auth {
+            let client_identity = Identity::from_pem(cert_pem, key_pem);
+            tls = tls.identity(client_identity);
+        }
+
+        // 服务端信任根
+        if let Some(server_ca_path) = &config.server_ca_file {
+            tls = tls.ca_certificate(Certificate::from_pem(read_ca_file(server_ca_path)?));
+        } else {
+            #[cfg(unix)]
+            for path in [
+                "/etc/ssl/cert.pem",
+                "/etc/ssl/certs/ca-certificates.crt",
+                "/etc/pki/tls/certs/ca-bundle.crt",
+            ] {
+                let path = Path::new(path);
+                if path.is_file() {
+                    tls = tls.ca_certificate(Certificate::from_pem(read_ca_file(path)?));
+                    break;
+                }
+            }
+        }
+
+        // 域名校验
+        let domain = if let Some(d) = &config.tls_domain {
+            d.trim().to_string()
+        } else {
+            endpoint_str
+                .strip_prefix("https://")
+                .or_else(|| endpoint_str.strip_prefix("http://"))
+                .and_then(|rest| rest.split('/').next())
+                .and_then(|rest| rest.split(':').next())
+                .filter(|h| !h.is_empty())
+                .with_context(|| format!("无法从 endpoint 推导 TLS 域名: {endpoint_str}"))?
+                .to_string()
+        };
+
+        if !domain.is_empty() {
+            tls = tls.domain_name(domain);
+        }
+
+        endpoint = endpoint
+            .tls_config(tls)
+            .context("配置 TLS 参数失败")?;
+    }
+
+    endpoint
+        .connect()
+        .await
+        .with_context(|| format!("连接 Master 失败: {endpoint_str}"))
+}
 
 /// 注册专用 Channel（仅服务端 TLS，不携带客户端证书）。
 pub async fn enrollment_channel(config: &WorkerConfig) -> Result<Channel> {
@@ -47,11 +144,10 @@ pub async fn enrollment_channel(config: &WorkerConfig) -> Result<Channel> {
     if endpoint_str.starts_with("https://") {
         let mut tls = ClientTlsConfig::new();
 
-        // 第 8.2 节第 2 条：私有 Server CA 部署时用显式根验证服务端；配置了但文件缺失必须失败。
-        if let Some(server_ca_path) = &config.master.server_ca_file {
-            let ca_pem = read_ca_file(server_ca_path)?;
-            tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
-        }
+        // 优先使用显式 Server CA；未配置时补充操作系统常见 CA bundle。
+        // macOS Keychain / 部分旧版内置根可能暂未包含 Let's Encrypt 新链，
+        // 但系统维护的 OpenSSL CA bundle 已包含，加载它可避免误报 UnknownIssuer。
+        tls = add_server_trust(tls, config)?;
         // 第 8.2 节第 3 条：校验域名
         tls = tls.domain_name(resolve_tls_domain(config)?);
 
@@ -139,13 +235,9 @@ pub async fn worker_link_channel(
         let client_identity = Identity::from_pem(cert_pem, key_pem);
         tls = tls.identity(client_identity);
 
-        // 2. 服务端信任根：只使用系统根 + server_ca_file。
-        //    Node CA（node_ca_file）绝不加入服务端信任根（第 4.1 节），
-        //    它只用于在管理侧审计客户端证书链。
-        if let Some(server_ca_path) = &paths.server_ca_file {
-            let ca_pem = read_ca_file(server_ca_path)?;
-            tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
-        }
+        // 2. 服务端信任根：显式 server_ca_file 或系统根/系统 CA bundle。
+        //    Node CA（node_ca_file）绝不加入服务端信任根。
+        tls = add_server_trust(tls, config)?;
 
         // 3. 域名校验
         tls = tls.domain_name(resolve_tls_domain(config)?);
@@ -178,6 +270,28 @@ fn resolve_tls_domain(config: &WorkerConfig) -> Result<String> {
         .filter(|h| !h.is_empty())
         .with_context(|| format!("无法从 endpoint 推导 TLS 域名: {endpoint_str}"))?;
     Ok(host.to_string())
+}
+
+/// 配置服务端信任根。
+fn add_server_trust(mut tls: ClientTlsConfig, config: &WorkerConfig) -> Result<ClientTlsConfig> {
+    if let Some(server_ca_path) = &config.master.server_ca_file {
+        return Ok(tls.ca_certificate(Certificate::from_pem(read_ca_file(server_ca_path)?)));
+    }
+
+    #[cfg(unix)]
+    for path in [
+        "/etc/ssl/cert.pem",                  // macOS / Alpine
+        "/etc/ssl/certs/ca-certificates.crt", // Debian / Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",   // RHEL / Fedora
+    ] {
+        let path = Path::new(path);
+        if path.is_file() {
+            tls = tls.ca_certificate(Certificate::from_pem(read_ca_file(path)?));
+            break;
+        }
+    }
+
+    Ok(tls)
 }
 
 /// 读取 Server CA 文件；文件缺失或为空直接失败（fail closed）。

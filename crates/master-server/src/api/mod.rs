@@ -8,6 +8,7 @@ pub mod accounts;
 pub mod auth;
 pub mod batches;
 pub mod books;
+pub mod catalog_v1;
 pub mod enroll_codes;
 pub mod events;
 pub mod health;
@@ -213,6 +214,26 @@ pub fn router(state: AppState) -> Router {
         .route("/api/books/:id/files", get(books::list_book_files))
         .route("/api/books/:id/confirm", post(books::confirm_book))
         .route("/api/books/:id/merge", post(books::merge_books))
+        // 图书馆总库与索引 V1 核心接口
+        .route("/api/catalog/stats", get(catalog_v1::get_stats))
+        .route("/api/catalog/search", get(catalog_v1::search_editions_handler))
+        .route("/api/catalog/editions", get(catalog_v1::search_editions_handler))
+        .route("/api/catalog/editions/:id", get(catalog_v1::get_edition_handler))
+        .route("/api/catalog/sources", get(catalog_v1::list_sources_handler).post(catalog_v1::create_source_handler))
+        .route("/api/catalog/imports/preview", post(catalog_v1::preview_import_handler))
+        .route("/api/catalog/imports/submit", post(catalog_v1::submit_import_handler))
+        .route("/api/catalog/imports/runs", get(catalog_v1::list_import_runs_handler))
+        .route("/api/catalog/imports/runs/:id", get(catalog_v1::get_import_run_handler))
+        .route("/api/catalog/imports/quarantine", get(catalog_v1::list_quarantined_records_handler))
+        .route("/api/catalog/imports/quarantine/:id/resolve", post(catalog_v1::resolve_quarantine_handler))
+        .route("/api/catalog/acquisitions", get(catalog_v1::list_acquisitions_handler))
+        .route("/api/catalog/acquisitions/:id/retry", post(catalog_v1::retry_acquisition_handler))
+        .route("/api/catalog/acquisitions/:id/priority", post(catalog_v1::update_acquisition_priority_handler))
+        .route("/api/catalog/acquisitions/claim", post(catalog_v1::claim_acquisition_handler))
+        .route("/api/catalog/acquisitions/report", post(catalog_v1::report_acquisition_handler))
+        .route("/api/catalog/storage/commit", post(catalog_v1::commit_storage_handler))
+        .route("/api/catalog/resolutions/merge", post(catalog_v1::merge_works_handler))
+        .route("/api/catalog/outbox/process", post(catalog_v1::process_outbox_handler))
         // 批次
         .route("/api/batches", get(batches::list_batches))
         .route("/api/batches/:id", get(batches::get_batch))

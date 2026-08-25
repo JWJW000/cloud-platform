@@ -58,7 +58,7 @@ pub struct AdminSession {
 }
 
 /// Worker 节点。
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 pub struct WorkerNode {
     /// 节点编号。
     pub id: Uuid,
@@ -128,10 +128,110 @@ pub struct WorkerNode {
     pub rejected_by: Option<Uuid>,
     /// V5：拒绝原因（中文）。
     pub reject_reason: Option<String>,
+    /// V7: 凭据模式（token_and_certificate / certificate_only）。
+    pub credential_mode: String,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
     pub updated_at: DateTime<Utc>,
+}
+
+impl WorkerNode {
+    /// 计算连接状态（V7 第 8.4 节：在线 / 离线）。
+    pub fn connection_status(&self) -> &'static str {
+        if self.connected {
+            "在线"
+        } else {
+            "离线"
+        }
+    }
+
+    /// 计算运行状态（V7 第 8.4 节：可用 / 忙碌 / 暂停 / 存储异常 / 未知）。
+    pub fn runtime_status(&self) -> &str {
+        if !self.connected && self.status != "已禁用" && self.status != "待审核" {
+            return "未知";
+        }
+        match self.status.as_str() {
+            "在线" => "可用",
+            "忙碌" => "忙碌",
+            "暂停" => "暂停",
+            "存储异常" => "存储异常",
+            _ => "未知",
+        }
+    }
+}
+
+impl serde::Serialize for WorkerNode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("WorkerNode", 39)?;
+        s.serialize_field("id", &self.id)?;
+        s.serialize_field("name", &self.name)?;
+        s.serialize_field("hostname", &self.hostname)?;
+        s.serialize_field("os", &self.os)?;
+        s.serialize_field("os_version", &self.os_version)?;
+        s.serialize_field("agent_version", &self.agent_version)?;
+        s.serialize_field("status", &self.status)?;
+        s.serialize_field("max_slots", &self.max_slots)?;
+        s.serialize_field("available_slots", &self.available_slots)?;
+        s.serialize_field("upload_concurrency", &self.upload_concurrency)?;
+        s.serialize_field("config_version", &self.config_version)?;
+        s.serialize_field("applied_config_version", &self.applied_config_version)?;
+        s.serialize_field("diagnostics_enabled", &self.diagnostics_enabled)?;
+        s.serialize_field("nas_healthy", &self.nas_healthy)?;
+        s.serialize_field("nas_free_gb", &self.nas_free_gb)?;
+        s.serialize_field("staging_free_gb", &self.staging_free_gb)?;
+        s.serialize_field("cpu_percent", &self.cpu_percent)?;
+        s.serialize_field("memory_used_mb", &self.memory_used_mb)?;
+        s.serialize_field("memory_total_mb", &self.memory_total_mb)?;
+        s.serialize_field("connected", &self.connected)?;
+        s.serialize_field("last_heartbeat_at", &self.last_heartbeat_at)?;
+        s.serialize_field("approved_at", &self.approved_at)?;
+        s.serialize_field("approved_by", &self.approved_by)?;
+        s.serialize_field("installation_id", &self.installation_id)?;
+        s.serialize_field("public_key_fingerprint", &self.public_key_fingerprint)?;
+        s.serialize_field("registration_status", &self.registration_status)?;
+        s.serialize_field("requested_slots", &self.requested_slots)?;
+        s.serialize_field("configured_slots", &self.configured_slots)?;
+        s.serialize_field("registration_expires_at", &self.registration_expires_at)?;
+        s.serialize_field("first_seen_ip", &self.first_seen_ip)?;
+        s.serialize_field("last_registration_at", &self.last_registration_at)?;
+        s.serialize_field("rejected_at", &self.rejected_at)?;
+        s.serialize_field("rejected_by", &self.rejected_by)?;
+        s.serialize_field("reject_reason", &self.reject_reason)?;
+        s.serialize_field("credential_mode", &self.credential_mode)?;
+        s.serialize_field("created_at", &self.created_at)?;
+        s.serialize_field("updated_at", &self.updated_at)?;
+        s.serialize_field("connection_status", self.connection_status())?;
+        s.serialize_field("runtime_status", self.runtime_status())?;
+        s.end()
+    }
+}
+
+/// V7 幂等注册请求记录（实施方案 v7 第 8.2 节）。
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct WorkerRegistrationRequest {
+    /// 关联节点。
+    pub node_id: Uuid,
+    /// 安装实例 UUID。
+    pub installation_id: Uuid,
+    /// CSR PEM。
+    pub csr_pem: String,
+    /// CSR 公钥指纹。
+    pub public_key_fingerprint: String,
+    /// 来源 IP。
+    pub source_ip: Option<String>,
+    /// 申请槽位数。
+    pub requested_slots: i32,
+    /// 首次见到时间。
+    pub first_seen_at: DateTime<Utc>,
+    /// 最近请求时间。
+    pub last_seen_at: DateTime<Utc>,
+    /// 到期时间。
+    pub expires_at: DateTime<Utc>,
 }
 
 /// V5 直连注册会话（库中只存令牌哈希与 CSR 公钥，不存私钥）。

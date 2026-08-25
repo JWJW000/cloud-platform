@@ -78,12 +78,13 @@ async fn main() -> Result<()> {
             reset_identity(&config, yes)?;
         }
         Commands::Run => {
-            // V5：无身份时自动注册（第 6.10 节流程 1-4）
-            let identity = config.load_identity()?;
-            let identity = worker_agent::registration::ensure_registered(&config, identity).await?;
+            // V7：WorkerRuntime 唯一入口（内部管理注册、等待审核、证书落盘、mTLS 与长连接重连）
+            let credentials = worker_agent::FsCredentialStore::new(config.identity_paths());
+            let master = worker_agent::TonicMasterAdapter::new(config.master.clone());
+            let runtime = worker_agent::WorkerRuntime::new(master, credentials);
 
-            tracing::info!(node_id = %identity.node_id, "启动 Worker Agent 节点...");
-            worker_agent::client::run_agent_loop(config, identity).await?;
+            tracing::info!("启动 Worker Agent 运行时...");
+            runtime.run(config).await?;
         }
     }
 
