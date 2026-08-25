@@ -28,8 +28,8 @@ pub use enums::{
     BatchStatus, CatalogFileVerifyStatus, ContributorRole, EnumParseError, ExecutionResult,
     IdentifierType, ImportRunStatus, ImportStatus, ImportType, LogLevel, ManualActionStatus,
     ManualActionType, OperationSource, ProxyStatus, ResolutionStatus, SessionStatus, SlotStatus,
-    SourceAssetStatus, StorageBackend, SubjectType, TaskStatus, TaskType, VerifyStatus,
-    WorkType, WorkerCommandStatus, WorkerStatus,
+    SourceAssetStatus, StorageBackend, SubjectType, TaskStatus, TaskType, VerifyStatus, WorkType,
+    WorkerCommandStatus, WorkerStatus,
 };
 pub use failure::{classify_failure, FailureClass};
 pub use isbn::{normalize_isbn, Isbn};

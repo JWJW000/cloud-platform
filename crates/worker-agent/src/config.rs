@@ -192,8 +192,12 @@ impl WorkerConfig {
             path.to_path_buf()
         };
 
-        let text = std::fs::read_to_string(&resolved_path)
-            .with_context(|| format!("读取 Worker 配置文件失败：{}（请检查程序目录下是否存在 worker.toml）", resolved_path.display()))?;
+        let text = std::fs::read_to_string(&resolved_path).with_context(|| {
+            format!(
+                "读取 Worker 配置文件失败：{}（请检查程序目录下是否存在 worker.toml）",
+                resolved_path.display()
+            )
+        })?;
         let mut config: Self = toml::from_str(&text)
             .with_context(|| format!("解析 Worker 配置文件失败：{}", resolved_path.display()))?;
         config.apply_env();

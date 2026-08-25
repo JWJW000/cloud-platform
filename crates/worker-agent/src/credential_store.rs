@@ -117,8 +117,9 @@ impl FsCredentialStore {
         }
         let content = std::fs::read_to_string(&self.paths.identity_file)
             .map_err(|e| ConnectError::LocalCredentialCorrupt(format!("读取身份文件失败：{e}")))?;
-        let json: IdentityJson = serde_json::from_str(&content)
-            .map_err(|e| ConnectError::LocalCredentialCorrupt(format!("解析身份文件 JSON 失败：{e}")))?;
+        let json: IdentityJson = serde_json::from_str(&content).map_err(|e| {
+            ConnectError::LocalCredentialCorrupt(format!("解析身份文件 JSON 失败：{e}"))
+        })?;
         Ok(Some(json))
     }
 
@@ -156,11 +157,15 @@ impl CredentialStore for FsCredentialStore {
             }
             (Some(key_pem), Some(cert_pem), Some(id)) => {
                 // 校验 key 与 cert 是否匹配且未过期
-                let _key_pair = KeyPair::from_pem(&key_pem).map_err(|e| {
-                    ConnectError::LocalCredentialCorrupt(format!("私钥损坏：{e}"))
-                })?;
-                if let Err(e) = crate::tls::validate_client_pair(&self.paths.client_key_file, &self.paths.client_cert_file) {
-                    return Err(ConnectError::LocalCredentialCorrupt(format!("本地证书与私钥不匹配：{e}")));
+                let _key_pair = KeyPair::from_pem(&key_pem)
+                    .map_err(|e| ConnectError::LocalCredentialCorrupt(format!("私钥损坏：{e}")))?;
+                if let Err(e) = crate::tls::validate_client_pair(
+                    &self.paths.client_key_file,
+                    &self.paths.client_cert_file,
+                ) {
+                    return Err(ConnectError::LocalCredentialCorrupt(format!(
+                        "本地证书与私钥不匹配：{e}"
+                    )));
                 }
                 let node_id = id.node_id.unwrap_or_default();
                 Ok(LocalCredentialState::Ready {
@@ -224,9 +229,8 @@ impl CredentialStore for FsCredentialStore {
         })?;
 
         // 1. 验证 key 与 cert 匹配
-        let _key_pair = KeyPair::from_pem(&key_pem).map_err(|e| {
-            ConnectError::LocalCredentialCorrupt(format!("私钥解析失败：{e}"))
-        })?;
+        let _key_pair = KeyPair::from_pem(&key_pem)
+            .map_err(|e| ConnectError::LocalCredentialCorrupt(format!("私钥解析失败：{e}")))?;
 
         // 2. 原子落盘证书：写入临时文件 -> fsync -> rename -> fsync 目录
         let cert_path = &self.paths.client_cert_file;
@@ -234,10 +238,7 @@ impl CredentialStore for FsCredentialStore {
         std::fs::create_dir_all(parent_dir)
             .map_err(|e| ConnectError::Fatal(anyhow::anyhow!("创建证书目录失败：{e}")))?;
 
-        let tmp_path = parent_dir.join(format!(
-            ".client.crt.{}.tmp",
-            Uuid::new_v4().simple()
-        ));
+        let tmp_path = parent_dir.join(format!(".client.crt.{}.tmp", Uuid::new_v4().simple()));
 
         {
             let mut file = OpenOptions::new()
@@ -358,6 +359,12 @@ struct InMemoryState {
     cert_pem: Option<String>,
 }
 
+impl Default for InMemoryCredentialStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryCredentialStore {
     /// 新建空的内存凭据存储。
     pub fn new() -> Self {
@@ -437,7 +444,9 @@ impl CredentialStore for InMemoryCredentialStore {
             s.node_id = Some(node_id.to_string());
             Ok(())
         } else {
-            Err(ConnectError::LocalCredentialCorrupt("无本地私钥记录".to_string()))
+            Err(ConnectError::LocalCredentialCorrupt(
+                "无本地私钥记录".to_string(),
+            ))
         }
     }
 

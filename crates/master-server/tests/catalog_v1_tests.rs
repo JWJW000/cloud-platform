@@ -59,7 +59,10 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
 
     // 3. 重复导入完全相同内容：必须幂等，不增加新作品或任务
     let dup_res = execute_import(&db.pool, &start_req).await.unwrap();
-    assert_eq!(dup_res.duplicate_count, 3, "同一文件重复导入必须命中幂等去重");
+    assert_eq!(
+        dup_res.duplicate_count, 3,
+        "同一文件重复导入必须命中幂等去重"
+    );
 
     // 4. 统计核对
     let stats = get_catalog_stats(&db.pool).await.unwrap();
@@ -84,11 +87,16 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
     assert!(first.title.contains("算法导论"));
 
     // 6. 详情下钻验证
-    let detail = get_catalog_edition_detail(&db.pool, first.id).await.unwrap();
+    let detail = get_catalog_edition_detail(&db.pool, first.id)
+        .await
+        .unwrap();
     assert_eq!(detail.edition.id, first.id);
     assert!(!detail.source_records.is_empty(), "来源记录必须可追溯");
     assert!(!detail.source_assets.is_empty(), "来源候选文件必须存在");
-    assert!(detail.acquisition_target.is_some(), "必须自动生成全局获取目标");
+    assert!(
+        detail.acquisition_target.is_some(),
+        "必须自动生成全局获取目标"
+    );
 
     // 7. 隔离区查询
     let quarantined = list_quarantined_records(&db.pool, Some(false), 10, 0)
@@ -150,7 +158,9 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
         error_code: Some("NETWORK_TIMEOUT".to_string()),
         error_message: Some("连接超时".to_string()),
     };
-    report_acquisition_task(&db.pool, &fail_report).await.unwrap();
+    report_acquisition_task(&db.pool, &fail_report)
+        .await
+        .unwrap();
 
     // 5. 管理员手动重置任务
     retry_acquisition_target(&db.pool, assignment.target_id)
@@ -179,7 +189,10 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
         .await
         .unwrap();
     let target = detail.acquisition_target.unwrap();
-    assert_eq!(target.status, "已下载", "馆藏文件校验通过后获取目标必须置为已下载");
+    assert_eq!(
+        target.status, "已下载",
+        "馆藏文件校验通过后获取目标必须置为已下载"
+    );
     assert_eq!(target.satisfied_holding_id, Some(commit_res.holding_id));
     assert_eq!(detail.holdings.len(), 1);
     assert_eq!(detail.holdings[0].1.sha256, sha256_hash);

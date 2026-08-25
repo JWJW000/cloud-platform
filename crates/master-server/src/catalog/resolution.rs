@@ -6,9 +6,9 @@
 //! 3. 书目规范化解析（DOI -> ISBN -> 外部编号 -> 书名+作者+出版社 -> 待消歧）。
 
 use platform_domain::{
-    clean_text, extract_isbns, normalize_doi, normalize_format, normalize_md5,
-    normalize_person, normalize_title, parse_publish_year, AcquisitionStatus,
-    ContributorRole, ResolutionStatus, SubjectType, WorkType,
+    clean_text, extract_isbns, normalize_doi, normalize_format, normalize_md5, normalize_person,
+    normalize_title, parse_publish_year, AcquisitionStatus, ContributorRole, ResolutionStatus,
+    SubjectType, WorkType,
 };
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -80,12 +80,29 @@ pub async fn resolve_item(
 ) -> AppResult<ResolutionResult> {
     let clean_title = clean_text(&item.raw_title);
     let norm_title = normalize_title(&clean_title);
-    let norm_author = item.raw_author.as_deref().map(normalize_person).filter(|s| !s.is_empty());
-    let norm_publisher = item.raw_publisher.as_deref().map(normalize_person).filter(|s| !s.is_empty());
+    let norm_author = item
+        .raw_author
+        .as_deref()
+        .map(normalize_person)
+        .filter(|s| !s.is_empty());
+    let norm_publisher = item
+        .raw_publisher
+        .as_deref()
+        .map(normalize_person)
+        .filter(|s| !s.is_empty());
     let pub_year = item.raw_year.as_deref().and_then(parse_publish_year);
-    let primary_lang = item.raw_language.as_deref().unwrap_or("zh").trim().to_lowercase();
+    let primary_lang = item
+        .raw_language
+        .as_deref()
+        .unwrap_or("zh")
+        .trim()
+        .to_lowercase();
     let norm_doi = item.raw_doi.as_deref().and_then(normalize_doi);
-    let isbns = item.raw_isbn.as_deref().map(extract_isbns).unwrap_or_default();
+    let isbns = item
+        .raw_isbn
+        .as_deref()
+        .map(extract_isbns)
+        .unwrap_or_default();
     let norm_md5 = item.md5.as_deref().and_then(normalize_md5);
     let clean_fmt = item.format.as_deref().map(normalize_format);
 
@@ -95,7 +112,7 @@ pub async fn resolve_item(
             "SELECT e.id, e.work_id FROM identifiers i \
              JOIN editions e ON e.id = i.object_id \
              WHERE i.identifier_type = 'doi' AND i.normalized_value = $1 AND i.is_valid \
-             LIMIT 1"
+             LIMIT 1",
         )
         .bind(doi)
         .fetch_optional(&mut **tx)
@@ -103,8 +120,18 @@ pub async fn resolve_item(
 
         if let Some((edition_id, work_id)) = existing_edition {
             let res = attach_source_and_assets(
-                tx, source_record_id, work_id, edition_id, clean_fmt.as_deref(), item.filesize, norm_md5.as_deref(), "doi", 1.0, ResolutionStatus::Confirmed
-            ).await?;
+                tx,
+                source_record_id,
+                work_id,
+                edition_id,
+                clean_fmt.as_deref(),
+                item.filesize,
+                norm_md5.as_deref(),
+                "doi",
+                1.0,
+                ResolutionStatus::Confirmed,
+            )
+            .await?;
             return Ok(res);
         }
     }
@@ -123,8 +150,18 @@ pub async fn resolve_item(
 
         if let Some((edition_id, work_id)) = existing_edition {
             let res = attach_source_and_assets(
-                tx, source_record_id, work_id, edition_id, clean_fmt.as_deref(), item.filesize, norm_md5.as_deref(), "isbn", 1.0, ResolutionStatus::Confirmed
-            ).await?;
+                tx,
+                source_record_id,
+                work_id,
+                edition_id,
+                clean_fmt.as_deref(),
+                item.filesize,
+                norm_md5.as_deref(),
+                "isbn",
+                1.0,
+                ResolutionStatus::Confirmed,
+            )
+            .await?;
             return Ok(res);
         }
     }
@@ -144,8 +181,18 @@ pub async fn resolve_item(
 
         if let Some((work_id, edition_id)) = existing_res {
             let res = attach_source_and_assets(
-                tx, source_record_id, work_id, edition_id, clean_fmt.as_deref(), item.filesize, norm_md5.as_deref(), "source_external_id", 0.95, ResolutionStatus::Confirmed
-            ).await?;
+                tx,
+                source_record_id,
+                work_id,
+                edition_id,
+                clean_fmt.as_deref(),
+                item.filesize,
+                norm_md5.as_deref(),
+                "source_external_id",
+                0.95,
+                ResolutionStatus::Confirmed,
+            )
+            .await?;
             return Ok(res);
         }
     }
@@ -171,8 +218,18 @@ pub async fn resolve_item(
         if matches.len() == 1 {
             let (edition_id, work_id) = matches[0];
             let res = attach_source_and_assets(
-                tx, source_record_id, work_id, edition_id, clean_fmt.as_deref(), item.filesize, norm_md5.as_deref(), "title_author_publisher", 0.85, ResolutionStatus::Confirmed
-            ).await?;
+                tx,
+                source_record_id,
+                work_id,
+                edition_id,
+                clean_fmt.as_deref(),
+                item.filesize,
+                norm_md5.as_deref(),
+                "title_author_publisher",
+                0.85,
+                ResolutionStatus::Confirmed,
+            )
+            .await?;
             return Ok(res);
         }
     }
@@ -180,7 +237,10 @@ pub async fn resolve_item(
     // 5. 若无精确命中，则新建实体
     let work_id = Uuid::new_v4();
     let edition_id = Uuid::new_v4();
-    let res_status = if isbns.is_empty() && norm_doi.is_none() && (norm_author.is_none() || norm_publisher.is_none()) {
+    let res_status = if isbns.is_empty()
+        && norm_doi.is_none()
+        && (norm_author.is_none() || norm_publisher.is_none())
+    {
         ResolutionStatus::Ambiguous
     } else {
         ResolutionStatus::Confirmed
@@ -284,7 +344,7 @@ pub async fn resolve_item(
                 "INSERT INTO contributors (id, name, normalized_name) \
                  VALUES ($1, $2, $3) \
                  ON CONFLICT (normalized_name) DO UPDATE SET name = EXCLUDED.name \
-                 RETURNING id"
+                 RETURNING id",
             )
             .bind(contrib_id)
             .bind(&clean_author)
@@ -315,7 +375,7 @@ pub async fn resolve_item(
                 "INSERT INTO subjects (id, subject_type, name) \
                  VALUES ($1, $2, $3) \
                  ON CONFLICT (subject_type, name) DO UPDATE SET name = EXCLUDED.name \
-                 RETURNING id"
+                 RETURNING id",
             )
             .bind(subj_id)
             .bind(SubjectType::Category.as_str())
@@ -326,7 +386,7 @@ pub async fn resolve_item(
             sqlx::query(
                 "INSERT INTO edition_subjects (id, edition_id, subject_id) \
                  VALUES ($1, $2, $3) \
-                 ON CONFLICT (edition_id, subject_id) DO NOTHING"
+                 ON CONFLICT (edition_id, subject_id) DO NOTHING",
             )
             .bind(Uuid::new_v4())
             .bind(edition_id)
@@ -338,14 +398,25 @@ pub async fn resolve_item(
 
     // 绑定映射、候选文件与获取目标
     let mut res = attach_source_and_assets(
-        tx, source_record_id, work_id, edition_id, clean_fmt.as_deref(), item.filesize, norm_md5.as_deref(), "new_record", 1.0, res_status
-    ).await?;
+        tx,
+        source_record_id,
+        work_id,
+        edition_id,
+        clean_fmt.as_deref(),
+        item.filesize,
+        norm_md5.as_deref(),
+        "new_record",
+        1.0,
+        res_status,
+    )
+    .await?;
     res.is_new_work = true;
     res.is_new_edition = true;
 
     Ok(res)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn attach_source_and_assets(
     tx: &mut Transaction<'_, Postgres>,
     source_record_id: Uuid,
@@ -396,7 +467,7 @@ async fn attach_source_and_assets(
         // 检查是否有匹配的已入库馆藏文件（按 MD5）
         if let Some(md5_str) = md5 {
             let matching_file: Option<Uuid> = sqlx::query_scalar(
-                "SELECT id FROM library_files WHERE md5 = $1 AND verify_status = '有效' LIMIT 1"
+                "SELECT id FROM library_files WHERE md5 = $1 AND verify_status = '有效' LIMIT 1",
             )
             .bind(md5_str)
             .fetch_optional(&mut **tx)
@@ -438,7 +509,7 @@ pub async fn ensure_acquisition_target(
     edition_id: Uuid,
 ) -> AppResult<()> {
     let holding_exists: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM holdings WHERE edition_id = $1 AND meets_strategy LIMIT 1"
+        "SELECT id FROM holdings WHERE edition_id = $1 AND meets_strategy LIMIT 1",
     )
     .bind(edition_id)
     .fetch_optional(&mut **tx)

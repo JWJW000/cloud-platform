@@ -10,6 +10,8 @@
 //! 安全约束（第 6.4 节）：注册会话令牌只存本地身份文件（0600），
 //! 任何日志都不输出私钥、注册会话令牌或节点令牌。
 
+#![allow(deprecated)]
+
 use std::path::Path;
 use std::time::Duration;
 

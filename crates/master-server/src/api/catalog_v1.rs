@@ -8,8 +8,7 @@ use uuid::Uuid;
 use crate::api::auth::AuthenticatedUser;
 use crate::catalog::acquisition::{
     claim_acquisition_task, report_acquisition_task, retry_acquisition_target,
-    set_acquisition_priority, AcquisitionAssignment, AcquisitionReportRequest,
-    WorkerClaimRequest,
+    set_acquisition_priority, AcquisitionAssignment, AcquisitionReportRequest, WorkerClaimRequest,
 };
 use crate::catalog::ingestion::{
     execute_import, preview_import, ImportExecutionResult, ImportManifestRequest,
@@ -26,8 +25,8 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::store::catalog_v1::{
     get_catalog_stats, get_import_run, get_or_create_source, list_import_runs,
-    list_quarantined_records, list_sources, CatalogSourceRow, CatalogStats,
-    EditionDetail, ImportRunRow, QuarantinedRecordRow,
+    list_quarantined_records, list_sources, CatalogSourceRow, CatalogStats, EditionDetail,
+    ImportRunRow, QuarantinedRecordRow,
 };
 
 /// 创建数据源请求。
@@ -196,13 +195,13 @@ pub async fn resolve_quarantine_handler(
         return Err(AppError::missing("隔离记录不存在"));
     };
 
-    let title = req.corrected_title.unwrap_or_else(|| "未命名书目".to_string());
-    let source_id: Uuid = sqlx::query_scalar(
-        "SELECT source_id FROM import_files WHERE id = $1"
-    )
-    .bind(quarantine.import_file_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let title = req
+        .corrected_title
+        .unwrap_or_else(|| "未命名书目".to_string());
+    let source_id: Uuid = sqlx::query_scalar("SELECT source_id FROM import_files WHERE id = $1")
+        .bind(quarantine.import_file_id)
+        .fetch_one(&mut *tx)
+        .await?;
 
     let item = crate::catalog::resolution::ParsedCatalogItem {
         raw_title: title,
@@ -232,10 +231,11 @@ pub async fn resolve_quarantine_handler(
     .execute(&mut *tx)
     .await?;
 
-    let res = crate::catalog::resolution::resolve_item(&mut tx, source_id, source_record_id, &item).await?;
+    let res = crate::catalog::resolution::resolve_item(&mut tx, source_id, source_record_id, &item)
+        .await?;
 
     sqlx::query(
-        "UPDATE quarantined_records SET resolved = TRUE, resolved_at = now() WHERE id = $1"
+        "UPDATE quarantined_records SET resolved = TRUE, resolved_at = now() WHERE id = $1",
     )
     .bind(id)
     .execute(&mut *tx)
@@ -324,13 +324,11 @@ pub async fn merge_works_handler(
     let mut tx = state.pool.begin().await?;
 
     // 将源作品下的全部版本转移到目标作品
-    sqlx::query(
-        "UPDATE editions SET work_id = $2, updated_at = now() WHERE work_id = $1"
-    )
-    .bind(req.source_work_id)
-    .bind(req.target_work_id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("UPDATE editions SET work_id = $2, updated_at = now() WHERE work_id = $1")
+        .bind(req.source_work_id)
+        .bind(req.target_work_id)
+        .execute(&mut *tx)
+        .await?;
 
     // 标记源作品为已合并
     sqlx::query(

@@ -8,9 +8,7 @@ use futures::{Stream, StreamExt};
 use platform_proto::v1 as pb;
 use platform_proto::v1::worker_link_client::WorkerLinkClient;
 use platform_proto::v1::RegistrationState;
-use platform_proto::{
-    METADATA_AGENT_VERSION, METADATA_NODE_ID, METADATA_PROTOCOL_VERSION,
-};
+use platform_proto::{METADATA_AGENT_VERSION, METADATA_NODE_ID, METADATA_PROTOCOL_VERSION};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
@@ -92,8 +90,8 @@ impl MasterPort for TonicMasterAdapter {
         match client.ensure_registration(Request::new(pb_req)).await {
             Ok(resp) => {
                 let r = resp.into_inner();
-                let state = RegistrationState::try_from(r.state)
-                    .unwrap_or(RegistrationState::Unspecified);
+                let state =
+                    RegistrationState::try_from(r.state).unwrap_or(RegistrationState::Unspecified);
                 match state {
                     RegistrationState::Pending => Ok(RegistrationOutcome::Pending {
                         node_id: r.node_id,
@@ -140,7 +138,9 @@ impl MasterPort for TonicMasterAdapter {
 
         // 设置协议元数据
         if let Ok(val) = MetadataValue::try_from("1") {
-            request.metadata_mut().insert(METADATA_PROTOCOL_VERSION, val);
+            request
+                .metadata_mut()
+                .insert(METADATA_PROTOCOL_VERSION, val);
         }
         if let Ok(val) = MetadataValue::try_from(env!("CARGO_PKG_VERSION")) {
             request.metadata_mut().insert(METADATA_AGENT_VERSION, val);
@@ -151,10 +151,7 @@ impl MasterPort for TonicMasterAdapter {
             request.metadata_mut().insert(METADATA_NODE_ID, val);
         }
 
-        let response = client
-            .open_link(request)
-            .await
-            .map_err(map_grpc_status)?;
+        let response = client.open_link(request).await.map_err(map_grpc_status)?;
 
         let inbound = response.into_inner();
         Ok(Box::new(TonicMasterLinkSession {
@@ -170,8 +167,8 @@ async fn fallback_v5_registration(
     client: &mut WorkerLinkClient<Channel>,
     req: &EnsureRegistrationRequestDto,
 ) -> Result<RegistrationOutcome, ConnectError> {
-    let fp = tls::fingerprint_of_pem(&req.csr_pem)
-        .unwrap_or_else(|_| "legacy-fingerprint".to_string());
+    let fp =
+        tls::fingerprint_of_pem(&req.csr_pem).unwrap_or_else(|_| "legacy-fingerprint".to_string());
     let register_req = pb::RegisterNodeRequest {
         installation_id: req.installation_id.clone(),
         node_name: req.node_name.clone(),
@@ -217,17 +214,18 @@ pub struct TonicMasterLinkSession {
 
 impl MasterLinkSession for TonicMasterLinkSession {
     fn send(&mut self, msg: pb::WorkerMessage) -> Result<(), ConnectError> {
-        self.tx
-            .try_send(msg)
-            .map_err(|_| ConnectError::Network {
-                retry_after: Some(Duration::from_secs(1)),
-            })
+        self.tx.try_send(msg).map_err(|_| ConnectError::Network {
+            retry_after: Some(Duration::from_secs(1)),
+        })
     }
 
     fn inbound_stream(
         &mut self,
     ) -> Pin<Box<dyn Stream<Item = Result<pb::MasterMessage, ConnectError>> + Send + 'static>> {
-        let inbound = self.inbound.take().expect("inbound stream already consumed");
+        let inbound = self
+            .inbound
+            .take()
+            .expect("inbound stream already consumed");
         let stream = inbound.map(|item| item.map_err(map_grpc_status));
         Box::pin(stream)
     }

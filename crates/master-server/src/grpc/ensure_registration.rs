@@ -241,7 +241,7 @@ pub async fn ensure_registration(
 
             // 插入新节点
             let new_node = store::node::insert_node(
-                &mut *tx,
+                &mut tx,
                 &node_name,
                 &node_name,
                 os,
@@ -377,10 +377,7 @@ async fn build_response(
         "已批准" => {
             // 幂等获取或签发有效证书
             let cert_pem = get_or_issue_active_cert(state, node, csr_pem).await?;
-            let approved_slots = node
-                .configured_slots
-                .unwrap_or(node.max_slots)
-                .max(1) as u32;
+            let approved_slots = node.configured_slots.unwrap_or(node.max_slots).max(1) as u32;
 
             Ok(pb::EnsureRegistrationResponse {
                 node_id: node.id.to_string(),

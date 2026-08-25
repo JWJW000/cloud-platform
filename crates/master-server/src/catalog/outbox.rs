@@ -31,7 +31,7 @@ pub async fn process_outbox_events(pool: &PgPool, batch_size: i64) -> AppResult<
 
     sqlx::query(
         "UPDATE catalog_outbox SET status = '已同步', synced_at = now() \
-         WHERE id = ANY($1)"
+         WHERE id = ANY($1)",
     )
     .bind(&ids)
     .execute(&mut *tx)

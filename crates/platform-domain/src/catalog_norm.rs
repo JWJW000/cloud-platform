@@ -17,7 +17,7 @@ pub fn extract_isbns(raw: &str) -> Vec<Isbn> {
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for token in raw.split(|c| matches!(c, ',' | ';' | '/' | '|' | '\n' | '\r' | '\t' | '，' | '；' | '、')) {
+    for token in raw.split([',', ';', '/', '|', '\n', '\r', '\t', '，', '；', '、']) {
         let trimmed = token.trim();
         if trimmed.is_empty() {
             continue;
@@ -50,7 +50,10 @@ pub fn normalize_doi(raw: &str) -> Option<String> {
         "doi:",
         "DOI:",
     ] {
-        if cleaned.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+        if cleaned
+            .to_ascii_lowercase()
+            .starts_with(&prefix.to_ascii_lowercase())
+        {
             cleaned = &cleaned[prefix.len()..];
             break;
         }
@@ -110,7 +113,8 @@ pub fn clean_text(raw: &str) -> String {
         return s;
     }
     // 基础 HTML 实体替换
-    s = s.replace("&amp;", "&")
+    s = s
+        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
@@ -184,7 +188,8 @@ mod tests {
         assert!(normalize_md5("invalid-md5").is_none());
 
         assert_eq!(
-            normalize_sha256("E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855").unwrap(),
+            normalize_sha256("E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855")
+                .unwrap(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert!(normalize_sha256("short-sha").is_none());

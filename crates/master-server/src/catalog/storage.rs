@@ -86,12 +86,11 @@ pub async fn commit_library_file(
         if let Some(id) = inserted {
             (id, true)
         } else {
-            let existing_id: Uuid = sqlx::query_scalar(
-                "SELECT id FROM library_files WHERE sha256 = $1"
-            )
-            .bind(req.sha256.to_ascii_lowercase())
-            .fetch_one(&mut *tx)
-            .await?;
+            let existing_id: Uuid =
+                sqlx::query_scalar("SELECT id FROM library_files WHERE sha256 = $1")
+                    .bind(req.sha256.to_ascii_lowercase())
+                    .fetch_one(&mut *tx)
+                    .await?;
             (existing_id, false)
         }
     };
@@ -124,7 +123,7 @@ pub async fn commit_library_file(
              lease_expires_at = NULL, \
              last_error = NULL, \
              updated_at = now() \
-         WHERE edition_id = $1"
+         WHERE edition_id = $1",
     )
     .bind(req.edition_id)
     .bind(actual_holding_id)

@@ -109,9 +109,7 @@ pub async fn connect_tls_endpoint(
             tls = tls.domain_name(domain);
         }
 
-        endpoint = endpoint
-            .tls_config(tls)
-            .context("配置 TLS 参数失败")?;
+        endpoint = endpoint.tls_config(tls).context("配置 TLS 参数失败")?;
     }
 
     endpoint

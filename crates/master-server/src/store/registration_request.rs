@@ -16,6 +16,7 @@ pub const REGISTRATION_REQUEST_COLUMNS: &str =
      requested_slots, first_seen_at, last_seen_at, expires_at";
 
 /// 插入或更新注册请求。
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_registration_request(
     executor: impl PgExecutor<'_>,
     node_id: Uuid,

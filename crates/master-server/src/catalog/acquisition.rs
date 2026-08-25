@@ -90,7 +90,7 @@ pub async fn claim_acquisition_task(
            AND next_attempt_at <= $1 \
            AND (lease_expires_at IS NULL OR lease_expires_at < $1) \
          ORDER BY priority DESC, next_attempt_at ASC \
-         FOR UPDATE SKIP LOCKED LIMIT 1"
+         FOR UPDATE SKIP LOCKED LIMIT 1",
     )
     .bind(now)
     .fetch_optional(&mut *tx)
@@ -106,7 +106,7 @@ pub async fn claim_acquisition_task(
          JOIN source_assets sa ON sa.source_record_id = rr.source_record_id \
          WHERE rr.edition_id = $1 AND sa.status = '可用' \
          ORDER BY (sa.format = 'epub') DESC, (sa.format = 'pdf') DESC \
-         LIMIT 1"
+         LIMIT 1",
     )
     .bind(edition_id)
     .fetch_optional(&mut *tx)
@@ -122,7 +122,7 @@ pub async fn claim_acquisition_task(
     sqlx::query(
         "INSERT INTO acquisition_executions \
              (id, target_id, source_asset_id, node_id, session_id, slot_index, stage, started_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, '已领取', $7)"
+         VALUES ($1, $2, $3, $4, $5, $6, '已领取', $7)",
     )
     .bind(execution_id)
     .bind(target_id)
@@ -145,7 +145,7 @@ pub async fn claim_acquisition_task(
              lease_expires_at = $6, \
              active_source_asset_id = $7, \
              updated_at = now() \
-         WHERE id = $1"
+         WHERE id = $1",
     )
     .bind(target_id)
     .bind(attempts + 1)
@@ -158,12 +158,11 @@ pub async fn claim_acquisition_task(
     .await?;
 
     // 5. 补充图书展示信息
-    let (title, publisher): (String, Option<String>) = sqlx::query_as(
-        "SELECT edition_title, publisher FROM editions WHERE id = $1"
-    )
-    .bind(edition_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let (title, publisher): (String, Option<String>) =
+        sqlx::query_as("SELECT edition_title, publisher FROM editions WHERE id = $1")
+            .bind(edition_id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     let author: Option<String> = sqlx::query_scalar(
         "SELECT c.name FROM edition_contributors ec JOIN contributors c ON c.id = ec.contributor_id WHERE ec.edition_id = $1 ORDER BY ec.sort_order LIMIT 1"
@@ -213,7 +212,7 @@ pub async fn report_acquisition_task(
              error_code = $4, \
              error_message = $5, \
              finished_at = CASE WHEN $3 IS NOT NULL THEN now() ELSE finished_at END \
-         WHERE id = $1"
+         WHERE id = $1",
     )
     .bind(report.execution_id)
     .bind(&report.stage)
@@ -261,7 +260,7 @@ pub async fn report_acquisition_task(
                      next_attempt_at = $3, \
                      last_error = $4, \
                      updated_at = now() \
-                 WHERE id = $1"
+                 WHERE id = $1",
             )
             .bind(report.target_id)
             .bind(next_status.as_str())
@@ -289,7 +288,7 @@ pub async fn retry_acquisition_target(pool: &PgPool, target_id: Uuid) -> AppResu
              lease_expires_at = NULL, \
              last_error = NULL, \
              updated_at = now() \
-         WHERE id = $1"
+         WHERE id = $1",
     )
     .bind(target_id)
     .execute(pool)
@@ -304,13 +303,11 @@ pub async fn set_acquisition_priority(
     target_id: Uuid,
     priority: i32,
 ) -> AppResult<()> {
-    sqlx::query(
-        "UPDATE acquisition_targets SET priority = $2, updated_at = now() WHERE id = $1"
-    )
-    .bind(target_id)
-    .bind(priority.clamp(-1000, 1000))
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE acquisition_targets SET priority = $2, updated_at = now() WHERE id = $1")
+        .bind(target_id)
+        .bind(priority.clamp(-1000, 1000))
+        .execute(pool)
+        .await?;
 
     Ok(())
 }

@@ -605,18 +605,21 @@ chinese_enum! {
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for WorkType {
     fn default() -> Self {
         Self::Book
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for ResolutionStatus {
     fn default() -> Self {
         Self::Confirmed
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for AcquisitionStatus {
     fn default() -> Self {
         Self::Pending
@@ -626,26 +629,17 @@ impl Default for AcquisitionStatus {
 impl AcquisitionStatus {
     /// 是否为终态。
     pub const fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Acquired | Self::SourceInvalid | Self::Excluded
-        )
+        matches!(self, Self::Acquired | Self::SourceInvalid | Self::Excluded)
     }
 
     /// 是否占用调度资源。
     pub const fn is_active(self) -> bool {
-        matches!(
-            self,
-            Self::Claimed | Self::Downloading | Self::Verifying
-        )
+        matches!(self, Self::Claimed | Self::Downloading | Self::Verifying)
     }
 
     /// 是否可被全局调度池领取。
     pub const fn is_claimable(self) -> bool {
-        matches!(
-            self,
-            Self::Pending | Self::Queued | Self::RetryableFailure
-        )
+        matches!(self, Self::Pending | Self::Queued | Self::RetryableFailure)
     }
 }
 

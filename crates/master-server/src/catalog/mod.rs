@@ -17,12 +17,11 @@ pub mod storage;
 
 pub use acquisition::{
     claim_acquisition_task, report_acquisition_task, retry_acquisition_target,
-    set_acquisition_priority, AcquisitionAssignment, AcquisitionReportRequest,
-    WorkerClaimRequest,
+    set_acquisition_priority, AcquisitionAssignment, AcquisitionReportRequest, WorkerClaimRequest,
 };
 pub use ingestion::{
-    execute_import, parse_csv_stream, preview_import, ImportExecutionResult,
-    ImportManifestRequest, ImportPreviewResult, ParsedCatalogItemSummary, StartImportRequest,
+    execute_import, parse_csv_stream, preview_import, ImportExecutionResult, ImportManifestRequest,
+    ImportPreviewResult, ParsedCatalogItemSummary, StartImportRequest,
 };
 pub use outbox::process_outbox_events;
 pub use resolution::{resolve_item, ParsedCatalogItem, ResolutionResult};
@@ -30,6 +29,4 @@ pub use search::{
     get_catalog_edition_detail, search_catalog, CatalogSearchParams, CatalogSearchResponse,
     FacetCount,
 };
-pub use storage::{
-    commit_library_file, CommitLibraryFileRequest, CommitLibraryFileResult,
-};
+pub use storage::{commit_library_file, CommitLibraryFileRequest, CommitLibraryFileResult};

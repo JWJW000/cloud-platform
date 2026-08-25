@@ -86,7 +86,7 @@ pub async fn search_catalog(
     let status_facets_raw: Vec<(String, i64)> = sqlx::query_as(
         "SELECT coalesce(at.status, '待下载') as k, count(*)::bigint FROM editions e \
          LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-         GROUP BY coalesce(at.status, '待下载') ORDER BY count(*) DESC LIMIT 10"
+         GROUP BY coalesce(at.status, '待下载') ORDER BY count(*) DESC LIMIT 10",
     )
     .fetch_all(pool)
     .await
@@ -99,8 +99,14 @@ pub async fn search_catalog(
     .await
     .unwrap_or_default();
 
-    let status_facets = status_facets_raw.into_iter().map(|(key, count)| FacetCount { key, count }).collect();
-    let language_facets = language_facets_raw.into_iter().map(|(key, count)| FacetCount { key, count }).collect();
+    let status_facets = status_facets_raw
+        .into_iter()
+        .map(|(key, count)| FacetCount { key, count })
+        .collect();
+    let language_facets = language_facets_raw
+        .into_iter()
+        .map(|(key, count)| FacetCount { key, count })
+        .collect();
 
     Ok(CatalogSearchResponse {
         items,
@@ -114,9 +120,6 @@ pub async fn search_catalog(
 }
 
 /// 获取单本书目版本的完整详情视图。
-pub async fn get_catalog_edition_detail(
-    pool: &PgPool,
-    id: Uuid,
-) -> AppResult<EditionDetail> {
+pub async fn get_catalog_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDetail> {
     get_edition_detail(pool, id).await
 }

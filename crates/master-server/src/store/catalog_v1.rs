@@ -553,7 +553,7 @@ pub async fn get_or_create_source(
              description = COALESCE(EXCLUDED.description, catalog_sources.description), \
              priority = EXCLUDED.priority, \
              updated_at = now() \
-         RETURNING id, name, source_type, description, priority, enabled, created_at, updated_at"
+         RETURNING id, name, source_type, description, priority, enabled, created_at, updated_at",
     )
     .bind(Uuid::new_v4())
     .bind(name)
@@ -570,7 +570,7 @@ pub async fn get_or_create_source(
 pub async fn list_sources(executor: impl PgExecutor<'_>) -> AppResult<Vec<CatalogSourceRow>> {
     let sources = sqlx::query_as::<_, CatalogSourceRow>(
         "SELECT id, name, source_type, description, priority, enabled, created_at, updated_at \
-         FROM catalog_sources ORDER BY priority DESC, created_at ASC"
+         FROM catalog_sources ORDER BY priority DESC, created_at ASC",
     )
     .fetch_all(executor)
     .await?;
@@ -578,6 +578,7 @@ pub async fn list_sources(executor: impl PgExecutor<'_>) -> AppResult<Vec<Catalo
 }
 
 /// 登记导入文件元数据。
+#[allow(clippy::too_many_arguments)]
 pub async fn register_import_file(
     executor: impl PgExecutor<'_>,
     source_id: Uuid,
@@ -636,6 +637,7 @@ pub async fn create_import_run(
 }
 
 /// 更新导入运行进度与检查点。
+#[allow(clippy::too_many_arguments)]
 pub async fn update_import_run_progress(
     executor: impl PgExecutor<'_>,
     run_id: Uuid,
@@ -657,7 +659,7 @@ pub async fn update_import_run_progress(
              error_summary = $7, \
              completed_at = CASE WHEN $8 THEN now() ELSE completed_at END, \
              updated_at = now() \
-         WHERE id = $1"
+         WHERE id = $1",
     )
     .bind(run_id)
     .bind(checkpoint_row)
@@ -691,10 +693,7 @@ pub async fn list_import_runs(
 }
 
 /// 获取单个导入运行记录。
-pub async fn get_import_run(
-    executor: impl PgExecutor<'_>,
-    id: Uuid,
-) -> AppResult<ImportRunRow> {
+pub async fn get_import_run(executor: impl PgExecutor<'_>, id: Uuid) -> AppResult<ImportRunRow> {
     sqlx::query_as::<_, ImportRunRow>(
         "SELECT id, import_file_id, status, checkpoint_row, total_rows, imported_count, \
                 quarantined_count, duplicate_count, error_summary, started_at, completed_at, created_at, updated_at \
@@ -758,6 +757,7 @@ pub async fn list_quarantined_records(
 }
 
 /// 统计总库核心指标。
+#[allow(clippy::field_reassign_with_default)]
 pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
     let mut stats = CatalogStats::default();
 
@@ -776,10 +776,11 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
         .await
         .unwrap_or(0);
 
-    stats.total_chapters = sqlx::query_scalar("SELECT count(*) FROM works WHERE work_type = '章节'")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+    stats.total_chapters =
+        sqlx::query_scalar("SELECT count(*) FROM works WHERE work_type = '章节'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
 
     stats.total_editions = sqlx::query_scalar("SELECT count(*) FROM editions")
         .fetch_one(pool)
@@ -800,28 +801,30 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
     stats.total_library_files = file_count;
     stats.total_library_bytes = file_bytes;
 
-    let (acquired, pending, downloading, failed, confirm): (i64, i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT \
+    let (acquired, pending, downloading, failed, confirm): (i64, i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT \
              count(*) FILTER (WHERE status = '已下载')::bigint, \
              count(*) FILTER (WHERE status IN ('待下载', '排队中'))::bigint, \
              count(*) FILTER (WHERE status IN ('已领取', '下载中', '校验中'))::bigint, \
              count(*) FILTER (WHERE status IN ('暂时失败', '来源无效'))::bigint, \
              count(*) FILTER (WHERE status = '人工确认')::bigint \
-         FROM acquisition_targets"
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or((0, 0, 0, 0, 0));
+         FROM acquisition_targets",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0, 0, 0, 0, 0));
     stats.acquired_targets = acquired;
     stats.pending_targets = pending;
     stats.downloading_targets = downloading;
     stats.failed_targets = failed;
     stats.needs_confirm_targets = confirm;
 
-    stats.total_quarantined = sqlx::query_scalar("SELECT count(*) FROM quarantined_records WHERE NOT resolved")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+    stats.total_quarantined =
+        sqlx::query_scalar("SELECT count(*) FROM quarantined_records WHERE NOT resolved")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
 
     stats.missing_isbn_count = sqlx::query_scalar(
         "SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.identifier_type IN ('isbn13', 'isbn10') AND i.is_valid)"
@@ -837,12 +840,11 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
     .await
     .unwrap_or(0);
 
-    stats.ambiguous_works_count = sqlx::query_scalar(
-        "SELECT count(*) FROM works WHERE resolution_status = '待消歧'"
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
+    stats.ambiguous_works_count =
+        sqlx::query_scalar("SELECT count(*) FROM works WHERE resolution_status = '待消歧'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
 
     Ok(stats)
 }
@@ -850,6 +852,7 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
 // ============================================================ 检索与详情查询
 
 /// 检索版本列表（支持多维筛选与分页）。
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn search_editions(
     pool: &PgPool,
     keyword: Option<&str>,
@@ -890,7 +893,19 @@ pub async fn search_editions(
     .await?;
 
     let mut items = Vec::with_capacity(rows.len());
-    for (id, work_id, w_type, title, publisher, publish_year, lang, acq_status, res_status, updated_at) in rows {
+    for (
+        id,
+        work_id,
+        w_type,
+        title,
+        publisher,
+        publish_year,
+        lang,
+        acq_status,
+        res_status,
+        updated_at,
+    ) in rows
+    {
         let authors: Vec<String> = sqlx::query_scalar(
             "SELECT c.name FROM edition_contributors ec JOIN contributors c ON c.id = ec.contributor_id WHERE ec.edition_id = $1 ORDER BY ec.sort_order"
         )
@@ -900,7 +915,7 @@ pub async fn search_editions(
         .unwrap_or_default();
 
         let identifiers: Vec<String> = sqlx::query_scalar(
-            "SELECT normalized_value FROM identifiers WHERE object_id = $1 AND is_valid LIMIT 5"
+            "SELECT normalized_value FROM identifiers WHERE object_id = $1 AND is_valid LIMIT 5",
         )
         .bind(id)
         .fetch_all(pool)
@@ -910,7 +925,7 @@ pub async fn search_editions(
         let source_formats: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT sa.format FROM record_resolutions rr \
              JOIN source_assets sa ON sa.source_record_id = rr.source_record_id \
-             WHERE rr.edition_id = $1"
+             WHERE rr.edition_id = $1",
         )
         .bind(id)
         .fetch_all(pool)
@@ -920,7 +935,7 @@ pub async fn search_editions(
         let holding_formats: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT lf.format FROM holdings h \
              JOIN library_files lf ON lf.id = h.library_file_id \
-             WHERE h.edition_id = $1"
+             WHERE h.edition_id = $1",
         )
         .bind(id)
         .fetch_all(pool)
@@ -953,7 +968,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
     let edition: EditionRow = sqlx::query_as(
         "SELECT id, work_id, edition_title, language, publisher, publish_year, publish_date_text, \
                 edition_number, intro, format_summary, status, created_at, updated_at \
-         FROM editions WHERE id = $1"
+         FROM editions WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -972,7 +987,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
     let sibling_editions: Vec<EditionRow> = sqlx::query_as(
         "SELECT id, work_id, edition_title, language, publisher, publish_year, publish_date_text, \
                 edition_number, intro, format_summary, status, created_at, updated_at \
-         FROM editions WHERE work_id = $1 AND id != $2 ORDER BY publish_year DESC NULLS LAST"
+         FROM editions WHERE work_id = $1 AND id != $2 ORDER BY publish_year DESC NULLS LAST",
     )
     .bind(edition.work_id)
     .bind(id)
@@ -993,7 +1008,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
          FROM edition_contributors ec \
          JOIN contributors c ON c.id = ec.contributor_id \
          WHERE ec.edition_id = $1 \
-         ORDER BY ec.sort_order"
+         ORDER BY ec.sort_order",
     )
     .bind(id)
     .fetch_all(pool)
@@ -1003,7 +1018,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
         "SELECT s.id, s.subject_type, s.code, s.name, s.created_at \
          FROM edition_subjects es \
          JOIN subjects s ON s.id = es.subject_id \
-         WHERE es.edition_id = $1"
+         WHERE es.edition_id = $1",
     )
     .bind(id)
     .fetch_all(pool)
@@ -1071,7 +1086,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
         sqlx::query_as(
             "SELECT id, target_id, source_asset_id, node_id, session_id, slot_index, \
                     stage, result, error_code, error_message, started_at, finished_at \
-             FROM acquisition_executions WHERE target_id = $1 ORDER BY started_at DESC LIMIT 50"
+             FROM acquisition_executions WHERE target_id = $1 ORDER BY started_at DESC LIMIT 50",
         )
         .bind(target.id)
         .fetch_all(pool)

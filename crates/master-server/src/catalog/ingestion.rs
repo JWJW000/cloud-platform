@@ -2,12 +2,10 @@
 //!
 //! 实现多格式数据结构自动识别、幂等落库、流式分块、检查点、隔离区与 Outbox 事件投递。
 
-use std::collections::HashMap;
-use platform_domain::{
-    clean_text, ImportRunStatus, WorkType,
-};
+use platform_domain::{clean_text, ImportRunStatus, WorkType};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::catalog::resolution::{resolve_item, ParsedCatalogItem};
@@ -135,12 +133,11 @@ pub async fn preview_import(
     hasher.update(&content_bytes);
     let file_sha256 = hex::encode(hasher.finalize());
 
-    let is_dup: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM import_files WHERE file_sha256 = $1)",
-    )
-    .bind(&file_sha256)
-    .fetch_one(pool)
-    .await?;
+    let is_dup: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM import_files WHERE file_sha256 = $1)")
+            .bind(&file_sha256)
+            .fetch_one(pool)
+            .await?;
 
     let parsed_items = parse_csv_stream(&text_str)?;
     let total_rows = parsed_items.len();
@@ -377,9 +374,15 @@ pub fn parse_csv_stream(text: &str) -> AppResult<Vec<ParsedCatalogItem>> {
         if headers.is_none() {
             let looks_like_header = record.iter().any(|c| {
                 let lower = c.to_lowercase();
-                lower.contains("title") || lower.contains("name") || lower.contains("书名")
-                    || lower.contains("isbn") || lower.contains("author") || lower.contains("作者")
-                    || lower.contains("press") || lower.contains("publisher") || lower.contains("出版社")
+                lower.contains("title")
+                    || lower.contains("name")
+                    || lower.contains("书名")
+                    || lower.contains("isbn")
+                    || lower.contains("author")
+                    || lower.contains("作者")
+                    || lower.contains("press")
+                    || lower.contains("publisher")
+                    || lower.contains("出版社")
             });
 
             if looks_like_header {
@@ -394,27 +397,50 @@ pub fn parse_csv_stream(text: &str) -> AppResult<Vec<ParsedCatalogItem>> {
         if let Some(ref hdrs) = headers {
             for (idx, field) in record.iter().enumerate() {
                 let hdr = hdrs.get(idx).map(|s| s.as_str()).unwrap_or("");
-                raw_map.insert(hdr.to_string(), serde_json::Value::String(field.to_string()));
+                raw_map.insert(
+                    hdr.to_string(),
+                    serde_json::Value::String(field.to_string()),
+                );
 
-                if hdr.contains("title") || hdr.contains("bookname") || hdr.contains("name") || hdr.contains("书名") {
+                if hdr.contains("title")
+                    || hdr.contains("bookname")
+                    || hdr.contains("name")
+                    || hdr.contains("书名")
+                {
                     item.raw_title = field.to_string();
-                } else if hdr.contains("author") || hdr.contains("authors") || hdr.contains("作者") {
+                } else if hdr.contains("author") || hdr.contains("authors") || hdr.contains("作者")
+                {
                     item.raw_author = Some(field.to_string());
-                } else if hdr.contains("publisher") || hdr.contains("press") || hdr.contains("出版社") {
+                } else if hdr.contains("publisher")
+                    || hdr.contains("press")
+                    || hdr.contains("出版社")
+                {
                     item.raw_publisher = Some(field.to_string());
                 } else if hdr.contains("isbn") {
                     item.raw_isbn = Some(field.to_string());
                 } else if hdr.contains("doi") {
                     item.raw_doi = Some(field.to_string());
-                } else if hdr.contains("year") || hdr.contains("pubdate") || hdr.contains("publishdate") || hdr.contains("出版年") {
+                } else if hdr.contains("year")
+                    || hdr.contains("pubdate")
+                    || hdr.contains("publishdate")
+                    || hdr.contains("出版年")
+                {
                     item.raw_year = Some(field.to_string());
-                } else if hdr.contains("lang") || hdr.contains("language") || hdr.contains("语种") {
+                } else if hdr.contains("lang") || hdr.contains("language") || hdr.contains("语种")
+                {
                     item.raw_language = Some(field.to_string());
-                } else if hdr.contains("category") || hdr.contains("scode") || hdr.contains("ztcode") || hdr.contains("分类") {
+                } else if hdr.contains("category")
+                    || hdr.contains("scode")
+                    || hdr.contains("ztcode")
+                    || hdr.contains("分类")
+                {
                     item.raw_category = Some(field.to_string());
                 } else if hdr.contains("intro") || hdr.contains("简介") {
                     item.intro = Some(field.to_string());
-                } else if hdr.contains("extension") || hdr.contains("format") || hdr.contains("格式") {
+                } else if hdr.contains("extension")
+                    || hdr.contains("format")
+                    || hdr.contains("格式")
+                {
                     item.format = Some(field.to_string());
                 } else if hdr.contains("md5") {
                     item.md5 = Some(field.to_string());
@@ -425,7 +451,10 @@ pub fn parse_csv_stream(text: &str) -> AppResult<Vec<ParsedCatalogItem>> {
                 }
             }
 
-            if hdrs.iter().any(|h| h.contains("chapter") || h.contains("章节")) {
+            if hdrs
+                .iter()
+                .any(|h| h.contains("chapter") || h.contains("章节"))
+            {
                 item.work_type = WorkType::Chapter;
             }
         } else {
@@ -467,7 +496,10 @@ pub fn parse_csv_stream(text: &str) -> AppResult<Vec<ParsedCatalogItem>> {
             }
 
             for (idx, field) in record.iter().enumerate() {
-                raw_map.insert(format!("col_{idx}"), serde_json::Value::String(field.to_string()));
+                raw_map.insert(
+                    format!("col_{idx}"),
+                    serde_json::Value::String(field.to_string()),
+                );
             }
         }
 

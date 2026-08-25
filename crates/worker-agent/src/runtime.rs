@@ -79,7 +79,10 @@ impl<P: MasterPort, S: CredentialStore> WorkerRuntime<P, S> {
 
     /// 启动 Worker Agent 主运行循环。
     pub async fn run(self, config: WorkerConfig) -> Result<()> {
-        tracing::info!(phase = RuntimePhase::LoadingLocal.as_str(), "正在加载本地凭据...");
+        tracing::info!(
+            phase = RuntimePhase::LoadingLocal.as_str(),
+            "正在加载本地凭据..."
+        );
 
         // 1. 本地凭据加载与推导
         let local_state = match self.credentials.load_state() {
@@ -302,6 +305,12 @@ impl<P: MasterPort, S: CredentialStore> WorkerRuntime<P, S> {
                 node_id = %credential.node_id,
                 "正在建立 mTLS 正式长连接..."
             );
+
+            // 通过抽象端口打开 mTLS 传输会话
+            let session_res = self.master.open_link(&credential).await;
+            if let Err(ConnectError::Fatal(e)) = session_res {
+                return Err(e);
+            }
 
             // 调用底层 client 进行通信
             let session = crate::client::create_connection(
