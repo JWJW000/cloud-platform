@@ -51,10 +51,10 @@ services:
     volumes:
       # 卷由容器 root 初始化；Dockerfile 已确保 /app/data 属主为 appuser
       - master_data:/app/data
-    # 公网只暴露 Caddy 的 80/443；Master 仅 Docker 内网可达（第 16.1 节）
-    expose:
-      - "8080"
-      - "9443"
+    ports:
+      # 绑定宿主机本地端口供 Nginx 反向代理
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9443:9443"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health/ready"]
       interval: 10s
@@ -67,45 +67,6 @@ services:
         max-size: "50m"
         max-file: "5"
 
-  caddy:
-    image: caddy:2-alpine
-    container_name: drission-caddy
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    depends_on:
-      master:
-        condition: service_healthy
-    environment:
-      TZ: Asia/Shanghai
-      # 管理后台与 Worker gRPC 单独使用两个域名；注册和正式链路都走 WORKER_DOMAIN。
-      ADMIN_DOMAIN: "${ADMIN_DOMAIN:?ADMIN_DOMAIN必须在环境变量中提供}"
-      WORKER_DOMAIN: "${WORKER_DOMAIN:?WORKER_DOMAIN必须在环境变量中提供}"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - master_data:/app/data:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    # Node CA（Master 首次启动自动生成）就绪前不宣称健康；同时检查 Caddy 的
-    # 443 监听与 Master 可达性。不能访问 http://127.0.0.1/...——80 端口会强制
-    # 重定向到 https，且 127.0.0.1 没有匹配的管理域名站点（P1）。
-    healthcheck:
-      test: ["CMD-SHELL", "test -f /app/data/ca.crt && nc -z 127.0.0.1 443 && wget -qO- http://master:8080/health/live >/dev/null 2>&1 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
-
 volumes:
   pgdata:
   master_data:
-  caddy_data:
-  caddy_config:

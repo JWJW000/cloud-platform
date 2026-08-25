@@ -80,7 +80,7 @@ jobs:
             echo "==> 拉取本次构建的 Master 镜像..."
             docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull master
 
-            echo "==> 启动/更新服务并应用最新 Caddy 配置..."
+            echo "==> 启动/更新服务..."
             chmod +x deploy/manage.sh
             ./deploy/manage.sh start
 
