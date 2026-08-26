@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS inventory_scan_jobs (
     started_at          TIMESTAMPTZ,
     finished_at         TIMESTAMPTZ,
     last_error          TEXT,
-    created_by          UUID REFERENCES admin_users(id),
+    created_by          UUID REFERENCES users(id),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
