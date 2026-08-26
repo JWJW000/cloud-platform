@@ -17,6 +17,7 @@ pub mod inventory;
 pub mod logs;
 pub mod mail_provider;
 pub mod manual_actions;
+pub mod outlook_accounts;
 pub mod overview;
 pub mod proxies;
 pub mod sessions;
@@ -336,6 +337,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/accounts",
             get(accounts::list_accounts).post(accounts::create_account),
+        )
+        .route(
+            "/api/accounts/reset-quota",
+            post(accounts::reset_account_quota),
+        )
+        .route(
+            "/api/accounts/outlook/preview",
+            post(outlook_accounts::preview_outlook_accounts),
+        )
+        .route(
+            "/api/accounts/outlook/sync",
+            post(outlook_accounts::sync_outlook_accounts),
         )
         .route(
             "/api/accounts/:id",

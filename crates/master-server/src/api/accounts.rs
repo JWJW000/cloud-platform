@@ -3,7 +3,7 @@
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use platform_domain::AccountStatus;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::auth::AuthenticatedUser;
@@ -23,6 +23,36 @@ pub struct AccountListQuery {
 
 fn default_limit() -> i64 {
     50
+}
+
+/// 账号中心状态卡片汇总。
+#[derive(Debug, Serialize)]
+pub struct AccountSummary {
+    pub total: i64,
+    pub available: i64,
+    pub registered: i64,
+    pub pending_registration: i64,
+    pub verification_pending: i64,
+    pub login_failed: i64,
+    pub exhausted_today: i64,
+    pub disabled: i64,
+}
+
+/// 正式分页响应：列表、总数与状态汇总。
+#[derive(Debug, Serialize)]
+pub struct AccountListResponse {
+    pub items: Vec<Account>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+    pub summary: AccountSummary,
+}
+
+/// 重置额度响应。
+#[derive(Debug, Serialize)]
+pub struct ResetQuotaResponse {
+    pub reset_count: u64,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,15 +95,81 @@ pub async fn list_accounts(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
     Query(query): Query<AccountListQuery>,
-) -> AppResult<Json<Vec<Account>>> {
-    let accounts = store::resource::list_accounts(
+) -> AppResult<Json<AccountListResponse>> {
+    let limit = query.limit.clamp(1, 500);
+    let offset = query.offset.max(0);
+    let (accounts, total, available, status_counts) = tokio::join!(
+        store::resource::list_accounts(&state.pool, query.status.as_deref(), limit, offset,),
+        store::resource::count_accounts(&state.pool, query.status.as_deref()),
+        store::resource::count_available_accounts(&state.pool),
+        store::resource::account_status_counts(&state.pool),
+    );
+    let accounts = accounts?;
+    let total = total?;
+    let available = available?;
+    let status_counts = status_counts?;
+
+    let mut summary = AccountSummary {
+        total,
+        available,
+        registered: 0,
+        pending_registration: 0,
+        verification_pending: 0,
+        login_failed: 0,
+        exhausted_today: 0,
+        disabled: 0,
+    };
+    for (status, count) in status_counts {
+        match status.as_str() {
+            "已注册" => summary.registered = count,
+            "待注册" => summary.pending_registration = count,
+            "待验证" => summary.verification_pending = count,
+            "登录失败" => summary.login_failed = count,
+            "今日额度耗尽" => summary.exhausted_today = count,
+            "已禁用" => summary.disabled = count,
+            _ => {}
+        }
+    }
+    summary.total = summary
+        .registered
+        .saturating_add(summary.pending_registration)
+        .saturating_add(summary.verification_pending)
+        .saturating_add(summary.login_failed)
+        .saturating_add(summary.exhausted_today)
+        .saturating_add(summary.disabled);
+
+    Ok(Json(AccountListResponse {
+        items: accounts,
+        total,
+        limit,
+        offset,
+        summary,
+    }))
+}
+
+/// POST /api/accounts/reset-quota
+pub async fn reset_account_quota(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+) -> AppResult<Json<ResetQuotaResponse>> {
+    auth.require_write()?;
+    let reset_count = store::resource::reset_exhausted_quota(&state.pool).await?;
+
+    store::admin::log(
         &state.pool,
-        query.status.as_deref(),
-        query.limit,
-        query.offset,
+        platform_domain::OperationSource::Admin,
+        platform_domain::LogLevel::Info,
+        &auth.username,
+        "重置账号额度",
+        "all",
+        &format!("将 {reset_count} 个「今日额度耗尽」账号重置为可用"),
     )
     .await?;
-    Ok(Json(accounts))
+
+    Ok(Json(ResetQuotaResponse {
+        reset_count,
+        message: format!("已将 {reset_count} 个「今日额度耗尽」账号重置为可用"),
+    }))
 }
 
 /// GET /api/accounts/:id

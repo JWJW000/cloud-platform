@@ -180,6 +180,30 @@ export interface Account {
   created_at: string;
 }
 
+export interface AccountSummary {
+  total: number;
+  available: number;
+  registered: number;
+  pending_registration: number;
+  verification_pending: number;
+  login_failed: number;
+  exhausted_today: number;
+  disabled: number;
+}
+
+export interface AccountListResponse {
+  items: Account[];
+  total: number;
+  limit: number;
+  offset: number;
+  summary: AccountSummary;
+}
+
+export interface ResetQuotaResponse {
+  reset_count: number;
+  message: string;
+}
+
 export interface Proxy {
   id: string;
   provider: string;
@@ -392,6 +416,40 @@ export interface CommitAccountsRequest {
 
 export interface CommitAccountsResponse {
   imported_accounts: number;
+  registration_batch: AccountRegistrationBatch | null;
+}
+
+export interface OutlookPreviewAccount {
+  email: string;
+  nickname: string;
+}
+
+export interface OutlookPreviewResponse {
+  fetched: number;
+  skipped: number;
+  accounts: OutlookPreviewAccount[];
+}
+
+export interface OutlookSyncRequest {
+  default_password: string;
+  emails: string[];
+  create_batch?: boolean;
+  batch_name?: string;
+  priority?: number;
+  start_immediately?: boolean;
+}
+
+export interface SyncedAccount {
+  id: string;
+  email: string;
+  nickname: string;
+}
+
+export interface OutlookSyncResponse {
+  inserted: number;
+  duplicates: number;
+  skipped: number;
+  accounts: SyncedAccount[];
   registration_batch: AccountRegistrationBatch | null;
 }
 

@@ -8,8 +8,10 @@ import { api, commitAccountsImport, previewAccountsImport } from "../../lib/api"
 import {
   AccountImportMode,
   AccountImportPreview,
+  AccountListResponse,
   ApiError,
   type Account,
+  type ResetQuotaResponse,
 } from "../../lib/types";
 import { formatTime } from "../../lib/format";
 import { MailProviderStatus } from "./MailProviderStatus";
@@ -34,14 +36,22 @@ import {
   ListOrdered,
   ArrowRight,
   ShieldCheck,
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
 } from "lucide-react";
 
 export function AccountCenterPage() {
+  const PAGE_SIZE = 20;
   const { user } = useAuth();
   const toast = useToast();
   const canManage = can(user?.role, "manage_account");
   const isSuperAdmin = user?.role === "超级管理员";
-  const { data, loading, error, reload } = useApi<Account[]>(() => api.get("/api/accounts"));
+  const [page, setPage] = useState(1);
+  const { data, loading, error, reload } = useApi<AccountListResponse>(
+    () => api.get("/api/accounts", { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
+    [page],
+  );
 
   // 单个新增状态
   const [creating, setCreating] = useState(false);
@@ -64,6 +74,7 @@ export function AccountCenterPage() {
   const [previewing, setPreviewing] = useState(false);
   const [previewData, setPreviewData] = useState<AccountImportPreview | null>(null);
   const [committing, setCommitting] = useState(false);
+  const [resettingQuota, setResettingQuota] = useState(false);
 
   const create = async () => {
     setFormError(null);
@@ -100,6 +111,19 @@ export function AccountCenterPage() {
       reload();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "操作失败");
+    }
+  };
+
+  const resetQuota = async () => {
+    setResettingQuota(true);
+    try {
+      const res = await api.post<ResetQuotaResponse>("/api/accounts/reset-quota");
+      toast.success(res.message);
+      reload();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "重置失败");
+    } finally {
+      setResettingQuota(false);
     }
   };
 
@@ -184,12 +208,15 @@ export function AccountCenterPage() {
   if (loading) return <Spinner label="正在加载账号资源池..." />;
   if (error) return <ErrorBox message={error} onRetry={reload} />;
 
-  const accounts = data ?? [];
-  const total = accounts.length;
-  const normal = accounts.filter((a) => a.status === "正常").length;
-  const pendingReg = accounts.filter((a) => a.status === "待注册").length;
-  const disabled = accounts.filter((a) => a.status === "已禁用").length;
-  const limitReached = accounts.filter((a) => a.daily_used >= a.daily_limit && a.status === "正常").length;
+  const accounts = data?.items ?? [];
+  const summary = data?.summary;
+  const total = summary?.total ?? data?.total ?? 0;
+  const registered = summary?.registered ?? 0;
+  const available = summary?.available ?? 0;
+  const pendingReg = summary?.pending_registration ?? 0;
+  const disabled = summary?.disabled ?? 0;
+  const limitReached = summary?.exhausted_today ?? 0;
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / PAGE_SIZE));
 
   return (
     <div className="space-y-6">
@@ -202,6 +229,12 @@ export function AccountCenterPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {canManage && (
+            <Button variant="secondary" size="sm" loading={resettingQuota} onClick={resetQuota}>
+              <RefreshCw className="mr-1.5 h-4 w-4" />
+              重置额度耗尽账号
+            </Button>
+          )}
           <Link to="/accounts/registrations">
             <Button variant="secondary" size="sm">
               <ListOrdered className="mr-1.5 h-4 w-4 text-blue-600" />
@@ -235,7 +268,9 @@ export function AccountCenterPage() {
           </div>
           <div className="mt-2 text-2xl font-bold text-slate-900">{total}</div>
           <div className="mt-1 text-xs text-slate-400">
-            正常可用: <span className="font-semibold text-green-600">{normal}</span>
+            已注册 <span className="font-semibold text-green-600">{registered}</span>
+            <span className="mx-1 text-slate-300">·</span>
+            可用 <span className="font-semibold text-green-600">{available}</span>
           </div>
         </Card>
 
@@ -281,7 +316,7 @@ export function AccountCenterPage() {
         </div>
         <Table
           headers={["邮箱", "昵称", "状态", "当日用量", "额度", "最近登录", "操作"]}
-          empty={!data || data.length === 0 ? <EmptyRow colSpan={7} text="暂无账号" /> : undefined}
+          empty={!data || data.items.length === 0 ? <EmptyRow colSpan={7} text="暂无账号" /> : undefined}
         >
           {accounts.map((a) => (
             <tr key={a.id}>
@@ -307,6 +342,31 @@ export function AccountCenterPage() {
             </tr>
           ))}
         </Table>
+        {data && data.total > 0 && (
+          <div className="border-t border-slate-100 p-4 flex items-center justify-between">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              上一页
+            </Button>
+            <span className="text-xs text-slate-500">
+              第 {page} / {totalPages} 页 · 共 {data.total} 个账号
+            </span>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              下一页
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
       </Card>
 
       {/* 单个新增 Dialog */}

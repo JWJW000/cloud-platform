@@ -72,6 +72,27 @@ pub async fn list_accounts(
     Ok(accounts)
 }
 
+/// 账号列表总数（可带状态过滤）。
+pub async fn count_accounts(executor: impl PgExecutor<'_>, status: Option<&str>) -> AppResult<i64> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts \
+         WHERE ($1::text IS NULL OR status = $1)",
+    )
+    .bind(status)
+    .fetch_one(executor)
+    .await?;
+    Ok(count)
+}
+
+/// 按账号状态统计数量，用于账号中心状态卡片。
+pub async fn account_status_counts(executor: impl PgExecutor<'_>) -> AppResult<Vec<(String, i64)>> {
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT status, count(*)::bigint FROM accounts GROUP BY status")
+            .fetch_all(executor)
+            .await?;
+    Ok(rows)
+}
+
 /// 单个账号。
 pub async fn get_account(executor: impl PgExecutor<'_>, id: Uuid) -> AppResult<Account> {
     sqlx::query_as::<_, Account>(&format!(
@@ -177,6 +198,21 @@ pub async fn reset_expired_quota(executor: impl PgExecutor<'_>) -> AppResult<u64
     )
     .bind(AccountStatus::ExhaustedToday.as_str())
     .bind(AccountStatus::Registered.as_str())
+    .execute(executor)
+    .await?
+    .rows_affected();
+    Ok(affected)
+}
+
+/// 手动将「今日额度耗尽」的账号全部恢复为可用（对标原桌面客户端）。
+pub async fn reset_exhausted_quota(executor: impl PgExecutor<'_>) -> AppResult<u64> {
+    let affected = sqlx::query(
+        "UPDATE accounts SET daily_used = 0, reset_date = current_date, \
+             status = $1, updated_at = now() \
+         WHERE status = $2",
+    )
+    .bind(AccountStatus::Registered.as_str())
+    .bind(AccountStatus::ExhaustedToday.as_str())
     .execute(executor)
     .await?
     .rows_affected();

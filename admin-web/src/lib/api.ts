@@ -191,6 +191,9 @@ import type {
   CommitBooksRequest,
   CommitBooksResponse,
   ManualAction,
+  OutlookPreviewResponse,
+  OutlookSyncRequest,
+  OutlookSyncResponse,
 } from "./types";
 
 export async function previewBooksImport(formData: FormData): Promise<BookImportPreview> {
@@ -211,6 +214,14 @@ export async function commitAccountsImport(req: CommitAccountsRequest): Promise<
 
 export async function deleteImportJob(id: string): Promise<void> {
   await api.delete<void>(`/api/imports/${id}`);
+}
+
+export async function previewOutlookAccounts(): Promise<OutlookPreviewResponse> {
+  return api.post<OutlookPreviewResponse>("/api/accounts/outlook/preview");
+}
+
+export async function syncOutlookAccounts(req: OutlookSyncRequest): Promise<OutlookSyncResponse> {
+  return api.post<OutlookSyncResponse>("/api/accounts/outlook/sync", req);
 }
 
 export async function listAccountRegistrationBatches(params?: { limit?: number }): Promise<BatchWithProgress[]> {

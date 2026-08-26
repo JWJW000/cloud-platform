@@ -116,7 +116,7 @@ pub struct TestMailProviderResponse {
     pub latency_ms: Option<u64>,
 }
 
-fn is_restricted_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_restricted_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             v4.is_loopback()
@@ -155,12 +155,12 @@ fn normalize_list(items: Option<Vec<String>>, field: &str) -> AppResult<Vec<Stri
     Ok(values)
 }
 
-struct ValidatedOutlookTarget {
-    host: String,
-    pinned_address: SocketAddr,
+pub(crate) struct ValidatedOutlookTarget {
+    pub(crate) host: String,
+    pub(crate) pinned_address: SocketAddr,
 }
 
-async fn validate_outlook_endpoint(
+pub(crate) async fn validate_outlook_endpoint(
     endpoint: &str,
     allowed_hosts: &[String],
 ) -> AppResult<ValidatedOutlookTarget> {
