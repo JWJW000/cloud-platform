@@ -3,7 +3,6 @@ import { useState, useRef, useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
   LogOut,
-  Radio,
   Shield,
   WifiOff,
   RefreshCw,
@@ -136,9 +135,7 @@ export function AppLayout() {
       {/* 桌面端侧栏 */}
       <aside className="hidden md:flex w-56 shrink-0 flex-col border-r border-slate-200 bg-white">
         <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-4">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white">
-            <Radio className="h-4 w-4" />
-          </span>
+          <img src="/favicon.png" alt="Logo" className="h-8 w-8 rounded-lg object-contain" />
           <div>
             <div className="text-sm font-bold text-slate-900">Drission Cloud</div>
             <div className="text-[11px] text-slate-400">数字图书馆总库调度</div>
@@ -151,7 +148,7 @@ export function AppLayout() {
         <div className="border-t border-slate-100 p-3">
           <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-500">
             <Shield className="h-3.5 w-3.5 text-slate-400" />
-            <span>{user?.role ?? "-"}</span>
+            <span className="truncate">{user?.role ?? "-"}</span>
           </div>
         </div>
       </aside>
@@ -176,9 +173,7 @@ export function AppLayout() {
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4">
               <div className="flex items-center gap-2">
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white">
-                  <Radio className="h-4 w-4" />
-                </span>
+                <img src="/favicon.png" alt="Logo" className="h-8 w-8 rounded-lg object-contain" />
                 <div className="text-sm font-bold text-slate-900">Drission Cloud</div>
               </div>
               <button
