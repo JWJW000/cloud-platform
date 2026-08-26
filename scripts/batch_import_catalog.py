@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 高并发流式解析大型书目 Excel 并直接以【已下载馆藏】（Holdings + 已下载 Acquisition Targets）入库云端 PostgreSQL
-采用分表单独执行 COPY，避免跨表缓冲区阻塞。
+具备断点续传（自动检测远端已存在行数并跳过，绝不重复插入，无缝继续）。
 """
 
 import sys
@@ -100,13 +100,35 @@ def stream_xlsx(path):
                     elem.clear()
                     yield row_num, row_dict
 
+def get_already_imported_count(file_type, ssh_target, key_path):
+    sql = f"SELECT count(*) FROM library_files WHERE object_key LIKE 'imported/{file_type}/%';"
+    cmd = [
+        "ssh", "-i", key_path,
+        "-o", "StrictHostKeyChecking=no",
+        ssh_target,
+        f"docker exec drission-postgres psql -U postgres -d drission_book -t -A -c \"{sql}\""
+    ]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode == 0 and res.stdout.strip().isdigit():
+            return int(res.stdout.strip())
+    except Exception as e:
+        print(f"[!] 检查已导入进度失败: {e}", flush=True)
+    return 0
+
 def process_and_import(xlsx_path, file_type, ssh_target, key_path):
     print(f"\n=======================================================", flush=True)
     print(f" 开始导入已下载馆藏: {xlsx_path} (模式: {file_type})", flush=True)
     print(f"=======================================================", flush=True)
 
+    already_done = get_already_imported_count(file_type, ssh_target, key_path)
+    print(f"[*] 经远端数据库对账，该文件之前已入库: {already_done:,} 条记录", flush=True)
+    if already_done > 0:
+        print(f"[*] 将自动跳过前 {already_done:,} 条已入库记录，实现断点续传！", flush=True)
+
     total_processed = 0
     total_valid = 0
+    skipped_count = 0
 
     works_buf = io.StringIO()
     editions_buf = io.StringIO()
@@ -224,6 +246,13 @@ def process_and_import(xlsx_path, file_type, ssh_target, key_path):
         if not title or not title.strip():
             continue
 
+        # 检查是否为已导入过的记录
+        if skipped_count < already_done:
+            skipped_count += 1
+            if skipped_count % 50000 == 0 or skipped_count == already_done:
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 快速跳过已入库记录: {skipped_count:,}/{already_done:,} ...", flush=True)
+            continue
+
         title = title.strip()
         author = author.strip() if author else None
         publisher = publisher.strip() if publisher else None
@@ -281,12 +310,12 @@ def process_and_import(xlsx_path, file_type, ssh_target, key_path):
 
         if current_batch_count >= BATCH_SIZE:
             flush_copy()
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 进度: 已解析 {total_processed} 行，已入库 {total_valid} 本【已下载馆藏】...", flush=True)
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 进度: 新增入库 {total_valid:,} 条 (本文件累计: {(already_done + total_valid):,} 条)...", flush=True)
 
     if current_batch_count > 0:
         flush_copy()
 
-    print(f"[✓] {xlsx_path} 导入完成！共扫描 {total_processed} 行，入库 {total_valid} 本已下载馆藏！\n", flush=True)
+    print(f"[✓] {xlsx_path} 处理完毕！本次新增入库 {total_valid:,} 本已下载馆藏！\n", flush=True)
 
 if __name__ == '__main__':
     KEY = os.path.expanduser('~/Downloads/Key_us.pem')

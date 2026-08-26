@@ -947,6 +947,84 @@ pub async fn search_editions(
         rows.reverse();
     }
 
+    if rows.is_empty() {
+        return Ok((Vec::new(), false));
+    }
+
+    let edition_ids: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+
+    // 批量一次性查询所有作者 (避免 N*4 次循环子查询)
+    let all_authors: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT ec.edition_id, c.name \
+         FROM edition_contributors ec \
+         JOIN contributors c ON c.id = ec.contributor_id \
+         WHERE ec.edition_id = ANY($1) \
+         ORDER BY ec.edition_id, ec.sort_order",
+    )
+    .bind(&edition_ids)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // 批量一次性查询所有标识符
+    let all_identifiers: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT object_id, normalized_value \
+         FROM identifiers \
+         WHERE object_id = ANY($1) AND is_valid",
+    )
+    .bind(&edition_ids)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // 批量一次性查询来源格式
+    let all_source_formats: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT DISTINCT rr.edition_id, sa.format \
+         FROM record_resolutions rr \
+         JOIN source_assets sa ON sa.source_record_id = rr.source_record_id \
+         WHERE rr.edition_id = ANY($1)",
+    )
+    .bind(&edition_ids)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    // 批量一次性查询馆藏格式
+    let all_holding_formats: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT DISTINCT h.edition_id, lf.format \
+         FROM holdings h \
+         JOIN library_files lf ON lf.id = h.library_file_id \
+         WHERE h.edition_id = ANY($1)",
+    )
+    .bind(&edition_ids)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    use std::collections::HashMap;
+    let mut authors_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (eid, name) in all_authors {
+        authors_map.entry(eid).or_default().push(name);
+    }
+
+    let mut idents_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (eid, val) in all_identifiers {
+        let list = idents_map.entry(eid).or_default();
+        if list.len() < 5 {
+            list.push(val);
+        }
+    }
+
+    let mut src_fmt_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (eid, fmt) in all_source_formats {
+        src_fmt_map.entry(eid).or_default().push(fmt);
+    }
+
+    let mut hld_fmt_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (eid, fmt) in all_holding_formats {
+        hld_fmt_map.entry(eid).or_default().push(fmt);
+    }
+
     let mut items = Vec::with_capacity(rows.len());
     for (
         id,
@@ -967,41 +1045,10 @@ pub async fn search_editions(
         last_error,
     ) in rows
     {
-        let authors: Vec<String> = sqlx::query_scalar(
-            "SELECT c.name FROM edition_contributors ec JOIN contributors c ON c.id = ec.contributor_id WHERE ec.edition_id = $1 ORDER BY ec.sort_order"
-        )
-        .bind(id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-
-        let identifiers: Vec<String> = sqlx::query_scalar(
-            "SELECT normalized_value FROM identifiers WHERE object_id = $1 AND is_valid LIMIT 5",
-        )
-        .bind(id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-
-        let source_formats: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT sa.format FROM record_resolutions rr \
-             JOIN source_assets sa ON sa.source_record_id = rr.source_record_id \
-             WHERE rr.edition_id = $1",
-        )
-        .bind(id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-
-        let holding_formats: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT lf.format FROM holdings h \
-             JOIN library_files lf ON lf.id = h.library_file_id \
-             WHERE h.edition_id = $1",
-        )
-        .bind(id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+        let authors = authors_map.remove(&id).unwrap_or_default();
+        let identifiers = idents_map.remove(&id).unwrap_or_default();
+        let source_formats = src_fmt_map.remove(&id).unwrap_or_default();
+        let holding_formats = hld_fmt_map.remove(&id).unwrap_or_default();
 
         items.push(EditionSearchItem {
             id,
