@@ -312,11 +312,24 @@ impl<P: MasterPort, S: CredentialStore> WorkerRuntime<P, S> {
                 "正在建立 mTLS 正式长连接..."
             );
 
-            // 通过抽象端口打开 mTLS 传输会话
-            let session_res = self.master.open_link(&credential).await;
-            if let Err(ConnectError::Fatal(e)) = session_res {
-                return Err(e);
-            }
+            // 通过抽象端口打开唯一的 mTLS 传输会话。该会话必须直接承载业务流，
+            // 不能仅作探测后丢弃并再建立一条旧版连接。
+            let master_session = match self.master.open_link(&credential).await {
+                Ok(session) => session,
+                Err(ConnectError::Fatal(e)) => return Err(e),
+                Err(error) => {
+                    let jittered = add_jitter(backoff);
+                    tracing::warn!(
+                        phase = RuntimePhase::BackingOff.as_str(),
+                        error = %error,
+                        retry_after_ms = jittered.as_millis() as u64,
+                        "与 Master 的长连接异常"
+                    );
+                    tokio::time::sleep(jittered).await;
+                    backoff = (backoff * 2).min(max_backoff);
+                    continue;
+                }
+            };
 
             // 调用底层 client 进行通信
             let session = crate::client::create_connection(
@@ -329,7 +342,9 @@ impl<P: MasterPort, S: CredentialStore> WorkerRuntime<P, S> {
                 &nas_probe,
             );
 
-            let run_res = session.serve(&mut bus_rx, &mut sys).await;
+            let run_res = session
+                .serve_master_session(master_session, &mut bus_rx, &mut sys)
+                .await;
 
             match run_res {
                 Ok(()) => {

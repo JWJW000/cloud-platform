@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::stream;
+use platform_proto::v1 as pb;
 use worker_agent::credential_store::{
     CredentialStore, InMemoryCredentialStore, LocalCredentialState,
 };
@@ -21,6 +23,56 @@ struct InMemoryMasterAdapter {
     registration_calls: Arc<AtomicUsize>,
     outcome_sequence: Arc<tokio::sync::Mutex<Vec<Result<RegistrationOutcome, ConnectError>>>>,
     open_link_called: Arc<AtomicBool>,
+}
+
+struct RecordingSession {
+    sent: Arc<AtomicUsize>,
+}
+
+impl MasterLinkSession for RecordingSession {
+    fn send(&mut self, _msg: pb::WorkerMessage) -> Result<(), ConnectError> {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn inbound_stream(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<pb::MasterMessage, ConnectError>> + Send + 'static>,
+    > {
+        Box::pin(stream::empty())
+    }
+}
+
+#[derive(Clone)]
+struct OneSessionThenStopAdapter {
+    open_calls: Arc<AtomicUsize>,
+    sent: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl MasterPort for OneSessionThenStopAdapter {
+    async fn ensure_registration(
+        &self,
+        _request: EnsureRegistrationRequestDto,
+    ) -> Result<RegistrationOutcome, ConnectError> {
+        unreachable!("ready credential must not register again")
+    }
+
+    async fn open_link(
+        &self,
+        _credential: &ClientCredential,
+    ) -> Result<Box<dyn MasterLinkSession>, ConnectError> {
+        if self.open_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(Box::new(RecordingSession {
+                sent: self.sent.clone(),
+            }))
+        } else {
+            Err(ConnectError::Fatal(anyhow::anyhow!(
+                "stop after first session"
+            )))
+        }
+    }
 }
 
 impl InMemoryMasterAdapter {
@@ -145,4 +197,35 @@ async fn ready_credentials_directly_connects_mtls() {
     assert_eq!(master.registration_calls.load(Ordering::SeqCst), 0);
     // 直接尝试 open_link
     assert!(master.open_link_called.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn approved_runtime_uses_the_opened_master_session_for_business_messages() {
+    let cred_store = InMemoryCredentialStore::with_ready(
+        "test-installation-id",
+        "node-ready",
+        &rcgen::KeyPair::generate().unwrap().serialize_pem(),
+        "ready-cert-pem",
+    );
+    let master = OneSessionThenStopAdapter {
+        open_calls: Arc::new(AtomicUsize::new(0)),
+        sent: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut config = dummy_config();
+    let suffix = uuid::Uuid::new_v4();
+    config.storage.data_dir = format!("target/runtime-session-{suffix}").into();
+    config.storage.nas_mount = format!("target/runtime-session-nas-{suffix}").into();
+
+    let runtime = WorkerRuntime::new(master.clone(), cred_store);
+    let result = runtime.run(config).await;
+
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("stop after first session"));
+    assert_eq!(master.open_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        master.sent.load(Ordering::SeqCst) > 0,
+        "NodeOnline must flow through the exact MasterPort session that passed mTLS"
+    );
 }

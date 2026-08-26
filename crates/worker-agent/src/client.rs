@@ -4,6 +4,7 @@
 //! 负责与 Master 建立 TLS / mTLS 连接、重连现场对账、Outbox 补报与实时指令分发。
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +29,7 @@ use uuid::Uuid;
 use crate::bus::{volatile_id, OutboundEventBus};
 use crate::config::{SavedIdentity, WorkerConfig};
 use crate::dynamic::ConfigState;
+use crate::master_port::{ConnectError, MasterLinkSession};
 use crate::outbox::LocalStore;
 use crate::slot::SlotManager;
 use crate::storage::{self, NasHealth, NasProbeManager};
@@ -181,9 +183,58 @@ impl Connection<'_> {
             );
         }
 
-        let mut in_stream = client.open_link(req).await?.into_inner();
+        let in_stream = client.open_link(req).await?.into_inner();
         tracing::info!(node_id = %self.node_id, "gRPC mTLS 长连接已建立");
 
+        let inbound = in_stream.map(|item| item.map_err(anyhow::Error::from));
+        self.serve_established(stream_tx, Box::pin(inbound), bus_rx, sys)
+            .await
+    }
+
+    /// 使用已经由 [`MasterPort`](crate::master_port::MasterPort) 完成 mTLS 鉴权的会话。
+    ///
+    /// V7 运行时必须只建立这一条正式链路；不能在探测成功后再启动旧版第二连接，
+    /// 否则第一条 HTTP/2 流会被提前丢弃，并让两套身份模型互相干扰。
+    pub async fn serve_master_session(
+        &self,
+        mut session: Box<dyn MasterLinkSession>,
+        bus_rx: &mut mpsc::Receiver<pb::WorkerMessage>,
+        sys: &mut System,
+    ) -> Result<()> {
+        let inbound = session
+            .inbound_stream()
+            .map(|item| item.map_err(connect_error_to_anyhow));
+        let (stream_tx, mut stream_rx) = mpsc::channel::<pb::WorkerMessage>(STREAM_CAPACITY);
+
+        // MasterLinkSession 的发送端是同步的 try_send 接口。用一个有界本地队列桥接，
+        // 保留现有 Outbox/心跳代码的背压语义，同时确保会话始终只有一个所有者。
+        let sender = tokio::spawn(async move {
+            while let Some(msg) = stream_rx.recv().await {
+                session.send(msg).map_err(connect_error_to_anyhow)?;
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+
+        tracing::info!(node_id = %self.node_id, "gRPC mTLS 长连接已建立");
+        let result = self
+            .serve_established(stream_tx, Box::pin(inbound), bus_rx, sys)
+            .await;
+        match sender.await {
+            Ok(Ok(())) => result,
+            Ok(Err(send_error)) if result.is_ok() => Err(send_error),
+            Ok(Err(_)) | Err(_) => result,
+        }
+    }
+
+    async fn serve_established(
+        &self,
+        stream_tx: mpsc::Sender<pb::WorkerMessage>,
+        mut in_stream: Pin<
+            Box<dyn futures::Stream<Item = Result<pb::MasterMessage>> + Send + 'static>,
+        >,
+        bus_rx: &mut mpsc::Receiver<pb::WorkerMessage>,
+        sys: &mut System,
+    ) -> Result<()> {
         // 丢弃断线期间积压的易失消息
         let dropped = OutboundEventBus::drain_stale(bus_rx);
         if dropped > 0 {
@@ -249,8 +300,8 @@ impl Connection<'_> {
                             }
                         }
                     }
-                    Some(Err(status)) => {
-                        tracing::warn!(status = %status, "Master 下行流报错");
+                    Some(Err(error)) => {
+                        tracing::warn!(error = %error, "Master 下行流报错");
                         break;
                     }
                     None => {
@@ -1273,6 +1324,10 @@ impl Connection<'_> {
             detail: format!("{detail}（挂载点：{}）", health.detail),
         }
     }
+}
+
+fn connect_error_to_anyhow(error: ConnectError) -> anyhow::Error {
+    anyhow::anyhow!(error)
 }
 
 /// 读取文件前 1KB 识别真实格式（魔数 + 扩展名）。
