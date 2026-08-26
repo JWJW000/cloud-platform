@@ -66,29 +66,13 @@ pub async fn connect_tls_endpoint(
         .connect_timeout(CONNECT_TIMEOUT);
 
     if endpoint_str.starts_with("https://") {
-        let mut tls = ClientTlsConfig::new();
+        // 先配置根证书；tonic 的 `with_enabled_roots` 会生成一份新的 TLS 配置，
+        // 因此客户端身份必须在它之后设置，避免 mTLS identity 被覆盖。
+        let mut tls = add_master_server_trust(ClientTlsConfig::new(), config)?;
 
         if let Some((cert_pem, key_pem)) = client_auth {
             let client_identity = Identity::from_pem(cert_pem, key_pem);
             tls = tls.identity(client_identity);
-        }
-
-        // 服务端信任根
-        if let Some(server_ca_path) = &config.server_ca_file {
-            tls = tls.ca_certificate(Certificate::from_pem(read_ca_file(server_ca_path)?));
-        } else {
-            #[cfg(unix)]
-            for path in [
-                "/etc/ssl/cert.pem",
-                "/etc/ssl/certs/ca-certificates.crt",
-                "/etc/pki/tls/certs/ca-bundle.crt",
-            ] {
-                let path = Path::new(path);
-                if path.is_file() {
-                    tls = tls.ca_certificate(Certificate::from_pem(read_ca_file(path)?));
-                    break;
-                }
-            }
         }
 
         // 域名校验
@@ -227,15 +211,13 @@ pub async fn worker_link_channel(
         .connect_timeout(CONNECT_TIMEOUT);
 
     if endpoint_str.starts_with("https://") {
-        let mut tls = ClientTlsConfig::new();
+        // 1. 服务端信任根：显式 server_ca_file 或系统根/公共根。
+        //    Node CA（node_ca_file）绝不加入服务端信任根。
+        let mut tls = add_server_trust(ClientTlsConfig::new(), config)?;
 
-        // 1. 客户端身份：mTLS 出示证书与私钥
+        // 2. 客户端身份：mTLS 出示证书与私钥
         let client_identity = Identity::from_pem(cert_pem, key_pem);
         tls = tls.identity(client_identity);
-
-        // 2. 服务端信任根：显式 server_ca_file 或系统根/系统 CA bundle。
-        //    Node CA（node_ca_file）绝不加入服务端信任根。
-        tls = add_server_trust(tls, config)?;
 
         // 3. 域名校验
         tls = tls.domain_name(resolve_tls_domain(config)?);
@@ -272,9 +254,21 @@ fn resolve_tls_domain(config: &WorkerConfig) -> Result<String> {
 
 /// 配置服务端信任根。
 fn add_server_trust(mut tls: ClientTlsConfig, config: &WorkerConfig) -> Result<ClientTlsConfig> {
-    if let Some(server_ca_path) = &config.master.server_ca_file {
+    tls = add_master_server_trust(tls, &config.master)?;
+
+    Ok(tls)
+}
+
+/// 未配置显式 CA 时加载系统根与 WebPKI 公共根；显式 CA 保持独占信任语义。
+fn add_master_server_trust(
+    mut tls: ClientTlsConfig,
+    config: &MasterLinkConfig,
+) -> Result<ClientTlsConfig> {
+    if let Some(server_ca_path) = &config.server_ca_file {
         return Ok(tls.ca_certificate(Certificate::from_pem(read_ca_file(server_ca_path)?)));
     }
+
+    tls = tls.with_enabled_roots();
 
     #[cfg(unix)]
     for path in [
