@@ -807,6 +807,19 @@ pub async fn check_nas_health(storage: &StorageConfig, node_id: &str) -> NasHeal
 
 /// 查询某个路径所在文件系统的剩余空间（GB）。
 pub fn free_space_gb(path: &std::path::Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        return windows_free_space_gb(path);
+    }
+
+    #[cfg(not(windows))]
+    {
+        free_space_gb_from_disks(path)
+    }
+}
+
+#[cfg(not(windows))]
+fn free_space_gb_from_disks(path: &std::path::Path) -> Option<u64> {
     let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let disks = sysinfo::Disks::new_with_refreshed_list();
     disks
@@ -816,9 +829,42 @@ pub fn free_space_gb(path: &std::path::Path) -> Option<u64> {
         .map(|disk| disk.available_space() / (1024 * 1024 * 1024))
 }
 
+/// Windows 原生查询同时支持本地盘、映射盘符与 UNC SMB 路径。
+///
+/// `sysinfo::Disks` 不保证枚举网络盘，而且 canonicalize 后的 `\\?\` 路径也可能
+/// 无法与盘符挂载点匹配。`GetDiskFreeSpaceExW` 直接查询目标目录所在卷，避免把
+/// “可写但无法枚举”的 NAS 错报成 0 GB。
+#[cfg(windows)]
+fn windows_free_space_gb(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    if !path.exists() || !path.is_dir() {
+        return None;
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut available_to_caller = 0_u64;
+    let result = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available_to_caller,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (result != 0).then_some(available_to_caller / (1024 * 1024 * 1024))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_directory_reports_free_space() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(free_space_gb(dir.path()).is_some());
+    }
 
     #[test]
     fn path_traversal_validation() {
