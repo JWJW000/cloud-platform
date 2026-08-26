@@ -598,13 +598,14 @@ mod tests {
         let key = KeyPair::generate().unwrap();
         let pem = key.serialize_pem();
         let sig = sign_hex(&pem, "challenge-abc").unwrap();
-        // P-256 ASN.1 DER 签名 70-72 字节（r/s 各 32-33 字节 + 序列头，视前导零而定）
         let bytes = hex::decode(&sig).unwrap();
-        assert!(
-            (70..=72).contains(&bytes.len()),
-            "P-256 ASN.1 签名应为 70-72 字节，实际 {}",
-            bytes.len()
+        let verifier = ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P256_SHA256_ASN1,
+            key.public_key_raw(),
         );
+        verifier
+            .verify(b"challenge-abc", &bytes)
+            .expect("签名必须能由对应 CSR 公钥验证");
         // 换一个消息签名必须不同（防重放语义）
         let sig2 = sign_hex(&pem, "challenge-abc-2").unwrap();
         assert_ne!(sig, sig2);

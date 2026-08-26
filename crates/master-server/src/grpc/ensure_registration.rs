@@ -131,7 +131,12 @@ pub async fn ensure_registration(
 
     let node_name = sanitize_node_name(&profile.node_name);
     let requested_slots = (profile.requested_slots as i32).clamp(1, 50);
-    let os = profile.os_type.trim();
+    let os = platform_proto::canonical_worker_os(&profile.os_type).ok_or_else(|| {
+        AppError::bad(format!(
+            "不支持的节点操作系统：{}（仅支持 Windows、macOS、Linux）",
+            profile.os_type.trim()
+        ))
+    })?;
     let os_version = profile.os_version.trim();
     let agent_version = profile.agent_version.trim();
 

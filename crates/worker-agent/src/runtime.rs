@@ -135,7 +135,9 @@ impl<P: MasterPort, S: CredentialStore> WorkerRuntime<P, S> {
         installation_id: &str,
     ) -> Result<ClientCredential> {
         let node_name = sysinfo::System::host_name().unwrap_or_else(|| "worker-node".to_string());
-        let os_type = std::env::consts::OS.to_string();
+        let os_type = platform_proto::canonical_worker_os(std::env::consts::OS)
+            .unwrap_or(std::env::consts::OS)
+            .to_string();
         let os_version = sysinfo::System::os_version().unwrap_or_default();
         let agent_version = env!("CARGO_PKG_VERSION").to_string();
 

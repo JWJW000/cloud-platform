@@ -28,6 +28,16 @@ pub const METADATA_CLIENT_CERT_FINGERPRINT: &str = "x-client-cert-fingerprint";
 /// 协议版本元数据键。
 pub const METADATA_PROTOCOL_VERSION: &str = "x-protocol-version";
 
+/// 把运行时平台名称规范为数据库允许的 Worker OS 值。
+pub fn canonical_worker_os(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "windows" => Some("Windows"),
+        "macos" | "darwin" => Some("macOS"),
+        "linux" => Some("Linux"),
+        _ => None,
+    }
+}
+
 /// 从 CSR PEM 提取 EC 公钥原始字节。
 ///
 /// Worker 与 Master 必须共享这个实现；若一端摘要整个 CSR、另一端只摘要公钥，
@@ -105,5 +115,20 @@ impl MasterMessage {
             sent_at: sent_at.into(),
             payload: Some(payload),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_os_values_match_database_constraint() {
+        assert_eq!(canonical_worker_os("windows"), Some("Windows"));
+        assert_eq!(canonical_worker_os("Windows"), Some("Windows"));
+        assert_eq!(canonical_worker_os("macos"), Some("macOS"));
+        assert_eq!(canonical_worker_os("darwin"), Some("macOS"));
+        assert_eq!(canonical_worker_os("linux"), Some("Linux"));
+        assert_eq!(canonical_worker_os("freebsd"), None);
     }
 }
