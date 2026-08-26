@@ -10,8 +10,10 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- 1. 书名与出版信息 GIN 三元组索引（加速 ILIKE 模糊匹配）
 CREATE INDEX IF NOT EXISTS idx_editions_title_trgm ON editions USING gin (edition_title gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_works_norm_title_trgm ON works USING gin (normalized_title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_works_preferred_title_trgm ON works USING gin (preferred_title gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_editions_publisher_trgm ON editions USING gin (publisher gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_identifiers_raw_trgm ON identifiers USING gin (raw_value gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_identifiers_norm_val ON identifiers (normalized_value);
 
 -- 2. 游标分页复合覆盖索引
 CREATE INDEX IF NOT EXISTS idx_editions_updated_at_id ON editions (updated_at DESC, id DESC);

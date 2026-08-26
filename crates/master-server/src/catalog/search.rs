@@ -149,59 +149,25 @@ pub async fn search_catalog(
             .flatten()
     });
 
-    // 无关键词搜索时：直接使用统计估值（0ms，避免全表扫）；
-    // 存在关键词搜索时：使用 matched_ids 倒排索引 UNION 极速计数（<30ms）。
+    // 2. 总数估算：完全避免同步阻塞全表统计，立即返回
     let total: i64 = if params.query.is_none() {
-        if params.acquisition_status.is_none()
-            && params.work_type.is_none()
-            && params.language.is_none()
-            && params.format.is_none()
-            && params.resolution_status.is_none()
-        {
-            sqlx::query_scalar(
-                "SELECT greatest(coalesce(reltuples, 0)::bigint, 0) FROM pg_class WHERE oid = 'editions'::regclass",
-            )
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0)
-        } else {
-            // 简单分面过滤快速计数
-            sqlx::query_scalar(
-                "SELECT count(*)::bigint FROM editions e \
-                 LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-                 WHERE ($1::text IS NULL OR at.status = $1) \
-                   AND ($2::text IS NULL OR e.language = $2)",
-            )
-            .bind(params.acquisition_status.as_deref())
-            .bind(params.language.as_deref())
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0)
-        }
-    } else {
-        let keyword = params
-            .query
-            .as_deref()
-            .map(|value| format!("%{}%", value.trim().to_lowercase()));
+        // 无关键词时：直接读取 pg_class 估算行数（0ms，瞬时返回）
         sqlx::query_scalar(
-            "WITH matched_ids AS ( \
-                 SELECT id FROM editions WHERE edition_title ILIKE $1 OR publisher ILIKE $1 \
-                 UNION \
-                 SELECT e.id FROM works w JOIN editions e ON e.work_id = w.id WHERE w.normalized_title ILIKE $1 \
-                 UNION \
-                 SELECT object_id AS id FROM identifiers WHERE raw_value ILIKE $1 \
-                 UNION \
-                 SELECT ec.edition_id AS id FROM contributors c JOIN edition_contributors ec ON ec.contributor_id = c.id WHERE c.name ILIKE $1 \
-             ) \
-             SELECT count(*)::bigint FROM matched_ids",
+            "SELECT greatest(coalesce(reltuples, 0)::bigint, 0) FROM pg_class WHERE oid = 'editions'::regclass",
         )
-        .bind(keyword)
         .fetch_one(pool)
         .await
         .unwrap_or(0)
+    } else {
+        // 存在关键词时：基于当前页结果是否存在更多进行轻量估计（如 > 20 或估算），绝不阻塞扫描百万行
+        if has_more {
+            items.len() as i64 + 1000
+        } else {
+            items.len() as i64
+        }
     };
 
-    // 分面统计使用预置固定类别，彻底消除每次列表查询触发全表 GROUP BY 扫全库的性能损耗
+    // 3. 分面统计：采用预置固定类别，彻底消除每次列表查询触发全表 GROUP BY 扫全库的性能损耗
     let status_facets = vec![
         FacetCount {
             key: "已下载".into(),

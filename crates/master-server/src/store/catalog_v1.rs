@@ -901,13 +901,13 @@ pub async fn search_editions(
     let fetch_limit = limit.clamp(1, 100) + 1;
 
     let sql = if kw_like.is_some() {
-        // 存在关键词搜索时：使用 WITH matched_ids (利用各字段独立的 GIN 倒排索引 UNION 极速求交/并)，百倍提速
+        // 存在关键词搜索时：使用 WITH matched_ids (利用各字段独立的 GIN/B-Tree 索引 UNION 极速求并)，百倍提速
         "WITH matched_ids AS ( \
              SELECT id FROM editions WHERE edition_title ILIKE $1 OR publisher ILIKE $1 \
              UNION \
-             SELECT e.id FROM works w JOIN editions e ON e.work_id = w.id WHERE w.normalized_title ILIKE $1 \
+             SELECT e.id FROM works w JOIN editions e ON e.work_id = w.id WHERE w.normalized_title ILIKE $1 OR w.preferred_title ILIKE $1 \
              UNION \
-             SELECT object_id AS id FROM identifiers WHERE raw_value ILIKE $1 \
+             SELECT object_id AS id FROM identifiers WHERE normalized_value = $11 OR raw_value ILIKE $1 \
              UNION \
              SELECT ec.edition_id AS id FROM contributors c JOIN edition_contributors ec ON ec.contributor_id = c.id WHERE c.name ILIKE $1 \
          ) \
@@ -964,6 +964,8 @@ pub async fn search_editions(
          LIMIT $10"
     };
 
+    let kw_exact = keyword.map(|k| k.trim().to_string());
+
     let mut rows: Vec<(
         Uuid,
         Uuid,
@@ -992,6 +994,7 @@ pub async fn search_editions(
         .bind(cursor_id)
         .bind(forward)
         .bind(fetch_limit)
+        .bind(kw_exact)
         .fetch_all(pool)
         .await?;
 

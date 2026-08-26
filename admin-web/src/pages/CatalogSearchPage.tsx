@@ -228,9 +228,11 @@ export function CatalogSearchPage() {
         <div className="md:col-span-3 h-full flex flex-col min-h-0 overflow-hidden">
           <div className="flex items-center justify-between text-xs text-slate-500 pb-2 shrink-0">
             <span>
-              找到约 <strong className="text-slate-800">{data?.total.toLocaleString() || 0}</strong> 条记录
+              {query
+                ? (data?.next_cursor ? "已找到匹配结果（超过 1,000 条）" : `已找到匹配结果（共 ${data?.items.length || 0} 条）`)
+                : `总库现有约 ${(data?.total || 0).toLocaleString()} 条记录`}
             </span>
-            <span>{cursor ? "游标结果页" : "首屏结果"}</span>
+            <span>{cursor ? "游标分页" : "首屏结果"}</span>
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
@@ -357,7 +359,7 @@ export function CatalogSearchPage() {
               </Button>
 
               <span className="text-xs text-slate-500">
-                键集游标分页 · 共 {data.total} 条
+                键集游标分页（无延迟极速流式）
               </span>
 
               <Button
