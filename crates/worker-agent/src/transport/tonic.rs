@@ -216,6 +216,7 @@ impl MasterLinkSession for TonicMasterLinkSession {
     fn send(&mut self, msg: pb::WorkerMessage) -> Result<(), ConnectError> {
         self.tx.try_send(msg).map_err(|_| ConnectError::Network {
             retry_after: Some(Duration::from_secs(1)),
+            detail: "本地发送队列已满或连接已经关闭".to_string(),
         })
     }
 
@@ -231,15 +232,27 @@ impl MasterLinkSession for TonicMasterLinkSession {
     }
 }
 
-fn map_transport_error(_e: anyhow::Error) -> ConnectError {
+fn map_transport_error(e: anyhow::Error) -> ConnectError {
     ConnectError::Network {
         retry_after: Some(Duration::from_secs(3)),
+        detail: sanitize_connection_error(&format!("{e:#}")),
     }
+}
+
+fn sanitize_connection_error(raw: &str) -> String {
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return "未知传输错误".to_string();
+    }
+    compact.chars().take(512).collect()
 }
 
 fn map_grpc_status(status: Status) -> ConnectError {
     match status.code() {
-        Code::Unavailable => ConnectError::Network { retry_after: None },
+        Code::Unavailable => ConnectError::Network {
+            retry_after: None,
+            detail: sanitize_connection_error(status.message()),
+        },
         Code::ResourceExhausted => ConnectError::RateLimited {
             retry_after: Duration::from_secs(15),
         },
@@ -250,5 +263,32 @@ fn map_grpc_status(status: Status) -> ConnectError {
         Code::AlreadyExists | Code::FailedPrecondition => ConnectError::IdentityConflict,
         Code::Unimplemented => ConnectError::ProtocolMismatch,
         _ => ConnectError::Fatal(anyhow::anyhow!("gRPC 错误: {}", status.message())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_error_keeps_safe_compact_cause() {
+        let error = anyhow::anyhow!("certificate verify failed\n  invalid peer certificate");
+        let mapped = map_transport_error(error);
+        match mapped {
+            ConnectError::Network { detail, .. } => {
+                assert_eq!(detail, "certificate verify failed invalid peer certificate");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn transport_error_detail_is_bounded() {
+        let error = anyhow::anyhow!("{}", "x".repeat(700));
+        let mapped = map_transport_error(error);
+        match mapped {
+            ConnectError::Network { detail, .. } => assert_eq!(detail.chars().count(), 512),
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

@@ -13,10 +13,12 @@ use platform_proto::v1 as pb;
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
     /// 网络故障（可指数退避重试）。
-    #[error("网络连接异常，将在 {retry_after:?} 后重试")]
+    #[error("网络连接异常：{detail}；将在 {retry_after:?} 后重试")]
     Network {
         /// 建议重试间隔。
         retry_after: Option<Duration>,
+        /// 可安全展示的底层 DNS、TLS、HTTP/2 或 gRPC 错误摘要。
+        detail: String,
     },
 
     /// 请求超频限流（按 retry_after 等待）。

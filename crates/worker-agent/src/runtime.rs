@@ -237,12 +237,16 @@ impl<P: MasterPort, S: CredentialStore> WorkerRuntime<P, S> {
                     );
                     bail!("节点身份冲突，请联系管理员处理");
                 }
-                Err(ConnectError::Network { retry_after }) => {
+                Err(ConnectError::Network {
+                    retry_after,
+                    detail,
+                }) => {
                     let delay = retry_after.unwrap_or(backoff);
                     let jittered = add_jitter(delay);
                     tracing::warn!(
                         phase = RuntimePhase::BackingOff.as_str(),
                         retry_after_ms = jittered.as_millis() as u64,
+                        error = %detail,
                         "网络连接异常，退避重试注册中..."
                     );
                     tokio::time::sleep(jittered).await;
