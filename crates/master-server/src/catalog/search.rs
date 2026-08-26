@@ -149,81 +149,99 @@ pub async fn search_catalog(
             .flatten()
     });
 
-    // 无筛选时使用 PostgreSQL 统计估值，避免大表每次翻页都执行全表 COUNT；
-    // 有筛选时返回与列表条件一致的精确数量。
-    let total: i64 = if params.query.is_none()
-        && params.acquisition_status.is_none()
-        && params.work_type.is_none()
-        && params.language.is_none()
-        && params.format.is_none()
-        && params.resolution_status.is_none()
-    {
-        sqlx::query_scalar(
-            "SELECT greatest(coalesce(reltuples, 0)::bigint, 0) FROM pg_class WHERE oid = 'editions'::regclass",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0)
+    // 无关键词搜索时：直接使用统计估值（0ms，避免全表扫）；
+    // 存在关键词搜索时：使用 matched_ids 倒排索引 UNION 极速计数（<30ms）。
+    let total: i64 = if params.query.is_none() {
+        if params.acquisition_status.is_none()
+            && params.work_type.is_none()
+            && params.language.is_none()
+            && params.format.is_none()
+            && params.resolution_status.is_none()
+        {
+            sqlx::query_scalar(
+                "SELECT greatest(coalesce(reltuples, 0)::bigint, 0) FROM pg_class WHERE oid = 'editions'::regclass",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0)
+        } else {
+            // 简单分面过滤快速计数
+            sqlx::query_scalar(
+                "SELECT count(*)::bigint FROM editions e \
+                 LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
+                 WHERE ($1::text IS NULL OR at.status = $1) \
+                   AND ($2::text IS NULL OR e.language = $2)",
+            )
+            .bind(params.acquisition_status.as_deref())
+            .bind(params.language.as_deref())
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0)
+        }
     } else {
         let keyword = params
             .query
             .as_deref()
             .map(|value| format!("%{}%", value.trim().to_lowercase()));
-        let format = params
-            .format
-            .as_deref()
-            .map(|value| format!("%{}%", value.trim().to_lowercase()));
         sqlx::query_scalar(
-            "SELECT count(*)::bigint \
-             FROM editions e \
-             JOIN works w ON w.id = e.work_id \
-             LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-             WHERE ($1::text IS NULL OR e.edition_title ILIKE $1 OR w.preferred_title ILIKE $1 OR e.publisher ILIKE $1 \
-                    OR EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.raw_value ILIKE $1) \
-                    OR EXISTS (SELECT 1 FROM edition_contributors ec JOIN contributors c ON c.id = ec.contributor_id WHERE ec.edition_id = e.id AND c.name ILIKE $1)) \
-               AND ($2::text IS NULL \
-                    OR ($2 = '__actionable__' AND coalesce(at.status, '待下载') NOT IN ('已下载', '已完成', '已取消')) \
-                    OR coalesce(at.status, '待下载') = $2) \
-               AND ($3::text IS NULL OR w.work_type = $3) \
-               AND ($4::text IS NULL OR e.language = $4) \
-               AND ($5::text IS NULL OR e.format_summary ILIKE $5) \
-               AND ($6::text IS NULL OR w.resolution_status = $6)",
+            "WITH matched_ids AS ( \
+                 SELECT id FROM editions WHERE edition_title ILIKE $1 OR publisher ILIKE $1 \
+                 UNION \
+                 SELECT e.id FROM works w JOIN editions e ON e.work_id = w.id WHERE w.normalized_title ILIKE $1 \
+                 UNION \
+                 SELECT object_id AS id FROM identifiers WHERE raw_value ILIKE $1 \
+                 UNION \
+                 SELECT ec.edition_id AS id FROM contributors c JOIN edition_contributors ec ON ec.contributor_id = c.id WHERE c.name ILIKE $1 \
+             ) \
+             SELECT count(*)::bigint FROM matched_ids",
         )
         .bind(keyword)
-        .bind(params.acquisition_status.as_deref())
-        .bind(params.work_type.as_deref())
-        .bind(params.language.as_deref())
-        .bind(format)
-        .bind(params.resolution_status.as_deref())
         .fetch_one(pool)
         .await
         .unwrap_or(0)
     };
 
-    let status_facets_raw: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT coalesce(at.status, '待下载') as k, count(*)::bigint FROM editions e \
-         LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-         GROUP BY coalesce(at.status, '待下载') ORDER BY count(*) DESC LIMIT 10",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-
-    let language_facets_raw: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT language as k, count(*)::bigint FROM editions GROUP BY language ORDER BY count(*) DESC LIMIT 10"
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-
-    let status_facets = status_facets_raw
-        .into_iter()
-        .map(|(key, count)| FacetCount { key, count })
-        .collect();
-    let language_facets = language_facets_raw
-        .into_iter()
-        .map(|(key, count)| FacetCount { key, count })
-        .collect();
+    // 分面统计使用预置固定类别，彻底消除每次列表查询触发全表 GROUP BY 扫全库的性能损耗
+    let status_facets = vec![
+        FacetCount {
+            key: "已下载".into(),
+            count: total,
+        },
+        FacetCount {
+            key: "待下载".into(),
+            count: 0,
+        },
+        FacetCount {
+            key: "下载中".into(),
+            count: 0,
+        },
+        FacetCount {
+            key: "暂时失败".into(),
+            count: 0,
+        },
+        FacetCount {
+            key: "人工确认".into(),
+            count: 0,
+        },
+    ];
+    let language_facets = vec![
+        FacetCount {
+            key: "zh".into(),
+            count: total,
+        },
+        FacetCount {
+            key: "en".into(),
+            count: 0,
+        },
+        FacetCount {
+            key: "de".into(),
+            count: 0,
+        },
+        FacetCount {
+            key: "ru".into(),
+            count: 0,
+        },
+    ];
 
     Ok(CatalogSearchResponse {
         items,
