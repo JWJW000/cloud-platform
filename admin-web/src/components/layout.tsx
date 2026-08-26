@@ -204,7 +204,7 @@ export function AppLayout() {
       )}
 
       {/* 主区 */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col h-full overflow-hidden">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-5">
           <div className="flex items-center gap-3">
             <button
@@ -231,7 +231,7 @@ export function AppLayout() {
             </button>
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto p-4 sm:p-5">
+        <main className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5">
           <Outlet />
         </main>
       </div>

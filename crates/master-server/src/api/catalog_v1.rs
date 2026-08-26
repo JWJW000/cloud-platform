@@ -179,8 +179,8 @@ async fn read_server_manifest(name: &str) -> AppResult<String> {
     let metadata = tokio::fs::metadata(&candidate)
         .await
         .map_err(|error| AppError::Internal(error.into()))?;
-    if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
-        return Err(AppError::bad("manifest 必须是小于 8 MiB 的普通文件"));
+    if !metadata.is_file() || metadata.len() > 1024 * 1024 * 1024 {
+        return Err(AppError::bad("manifest 文件过大或不是普通文件"));
     }
     let bytes = tokio::fs::read(candidate)
         .await
@@ -210,7 +210,7 @@ pub async fn list_server_manifests_handler(
             .metadata()
             .await
             .map_err(|error| AppError::Internal(error.into()))?;
-        if metadata.is_file() && metadata.len() <= 8 * 1024 * 1024 {
+        if metadata.is_file() {
             items.push(ServerManifestItem {
                 id: name,
                 size_bytes: metadata.len(),

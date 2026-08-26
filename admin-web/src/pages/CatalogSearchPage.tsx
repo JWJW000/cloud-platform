@@ -82,8 +82,8 @@ export function CatalogSearchPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <div>
+    <div className="flex flex-col h-full space-y-4 overflow-hidden">
+      <div className="shrink-0">
         <h1 className="text-xl font-bold text-slate-900">图书总库检索与分面索引</h1>
         <p className="text-xs text-slate-500">
           多源归并后的规范书目检索：支持题名、作者、ISBN/DOI、来源编号与全维度分面过滤。
@@ -91,7 +91,7 @@ export function CatalogSearchPage() {
       </div>
 
       {/* 顶部搜索条 */}
-      <Card className="p-4">
+      <Card className="p-4 shrink-0 shadow-sm">
         <form onSubmit={handleSearchSubmit} className="flex gap-3">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
@@ -121,16 +121,16 @@ export function CatalogSearchPage() {
       </Card>
 
       {error && (
-        <div className="rounded-lg bg-red-50 p-4 border border-red-200 text-sm text-red-700 flex items-center gap-2">
+        <div className="shrink-0 rounded-lg bg-red-50 p-4 border border-red-200 text-sm text-red-700 flex items-center gap-2">
           <AlertCircle className="h-5 w-5" />
           {error}
         </div>
       )}
 
-      {/* 检索内容区（左侧分面，右侧结果） */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        {/* 左侧分面过滤器 */}
-        <div className="space-y-4">
+      {/* 检索内容区（左侧分面，右侧结果）：填满剩余高度，页内独立滚动 */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 flex-1 min-h-0 overflow-hidden">
+        {/* 左侧分面过滤器（自身独立滚动） */}
+        <div className="md:col-span-1 h-full overflow-y-auto space-y-4 pr-1">
           <Card className="p-4 space-y-4">
             <div>
               <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
@@ -224,26 +224,26 @@ export function CatalogSearchPage() {
           </Card>
         </div>
 
-        {/* 右侧结果列表 */}
-        <div className="md:col-span-3 space-y-4">
-          <div className="flex items-center justify-between text-xs text-slate-500">
+        {/* 右侧结果列表（自身独立纵向滚动） */}
+        <div className="md:col-span-3 h-full flex flex-col min-h-0 overflow-hidden">
+          <div className="flex items-center justify-between text-xs text-slate-500 pb-2 shrink-0">
             <span>
               找到约 <strong className="text-slate-800">{data?.total.toLocaleString() || 0}</strong> 条记录
             </span>
             <span>{cursor ? "游标结果页" : "首屏结果"}</span>
           </div>
 
-          {loading ? (
-            <Card className="p-12 text-center">
-              <Spinner label="正在检索总库书目..." />
-            </Card>
-          ) : data?.items.length === 0 ? (
-            <Card className="p-12 text-center text-slate-500">
-              未找到匹配的书目记录，请尝试调整检索关键词或分面筛选条件。
-            </Card>
-          ) : (
-            <div className="space-y-3">
-              {data?.items.map((item) => (
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
+            {loading ? (
+              <Card className="p-12 text-center">
+                <Spinner label="正在检索总库书目..." />
+              </Card>
+            ) : data?.items.length === 0 ? (
+              <Card className="p-12 text-center text-slate-500">
+                未找到匹配的书目记录，请尝试调整检索关键词或分面筛选条件。
+              </Card>
+            ) : (
+              data?.items.map((item) => (
                 <Card key={item.id} className="p-4 hover:border-blue-300 transition shadow-sm">
                   <div className="flex items-start justify-between gap-4">
                     <div className="space-y-1.5 flex-1">
@@ -339,13 +339,13 @@ export function CatalogSearchPage() {
                     </div>
                   </div>
                 </Card>
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
 
-          {/* 分页控制器 */}
+          {/* 分页控制器（固定底部） */}
           {data && (data.previous_cursor || data.next_cursor) && (
-            <div className="flex items-center justify-between pt-4 border-t border-slate-200">
+            <div className="flex items-center justify-between pt-3 border-t border-slate-200 shrink-0 bg-white">
               <Button
                 variant="secondary"
                 size="sm"

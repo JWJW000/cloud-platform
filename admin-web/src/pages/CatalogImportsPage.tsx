@@ -108,11 +108,6 @@ export function CatalogImportsPage() {
       setFileName("");
       return;
     }
-    if (file.size > 8 * 1024 * 1024) {
-      toastError("单个补充书单暂限 8 MiB；更大清单请先拆分或登记服务器 manifest");
-      setSelectedFile(null);
-      return;
-    }
     try {
       const text = await file.text();
       setFileName(file.name);
@@ -215,8 +210,8 @@ export function CatalogImportsPage() {
         </Card>
 
         {/* 导入运行历史 */}
-        <Card className="p-5 lg:col-span-2">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+        <Card className="p-5 lg:col-span-2 flex flex-col min-h-0">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4 shrink-0">
             <div className="flex items-center gap-2">
               <UploadCloud className="h-5 w-5 text-blue-600" />
               <h3 className="font-semibold text-slate-900">导入运行历史</h3>
@@ -231,9 +226,9 @@ export function CatalogImportsPage() {
               暂无导入运行记录。
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-72 overflow-y-auto">
               <table className="w-full text-left text-sm">
-                <thead className="border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase">
+                <thead className="sticky top-0 bg-white border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase">
                   <tr>
                     <th className="pb-3">运行 ID</th>
                     <th className="pb-3">状态</th>
@@ -374,7 +369,7 @@ export function CatalogImportsPage() {
                   <span className="text-sm font-medium text-slate-700">
                     {selectedFile ? selectedFile.name : "选择 CSV、TSV 或 TXT 文件"}
                   </span>
-                  <span className="mt-1 text-xs text-slate-400">UTF-8，单文件不超过 8 MiB</span>
+                  <span className="mt-1 text-xs text-slate-400">支持 CSV、TSV、TXT 文本书单</span>
                   <input
                     type="file"
                     accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain"

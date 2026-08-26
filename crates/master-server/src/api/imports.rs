@@ -37,14 +37,14 @@ use crate::security;
 use crate::state::AppState;
 use crate::store;
 
-/// 最大图书 CSV 大小：10 MiB。
-const MAX_BOOK_CSV_BYTES: usize = 10 * 1024 * 1024;
-/// 最大账号文件大小：5 MiB。
-const MAX_ACCOUNT_FILE_BYTES: usize = 5 * 1024 * 1024;
-/// 最大图书行数：50,000。
-const MAX_BOOK_ROWS: usize = 50_000;
-/// 最大账号行数：10,000。
-const MAX_ACCOUNT_ROWS: usize = 10_000;
+/// 最大图书 CSV 大小：1 GiB。
+const MAX_BOOK_CSV_BYTES: usize = 1024 * 1024 * 1024;
+/// 最大账号文件大小：100 MiB。
+const MAX_ACCOUNT_FILE_BYTES: usize = 100 * 1024 * 1024;
+/// 最大图书行数：2,000,000。
+const MAX_BOOK_ROWS: usize = 2_000_000;
+/// 最大账号行数：100,000。
+const MAX_ACCOUNT_ROWS: usize = 100_000;
 
 pub fn routes() -> Router<AppState> {
     Router::new()

@@ -82,8 +82,8 @@ export function CatalogAcquisitionsPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <div>
+    <div className="flex flex-col h-full space-y-4 overflow-hidden">
+      <div className="shrink-0">
         <h1 className="text-xl font-bold text-slate-900">唯一持续全局获取池</h1>
         <p className="text-xs text-slate-500">
           所有书目统一汇入同一个全局下载池：支持优先级调整、失败退避与自动候选轮转。
@@ -91,7 +91,7 @@ export function CatalogAcquisitionsPage() {
       </div>
 
       {/* 搜索与快捷过滤 */}
-      <Card className="p-4">
+      <Card className="p-4 shrink-0 shadow-sm">
         <form onSubmit={handleSearchSubmit} className="flex gap-3">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
@@ -145,26 +145,26 @@ export function CatalogAcquisitionsPage() {
       </Card>
 
       {error && (
-        <div className="rounded-lg bg-red-50 p-4 border border-red-200 text-sm text-red-700 flex items-center gap-2">
+        <div className="shrink-0 rounded-lg bg-red-50 p-4 border border-red-200 text-sm text-red-700 flex items-center gap-2">
           <AlertCircle className="h-5 w-5" />
           {error}
         </div>
       )}
 
-      {/* 任务列表 */}
-      <Card className="p-0 overflow-hidden">
+      {/* 任务列表（填满剩余空间，页内纵向独立滚动） */}
+      <Card className="p-0 flex-1 min-h-0 flex flex-col overflow-hidden shadow-sm">
         {loading ? (
-          <div className="p-12 text-center">
+          <div className="p-12 text-center flex-1 flex items-center justify-center">
             <Spinner label="正在读取全局获取任务池..." />
           </div>
         ) : data?.items.length === 0 ? (
-          <div className="p-12 text-center text-slate-500 text-sm">
+          <div className="p-12 text-center text-slate-500 text-sm flex-1 flex items-center justify-center">
             当前筛选条件下暂无获取任务。
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="border-b border-slate-200 bg-slate-50/70 text-xs font-semibold text-slate-500 uppercase">
+              <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 uppercase">
                 <tr>
                   <th className="py-3 px-4">书名 / 版本</th>
                   <th className="py-3 px-4">Worker</th>
@@ -248,9 +248,9 @@ export function CatalogAcquisitionsPage() {
           </div>
         )}
 
-        {/* 分页 */}
+        {/* 分页（固定吸底） */}
         {data && (data.previous_cursor || data.next_cursor) && (
-          <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+          <div className="p-3 border-t border-slate-200 flex items-center justify-between shrink-0 bg-white">
             <Button
               variant="secondary"
               size="sm"

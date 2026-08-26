@@ -8,8 +8,6 @@ import {
   UploadCloud,
   AlertCircle,
   TrendingUp,
-  Server,
-  AlertTriangle,
   Clock,
   ArrowRight,
 } from "lucide-react";
@@ -179,55 +177,55 @@ export function OverviewPage() {
 
       {/* 核心指标卡片 */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Card className="p-4">
+        <Card className="p-4 border-l-4 border-l-blue-500">
           <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>总库规范版本</span>
-            <BookOpen className="h-4 w-4 text-slate-400" />
+            <span className="font-medium text-slate-600">待下载书目池</span>
+            <Clock className="h-4 w-4 text-blue-500" />
           </div>
-          <div className="mt-2 text-2xl font-bold text-slate-900">
-            {stats?.total_editions?.toLocaleString() || 0}
+          <div className="mt-2 text-2xl font-bold text-blue-600">
+            {stats?.pending_targets?.toLocaleString() || 0}
           </div>
           <div className="mt-1 text-xs text-slate-400">
-            对应 {stats?.total_works?.toLocaleString() || 0} 部作品
+            排队中待调度下载
           </div>
         </Card>
 
-        <Card className="p-4">
+        <Card className="p-4 border-l-4 border-l-emerald-500">
           <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>获取任务池</span>
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <span className="font-medium text-slate-600">总下载 / 已入馆</span>
+            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
           </div>
-          <div className="mt-2 text-2xl font-bold text-green-600">
+          <div className="mt-2 text-2xl font-bold text-emerald-600">
             {stats?.acquired_targets?.toLocaleString() || 0}
           </div>
           <div className="mt-1 text-xs text-slate-400">
-            待下载: {stats?.pending_targets || 0} | 失败: {stats?.failed_targets || 0}
+            实体馆藏 {formatSize(stats?.total_library_bytes || 0)}
           </div>
         </Card>
 
-        <Card className="p-4">
+        <Card className="p-4 border-l-4 border-l-amber-500">
           <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>Worker 资源 / 槽位</span>
-            <Server className="h-4 w-4 text-blue-500" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-blue-600">
-            {overview ? `${overview.workers.online}/${overview.workers.total}` : "-"}
-          </div>
-          <div className="mt-1 text-xs text-slate-400">
-            {overview ? `运行槽位: ${overview.slots.running}/${overview.slots.total} (空闲 ${overview.slots.idle})` : "在线节点"}
-          </div>
-        </Card>
-
-        <Card className="p-4">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>待处理事项</span>
-            <AlertTriangle className={`h-4 w-4 ${(overview?.open_alerts || 0) + (stats?.needs_confirm_targets || 0) > 0 ? "text-amber-500" : "text-slate-400"}`} />
+            <span className="font-medium text-slate-600">今日下载完成</span>
+            <TrendingUp className="h-4 w-4 text-amber-500" />
           </div>
           <div className="mt-2 text-2xl font-bold text-amber-600">
-            {(overview?.open_alerts || 0) + (stats?.needs_confirm_targets || 0)}
+            {stats?.today_downloaded_count?.toLocaleString() || 0}
           </div>
           <div className="mt-1 text-xs text-slate-400">
-            告警: {overview?.open_alerts || 0} | 待确认: {stats?.needs_confirm_targets || 0}
+            今日入库 {stats?.today_added_works_count?.toLocaleString() || 0} 本书目
+          </div>
+        </Card>
+
+        <Card className="p-4 border-l-4 border-l-purple-500">
+          <div className="flex items-center justify-between text-slate-500 text-xs">
+            <span className="font-medium text-slate-600">总库规范书目</span>
+            <BookOpen className="h-4 w-4 text-purple-500" />
+          </div>
+          <div className="mt-2 text-2xl font-bold text-purple-600">
+            {stats?.total_editions?.toLocaleString() || 0}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            对应 {stats?.total_works?.toLocaleString() || 0} 部规范作品
           </div>
         </Card>
       </div>

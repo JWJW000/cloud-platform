@@ -473,6 +473,10 @@ pub struct CatalogStats {
     pub missing_author_count: i64,
     /// 待消歧作品数。
     pub ambiguous_works_count: i64,
+    /// 今日新增下载数。
+    pub today_downloaded_count: i64,
+    /// 今日新增总库作品数。
+    pub today_added_works_count: i64,
 }
 
 /// 版本卡片搜索摘要项。
@@ -857,6 +861,19 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
             .fetch_one(pool)
             .await
             .unwrap_or(0);
+
+    stats.today_downloaded_count =
+        sqlx::query_scalar("SELECT count(*) FROM holdings WHERE created_at >= CURRENT_DATE")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+
+    stats.today_added_works_count = sqlx::query_scalar(
+        "SELECT count(*) FROM works WHERE created_at >= CURRENT_DATE AND work_type != '章节'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
 
     Ok(stats)
 }

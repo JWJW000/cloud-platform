@@ -506,6 +506,8 @@ export interface CatalogStats {
   missing_isbn_count: number;
   missing_author_count: number;
   ambiguous_works_count: number;
+  today_downloaded_count?: number;
+  today_added_works_count?: number;
 }
 
 export interface EditionSearchItem {
