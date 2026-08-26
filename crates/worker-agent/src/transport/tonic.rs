@@ -259,7 +259,9 @@ fn map_grpc_status(status: Status) -> ConnectError {
         Code::PermissionDenied => ConnectError::Rejected {
             reason: status.message().to_string(),
         },
-        Code::Unauthenticated => ConnectError::Unauthorized,
+        Code::Unauthenticated => ConnectError::Unauthorized {
+            detail: sanitize_connection_error(status.message()),
+        },
         Code::AlreadyExists | Code::FailedPrecondition => ConnectError::IdentityConflict,
         Code::Unimplemented => ConnectError::ProtocolMismatch,
         _ => ConnectError::Fatal(anyhow::anyhow!("gRPC 错误: {}", status.message())),

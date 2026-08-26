@@ -59,8 +59,11 @@ pub enum ConnectError {
     CertificateRevoked,
 
     /// 未授权（证书无效或未被信任）。
-    #[error("身份认证失败：未授权")]
-    Unauthorized,
+    #[error("身份认证失败：{detail}")]
+    Unauthorized {
+        /// 服务端返回的安全错误摘要。
+        detail: String,
+    },
 
     /// 服务端不支持新协议（双栈兼容期可回退旧 RPC）。
     #[error("服务端未实现新注册协议 (UNIMPLEMENTED)")]

@@ -144,7 +144,7 @@ impl<P: MasterPort, S: CredentialStore> WorkerRuntime<P, S> {
 
         loop {
             let csr_pem = self.credentials.csr_pem().map_err(to_anyhow)?;
-            let csr_fp = crate::tls::fingerprint_of_pem(&csr_pem)
+            let csr_fp = platform_proto::csr_public_key_fingerprint(&csr_pem)
                 .map_err(|e| anyhow::anyhow!("计算 CSR 指纹失败：{e}"))?;
             let nonce = Uuid::new_v4().to_string();
             let requested_at = chrono::Utc::now().to_rfc3339();

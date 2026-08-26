@@ -7,27 +7,9 @@
 //! 密钥约定：Worker 使用 ECDSA P-256（rcgen 默认），签名编码为 ASN.1 DER。
 
 use anyhow::Result;
-use sha2::{Digest, Sha256};
-use x509_parser::certification_request::X509CertificationRequest;
-use x509_parser::pem::parse_x509_pem;
-use x509_parser::prelude::FromDer;
-
 /// 从 CSR PEM 提取公钥指纹（SHA-256，小写十六进制）。
 pub fn csr_public_key_fingerprint(csr_pem: &str) -> Result<String> {
-    let public_key = csr_public_key(csr_pem)?;
-    let mut hasher = Sha256::new();
-    hasher.update(public_key);
-    Ok(hex::encode(hasher.finalize()))
-}
-
-/// 从 CSR PEM 提取公钥原始字节（EC 未压缩点）。
-fn csr_public_key(csr_pem: &str) -> Result<Vec<u8>> {
-    let (_, pem) =
-        parse_x509_pem(csr_pem.as_bytes()).map_err(|e| anyhow::anyhow!("CSR 不是合法 PEM：{e}"))?;
-    let (_, csr) = X509CertificationRequest::from_der(&pem.contents)
-        .map_err(|e| anyhow::anyhow!("CSR DER 解析失败：{e}"))?;
-    let spki = &csr.certification_request_info.subject_pki;
-    Ok(spki.subject_public_key.data.to_vec())
+    platform_proto::csr_public_key_fingerprint(csr_pem)
 }
 
 /// 校验「CSR 公钥」对 `message` 的 ECDSA P-256 签名（十六进制编码）。
@@ -38,7 +20,7 @@ pub fn verify_public_key_signature(
 ) -> Result<()> {
     use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
 
-    let public_key = csr_public_key(csr_pem)?;
+    let public_key = platform_proto::csr_public_key(csr_pem)?;
     let signature = hex::decode(signature_hex.trim())
         .map_err(|e| anyhow::anyhow!("签名不是合法十六进制：{e}"))?;
     let key = UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, &public_key);

@@ -28,6 +28,36 @@ pub const METADATA_CLIENT_CERT_FINGERPRINT: &str = "x-client-cert-fingerprint";
 /// 协议版本元数据键。
 pub const METADATA_PROTOCOL_VERSION: &str = "x-protocol-version";
 
+/// 从 CSR PEM 提取 EC 公钥原始字节。
+///
+/// Worker 与 Master 必须共享这个实现；若一端摘要整个 CSR、另一端只摘要公钥，
+/// 私钥持有证明的规范消息会不一致，所有首次注册都会被误判为未授权。
+pub fn csr_public_key(csr_pem: &str) -> anyhow::Result<Vec<u8>> {
+    use x509_parser::certification_request::X509CertificationRequest;
+    use x509_parser::pem::parse_x509_pem;
+    use x509_parser::prelude::FromDer;
+
+    let (_, pem) =
+        parse_x509_pem(csr_pem.as_bytes()).map_err(|e| anyhow::anyhow!("CSR 不是合法 PEM：{e}"))?;
+    let (_, csr) = X509CertificationRequest::from_der(&pem.contents)
+        .map_err(|e| anyhow::anyhow!("CSR DER 解析失败：{e}"))?;
+    Ok(csr
+        .certification_request_info
+        .subject_pki
+        .subject_public_key
+        .data
+        .to_vec())
+}
+
+/// CSR 公钥 SHA-256 指纹（小写十六进制）。
+pub fn csr_public_key_fingerprint(csr_pem: &str) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(csr_public_key(csr_pem)?);
+    Ok(hex::encode(hasher.finalize()))
+}
+
 /// 构造 EnsureRegistration 私钥持有证明的规范化待签名消息（V7 第 5.2 节）。
 pub fn format_ensure_registration_proof(
     protocol_version: u32,
