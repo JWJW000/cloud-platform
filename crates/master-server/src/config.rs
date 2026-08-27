@@ -28,6 +28,88 @@ pub struct MasterConfig {
     /// Webshare 代理同步。
     #[serde(default)]
     pub webshare: WebshareConfig,
+    /// OpenSearch 书目搜索投影。
+    #[serde(default)]
+    pub opensearch: OpenSearchConfig,
+}
+
+/// OpenSearch 搜索投影配置。
+#[derive(Clone, Serialize, Deserialize)]
+pub struct OpenSearchConfig {
+    /// 是否启用 OpenSearch；关闭时检索完全回退 PostgreSQL。
+    #[serde(default)]
+    pub enabled: bool,
+    /// OpenSearch 根地址。容器内可使用 `http://opensearch:9200`，公网必须使用 HTTPS。
+    #[serde(default = "default_opensearch_url")]
+    pub url: String,
+    /// 搜索索引名。
+    #[serde(default = "default_opensearch_index")]
+    pub index: String,
+    /// 可选 Basic Auth 用户名。
+    #[serde(default)]
+    pub username: String,
+    /// 可选 Basic Auth 密码；只允许从部署配置或环境变量注入，禁止写入日志。
+    #[serde(default)]
+    pub password: String,
+    /// 单次 HTTP 请求超时秒数。
+    #[serde(default = "default_opensearch_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Outbox 单批处理数量。
+    #[serde(default = "default_opensearch_batch_size")]
+    pub batch_size: usize,
+    /// Outbox 空闲轮询间隔毫秒。
+    #[serde(default = "default_opensearch_poll_millis")]
+    pub poll_millis: u64,
+}
+
+impl std::fmt::Debug for OpenSearchConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenSearchConfig")
+            .field("enabled", &self.enabled)
+            .field("url", &self.url)
+            .field("index", &self.index)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("timeout_secs", &self.timeout_secs)
+            .field("batch_size", &self.batch_size)
+            .field("poll_millis", &self.poll_millis)
+            .finish()
+    }
+}
+
+impl Default for OpenSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_opensearch_url(),
+            index: default_opensearch_index(),
+            username: String::new(),
+            password: String::new(),
+            timeout_secs: default_opensearch_timeout_secs(),
+            batch_size: default_opensearch_batch_size(),
+            poll_millis: default_opensearch_poll_millis(),
+        }
+    }
+}
+
+fn default_opensearch_url() -> String {
+    "http://opensearch:9200".to_string()
+}
+
+fn default_opensearch_index() -> String {
+    "catalog-editions-v1".to_string()
+}
+
+fn default_opensearch_timeout_secs() -> u64 {
+    10
+}
+
+fn default_opensearch_batch_size() -> usize {
+    250
+}
+
+fn default_opensearch_poll_millis() -> u64 {
+    1_000
 }
 
 /// 监听设置。
@@ -285,6 +367,25 @@ impl MasterConfig {
                 self.webshare.enabled = true;
             }
         }
+        if let Ok(enabled) = std::env::var("OPENSEARCH_ENABLED") {
+            self.opensearch.enabled = enabled == "1" || enabled.eq_ignore_ascii_case("true");
+        }
+        if let Ok(url) = std::env::var("OPENSEARCH_URL") {
+            if !url.trim().is_empty() {
+                self.opensearch.url = url;
+            }
+        }
+        if let Ok(index) = std::env::var("OPENSEARCH_INDEX") {
+            if !index.trim().is_empty() {
+                self.opensearch.index = index;
+            }
+        }
+        if let Ok(username) = std::env::var("OPENSEARCH_USERNAME") {
+            self.opensearch.username = username;
+        }
+        if let Ok(password) = std::env::var("OPENSEARCH_PASSWORD") {
+            self.opensearch.password = password;
+        }
         if let Ok(site) = std::env::var("MASTER_SITE_BASE") {
             if !site.is_empty() {
                 self.server.site_base = site;
@@ -373,6 +474,34 @@ impl MasterConfig {
         if self.nas.minimum_file_bytes == 0 {
             bail!("最小文件字节数不能为 0：站点错误页往往只有几 KB，阈值为 0 等于取消这道闸门");
         }
+        if self.opensearch.enabled {
+            let url = url::Url::parse(&self.opensearch.url)
+                .context("OpenSearch URL 格式无效")?;
+            if !matches!(url.scheme(), "http" | "https") {
+                bail!("OpenSearch URL 只允许 http/https");
+            }
+            let host = url.host_str().unwrap_or_default();
+            if url.scheme() == "http"
+                && !matches!(host, "opensearch" | "localhost" | "127.0.0.1" | "::1")
+            {
+                bail!("非本机或 Docker 内网的 OpenSearch 必须使用 HTTPS");
+            }
+            if self.opensearch.index.is_empty()
+                || self.opensearch.index.len() > 128
+                || self.opensearch.index.starts_with(['_', '-', '+'])
+                || !self.opensearch.index.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_')
+                })
+            {
+                bail!("OpenSearch 索引名无效：只允许小写字母、数字、-、_");
+            }
+            if self.opensearch.timeout_secs == 0 || self.opensearch.timeout_secs > 120 {
+                bail!("OpenSearch 请求超时必须在 1..=120 秒之间");
+            }
+            if !(1..=2_000).contains(&self.opensearch.batch_size) {
+                bail!("OpenSearch 批量大小必须在 1..=2000 之间");
+            }
+        }
         Ok(())
     }
 }
@@ -402,6 +531,7 @@ mod tests {
             scheduler: SchedulerConfig::default(),
             nas: NasConfig::default(),
             webshare: WebshareConfig::default(),
+            opensearch: OpenSearchConfig::default(),
         }
     }
 

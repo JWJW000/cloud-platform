@@ -4,12 +4,19 @@ import { useApi } from "../../hooks/useApi";
 import { useToast } from "../../context/ToastContext";
 import { useAuth } from "../../context/AuthContext";
 import { can } from "../../lib/permissions";
-import { api, commitAccountsImport, previewAccountsImport } from "../../lib/api";
+import {
+  api,
+  commitAccountsImport,
+  previewAccountsImport,
+  previewOutlookAccounts,
+  syncOutlookAccounts,
+} from "../../lib/api";
 import {
   AccountImportMode,
   AccountImportPreview,
   AccountListResponse,
   ApiError,
+  OutlookPreviewResponse,
   type Account,
   type ResetQuotaResponse,
 } from "../../lib/types";
@@ -75,6 +82,100 @@ export function AccountCenterPage() {
   const [previewData, setPreviewData] = useState<AccountImportPreview | null>(null);
   const [committing, setCommitting] = useState(false);
   const [resettingQuota, setResettingQuota] = useState(false);
+
+  // Outlook 同步向导状态
+  const [outlookWizardOpen, setOutlookWizardOpen] = useState(false);
+  const [outlookStep, setOutlookStep] = useState<"settings" | "select">("settings");
+  const [defaultPassword, setDefaultPassword] = useState("");
+  const [outlookCreateBatch, setOutlookCreateBatch] = useState(true);
+  const [outlookBatchName, setOutlookBatchName] = useState("");
+  const [outlookPriority, setOutlookPriority] = useState("10");
+  const [outlookStartImmediately, setOutlookStartImmediately] = useState(false);
+  const [previewingOutlook, setPreviewingOutlook] = useState(false);
+  const [outlookPreview, setOutlookPreview] = useState<OutlookPreviewResponse | null>(null);
+  const [selectedOutlookEmails, setSelectedOutlookEmails] = useState<Set<string>>(new Set());
+  const [syncingOutlook, setSyncingOutlook] = useState(false);
+
+  const handleOpenOutlookWizard = () => {
+    setOutlookStep("settings");
+    setDefaultPassword("");
+    setOutlookCreateBatch(true);
+    setOutlookBatchName("");
+    setOutlookPriority("10");
+    setOutlookStartImmediately(false);
+    setOutlookPreview(null);
+    setSelectedOutlookEmails(new Set());
+    setOutlookWizardOpen(true);
+  };
+
+  const handleFetchOutlookAccounts = async () => {
+    if (defaultPassword.trim().length < 6 || defaultPassword.trim().length > 64) {
+      toast.error("请先设置云端统一注册密码（6–64 字符）");
+      return;
+    }
+    setPreviewingOutlook(true);
+    try {
+      const preview = await previewOutlookAccounts();
+      setOutlookPreview(preview);
+      setSelectedOutlookEmails(new Set(preview.accounts.map((a) => a.email)));
+      setOutlookStep("select");
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "拉取 Outlook 账号清单失败");
+    } finally {
+      setPreviewingOutlook(false);
+    }
+  };
+
+  const toggleOutlookAccount = (email: string) => {
+    setSelectedOutlookEmails((prev) => {
+      const next = new Set(prev);
+      if (next.has(email)) {
+        next.delete(email);
+      } else {
+        next.add(email);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllOutlook = (checked: boolean) => {
+    if (!outlookPreview) return;
+    setSelectedOutlookEmails(
+      new Set(checked ? outlookPreview.accounts.map((a) => a.email) : []),
+    );
+  };
+
+  const handleSyncOutlook = async () => {
+    if (!outlookPreview) return;
+    if (selectedOutlookEmails.size === 0) {
+      toast.error("请至少勾选一个要注册的账号");
+      return;
+    }
+    setSyncingOutlook(true);
+    try {
+      const res = await syncOutlookAccounts({
+        default_password: defaultPassword.trim(),
+        emails: Array.from(selectedOutlookEmails),
+        create_batch: outlookCreateBatch,
+        batch_name: outlookBatchName.trim() || undefined,
+        priority: Number(outlookPriority),
+        start_immediately: outlookStartImmediately,
+      });
+      let msg = `已同步新增 ${res.inserted} 个待注册账号`;
+      if (res.duplicates > 0) msg += `，跳过 ${res.duplicates} 个已存在`;
+      if (res.registration_batch) {
+        msg += `，已创建注册批次「${res.registration_batch.name}」`;
+        if (outlookStartImmediately) msg += "（已下发 Worker 注册）";
+      }
+      toast.success(msg);
+      setOutlookWizardOpen(false);
+      reload();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "同步 Outlook 账号失败");
+    } finally {
+      setSyncingOutlook(false);
+    }
+  };
 
   const create = async () => {
     setFormError(null);
@@ -241,6 +342,12 @@ export function AccountCenterPage() {
               注册队列
             </Button>
           </Link>
+          {isSuperAdmin && (
+            <Button variant="secondary" size="sm" onClick={handleOpenOutlookWizard}>
+              <RefreshCw className="mr-1.5 h-4 w-4 text-blue-600" />
+              同步 Outlook 账号
+            </Button>
+          )}
           {isSuperAdmin && (
             <Button variant="secondary" size="sm" onClick={handleOpenImportWizard}>
               <FileUp className="mr-1.5 h-4 w-4" />
@@ -529,6 +636,160 @@ export function AccountCenterPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )
+        )}
+      </Dialog>
+
+      {/* Outlook 同步向导 Dialog */}
+      <Dialog
+        open={outlookWizardOpen}
+        title={
+          outlookStep === "settings"
+            ? "同步 Outlook 账号（第 1/2 步：设置云端统一注册密码与队列）"
+            : "选择要注册的账号（第 2/2 步：勾选并确认同步）"
+        }
+        onClose={() => !syncingOutlook && setOutlookWizardOpen(false)}
+        footer={
+          outlookStep === "settings" ? (
+            <>
+              <Button variant="secondary" onClick={() => setOutlookWizardOpen(false)}>
+                取消
+              </Button>
+              <Button loading={previewingOutlook} onClick={handleFetchOutlookAccounts}>
+                拉取 Outlook 账号清单
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="secondary" disabled={syncingOutlook} onClick={() => setOutlookStep("settings")}>
+                上一步
+              </Button>
+              <Button loading={syncingOutlook} onClick={handleSyncOutlook}>
+                确认同步并加入注册队列
+              </Button>
+            </>
+          )
+        }
+      >
+        {outlookStep === "settings" ? (
+          <div className="space-y-4">
+            <div className="rounded-lg bg-blue-50/60 p-3 border border-blue-100 space-y-3">
+              <Input
+                label="云端统一注册密码（必填，6–64 字符）"
+                type="password"
+                value={defaultPassword}
+                onChange={(e) => setDefaultPassword(e.target.value)}
+                placeholder="所有新账号统一使用该密码，由云端加密存储"
+              />
+              <p className="text-xs text-slate-500">
+                outlookmail 服务只提供账号清单、不返回密码，注册密码由云端统一设置并加密下发 Worker。
+              </p>
+            </div>
+
+            <div className="rounded-lg bg-slate-50 p-3 border border-slate-200 space-y-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={outlookCreateBatch}
+                  onChange={(e) => setOutlookCreateBatch(e.target.checked)}
+                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-xs font-semibold text-slate-800">同步后为勾选账号自动加入「注册队列」</span>
+              </label>
+
+              {outlookCreateBatch && (
+                <div className="space-y-2 pl-6">
+                  <Input
+                    label="队列批次名称（选填）"
+                    value={outlookBatchName}
+                    onChange={(e) => setOutlookBatchName(e.target.value)}
+                    placeholder="默认自动生成时间戳批次名"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      label="批次优先级"
+                      type="number"
+                      value={outlookPriority}
+                      onChange={(e) => setOutlookPriority(e.target.value)}
+                    />
+                    <div className="flex items-center pt-5">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={outlookStartImmediately}
+                          onChange={(e) => setOutlookStartImmediately(e.target.checked)}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-xs text-slate-700">创建后立即启动注册</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          outlookPreview && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="rounded-lg bg-blue-50 p-2 border border-blue-200">
+                  <div className="text-xs text-blue-600">outlookmail 待注册账号</div>
+                  <div className="text-lg font-bold text-blue-700">{outlookPreview.fetched}</div>
+                </div>
+                <div className="rounded-lg bg-amber-50 p-2 border border-amber-200">
+                  <div className="text-xs text-amber-600">已勾选</div>
+                  <div className="text-lg font-bold text-amber-700">{selectedOutlookEmails.size}</div>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-2 border border-slate-200">
+                  <div className="text-xs text-slate-500">跳过（非法/重复）</div>
+                  <div className="text-lg font-bold text-slate-700">{outlookPreview.skipped}</div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-xs text-slate-600">
+                <span>勾选要注册的账号（云端写入为「待注册」并下发 Worker 注册）：</span>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedOutlookEmails.size === outlookPreview.accounts.length}
+                    onChange={(e) => toggleSelectAllOutlook(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  全选
+                </label>
+              </div>
+
+              <div className="max-h-64 overflow-y-auto rounded border border-slate-200">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-600 border-b">
+                    <tr>
+                      <th className="p-1.5 w-10 text-center">勾选</th>
+                      <th className="p-1.5">邮箱</th>
+                      <th className="p-1.5">昵称</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {outlookPreview.accounts.map((acc: any) => (
+                      <tr
+                        key={acc.email}
+                        className={selectedOutlookEmails.has(acc.email) ? "bg-blue-50/40" : ""}
+                      >
+                        <td className="p-1.5 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedOutlookEmails.has(acc.email)}
+                            onChange={() => toggleOutlookAccount(acc.email)}
+                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </td>
+                        <td className="p-1.5 font-medium text-slate-800">{acc.email}</td>
+                        <td className="p-1.5 text-slate-500">{acc.nickname || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )
         )}

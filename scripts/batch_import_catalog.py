@@ -18,6 +18,112 @@ import time
 
 BATCH_SIZE = 5000
 LEGACY_STORAGE_LOCATION_ID = '00000000-0000-0000-0000-000000000001'
+NS_AUTHOR = uuid.UUID('8a3e1a80-6e4f-4f5e-9a1c-3d7e5f2a9b00')
+
+AUTHOR_SPLIT = re.compile(r'[、,;；/，]')
+MULTI_SPACE = re.compile(r'\s{2,}')
+
+COUNTRY_DYNASTY = {
+    '周', '春秋', '战国', '秦', '汉', '西汉', '东汉', '三国', '晋', '西晋', '东晋',
+    '南北朝', '隋', '唐', '五代', '十国', '宋', '北宋', '南宋', '辽', '金', '元',
+    '明', '清', '民国', '现代', '当代', '古代', '近现代', '晚清', '先秦', '两汉',
+    '美', '英', '法', '德', '俄', '日', '意', '韩', '朝', '印', '奥', '加', '澳',
+    '瑞', '荷', '比', '丹', '苏', '波', '捷', '匈', '罗', '保', '乌', '哈', '蒙',
+    '泰', '越', '新', '马', '菲', '印尼', '波兰', '捷克', '匈牙利', '罗马尼亚',
+    '保加利亚', '南斯拉夫', '乌克兰', '白俄罗斯', '哈萨克', '蒙古', '巴基斯坦',
+    '伊朗', '伊拉克', '沙特', '土耳其', '摩洛哥', '巴西', '阿根廷', '智利', '秘鲁',
+    '哥伦比亚', '委内瑞拉', '墨西哥', '美国', '英国', '法国', '德国', '俄国',
+    '苏联', '前苏联', '俄罗斯', '意大利', '日本', '朝鲜', '韩国', '印度',
+    '澳大利亚', '新西兰', '新加坡', '菲律宾', '马来西亚', '南非', '加拿大',
+    '奥地利', '比利时', '荷兰', '瑞士', '瑞典', '挪威', '芬兰', '丹麦', '西班牙',
+    '葡萄牙', '希腊', '埃及', '以色列', '古巴',
+}
+BARE_PREFIX = re.compile(
+    r'^(' + '|'.join(sorted(COUNTRY_DYNASTY, key=len, reverse=True)) + r')\s'
+)
+BRACKET_PREFIX = re.compile(r'^([（(\[【])([^（()\[\]【】]{1,10})([）)\]】])')
+
+ROLE_WORDS = {
+    '著', '编', '译', '撰', '绘', '摄', '述', '辑', '纂', '注', '校', '写',
+    '主编', '编著', '编译', '编写', '编撰', '选编', '编辑', '总编', '总编辑',
+    '整理', '改编', '改写', '执笔', '点校', '校注', '校订', '补订', '重编',
+    '口述', '辑录', '纂修', '注释', '评注', '编译者', '编者', '著者', '译者',
+    '等', '等人', 'unknown', 'unknown author', '佚名', '无名氏',
+}
+ROLE_SUFFIXES = (
+    '总编辑', '主编', '编著', '编译', '编写', '编撰', '选编', '编辑',
+    '整理', '校注', '校订', '补订', '重编', '改写', '口述', '辑录',
+    '纂修', '注释', '评注', '点校', '校译', '编绘', '绘图', '执笔',
+    '摄制', '监制', '顾问', '撰稿', '编委会', '原著', '译著',
+    '著', '编', '译', '撰', '绘', '摄',
+)
+ETC_RE = re.compile(r'(?:等人|等)$')
+MAX_AUTHORS_PER_EDITION = 12
+PUNCT = set("()[]{}【】《》〈〉「」『』,.;:!?、。，．；：！？—–-_·~`'\"“”‘’/\\|*+=&#@$%^")
+
+def normalize_person(raw):
+    out = []
+    for ch in raw:
+        cp = ord(ch)
+        if 0xFF01 <= cp <= 0xFF5E:
+            out.append(chr(cp - 0xFEE0))
+        elif cp == 0x3000:
+            out.append(' ')
+        else:
+            out.append(ch)
+    s = ''.join(out)
+    s = ''.join(c for c in s if not c.isspace() and c not in PUNCT)
+    return s.lower()
+
+def strip_prefix(seg):
+    while True:
+        m = BRACKET_PREFIX.match(seg)
+        if m and m.group(2) in COUNTRY_DYNASTY:
+            seg = seg[m.end():].strip()
+            continue
+        m = BARE_PREFIX.match(seg)
+        if m:
+            seg = seg[m.end():].strip()
+            continue
+        break
+    return seg
+
+def clean_authors(raw):
+    if raw is None:
+        return []
+    raw = str(raw).strip()
+    if not raw:
+        return []
+
+    segs = []
+    for part in AUTHOR_SPLIT.split(raw):
+        for sub in MULTI_SPACE.split(part):
+            sub = sub.strip()
+            if sub:
+                segs.append(sub)
+
+    out = []
+    for seg in segs:
+        seg = strip_prefix(seg)
+        if not seg or seg.lower() in ROLE_WORDS:
+            continue
+        seg = ETC_RE.sub('', seg).strip()
+        if not seg or seg.lower() in ROLE_WORDS:
+            continue
+        for suf in ROLE_SUFFIXES:
+            if seg.endswith(suf) and len(seg) > len(suf):
+                seg = seg[:-len(suf)].strip()
+                break
+        if not seg or seg.lower() in ROLE_WORDS:
+            continue
+        if seg not in out:
+            out.append(seg)
+        if len(out) >= MAX_AUTHORS_PER_EDITION:
+            break
+    return out
+
+def sql_esc(value):
+    return "'" + str(value).replace("'", "''") + "'"
 
 def clean_isbn(val):
     if not val:
@@ -137,8 +243,25 @@ def process_and_import(xlsx_path, file_type, ssh_target, key_path):
     holdings_buf = io.StringIO()
     locations_buf = io.StringIO()
     targets_buf = io.StringIO()
+    batch_contributors = {}  # norm -> (name, norm)
+    batch_ec = []            # list of (edition_id, contributor_id, sort_order)
 
     current_batch_count = 0
+
+    def run_remote_sql_file(sql):
+        if not sql:
+            return
+        cmd = [
+            "ssh", "-i", key_path,
+            "-o", "StrictHostKeyChecking=no",
+            ssh_target,
+            "docker exec -i drission-postgres psql -U postgres -d drission_book -q -v ON_ERROR_STOP=1",
+        ]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = proc.communicate(input=sql)
+        if proc.returncode != 0:
+            print(f"[!] psql 执行错误: {stderr}", flush=True)
+            raise RuntimeError(f"Database error: {stderr}")
 
     def run_copy(table_cmd, buf):
         data = buf.getvalue()
@@ -170,6 +293,36 @@ def process_and_import(xlsx_path, file_type, ssh_target, key_path):
         run_copy("COPY library_file_locations (id, library_file_id, storage_location_id, object_key, actual_size_bytes, verify_status, verified_at, last_seen_at, created_at, updated_at) FROM STDIN WITH (FORMAT text, DELIMITER E'\\t', NULL E'\\\\N');", locations_buf)
         run_copy("COPY acquisition_targets (id, edition_id, status, priority, attempts, max_attempts, next_attempt_at, satisfied_holding_id, created_at, updated_at) FROM STDIN WITH (FORMAT text, DELIMITER E'\\t', NULL E'\\\\N');", targets_buf)
 
+        # 写入 contributors 与 edition_contributors (带 ON CONFLICT DO NOTHING)
+        if batch_contributors:
+            items = list(batch_contributors.values())
+            for i in range(0, len(items), 2000):
+                chunk = items[i:i + 2000]
+                values = ",\n".join(
+                    f"({sql_esc(str(uuid.uuid5(NS_AUTHOR, norm)))},{sql_esc(name)},{sql_esc(norm)})"
+                    for name, norm in chunk
+                )
+                sql = (
+                    "INSERT INTO contributors (id, name, normalized_name) VALUES\n"
+                    f"{values}\n"
+                    "ON CONFLICT (normalized_name) DO NOTHING;"
+                )
+                run_remote_sql_file(sql)
+
+        if batch_ec:
+            for i in range(0, len(batch_ec), 2000):
+                chunk = batch_ec[i:i + 2000]
+                values = ",\n".join(
+                    f"({sql_esc(str(uuid.uuid4()))},{sql_esc(ed)},{sql_esc(cid)},'作者',{order})"
+                    for ed, cid, order in chunk
+                )
+                sql = (
+                    "INSERT INTO edition_contributors (id, edition_id, contributor_id, role, sort_order) VALUES\n"
+                    f"{values}\n"
+                    "ON CONFLICT (edition_id, contributor_id, role) DO NOTHING;"
+                )
+                run_remote_sql_file(sql)
+
         works_buf.seek(0); works_buf.truncate(0)
         editions_buf.seek(0); editions_buf.truncate(0)
         identifiers_buf.seek(0); identifiers_buf.truncate(0)
@@ -177,6 +330,8 @@ def process_and_import(xlsx_path, file_type, ssh_target, key_path):
         holdings_buf.seek(0); holdings_buf.truncate(0)
         locations_buf.seek(0); locations_buf.truncate(0)
         targets_buf.seek(0); targets_buf.truncate(0)
+        batch_contributors.clear()
+        batch_ec.clear()
         current_batch_count = 0
 
     now_ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S+00')
@@ -304,6 +459,16 @@ def process_and_import(xlsx_path, file_type, ssh_target, key_path):
 
         # 7. acquisition_targets (状态为'已下载'，并指向 holding_id)
         targets_buf.write(f"{target_id}\t{edition_id}\t已下载\t0\t1\t5\t{now_ts}\t{holding_id}\t{now_ts}\t{now_ts}\n")
+
+        # 8. contributors & edition_contributors (作者关联)
+        if author:
+            author_names = clean_authors(author)
+            for order, aname in enumerate(author_names):
+                norm = normalize_person(aname)
+                if not norm:
+                    continue
+                batch_contributors.setdefault(norm, (aname, norm))
+                batch_ec.append((edition_id, str(uuid.uuid5(NS_AUTHOR, norm)), order))
 
         total_valid += 1
         current_batch_count += 1
