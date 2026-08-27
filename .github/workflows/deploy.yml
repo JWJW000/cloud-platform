@@ -9,6 +9,10 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
+# Worker 二进制由 release-worker.yml 在 v* tag 推送时自动构建并发布 GitHub Release。
+# deploy.yml 只负责 Master Docker 镜像的构建与生产部署，二者相互独立。
+# 推送新版本的完整步骤见 docs/部署与运维指南.md 第 10 节。
+
 jobs:
   build-and-push:
     name: 构建并推送 Docker 镜像 (GHCR)
