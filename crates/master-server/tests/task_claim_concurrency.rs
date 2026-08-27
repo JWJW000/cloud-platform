@@ -144,6 +144,7 @@ async fn 五个worker并发领取同一任务只能有一个成功() {
             scheduler: Default::default(),
             nas: Default::default(),
             webshare: Default::default(),
+            opensearch: Default::default(),
         }),
         cipher: std::sync::Arc::new(
             master_server::security::FieldCipher::from_base64(
@@ -158,6 +159,7 @@ async fn 五个worker并发领取同一任务只能有一个成功() {
         ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
         events: Default::default(),
         links: Default::default(),
+        search: None,
     });
 
     // 3. 并发调用 claim_next_task

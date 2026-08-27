@@ -14,7 +14,8 @@
 //!
 //! 隔离方式是「一个测试一个 schema」而不是「一个测试一个数据库」：
 //! 建库要连到 `postgres` 维护库、要独占连接、还常常被云托管数据库禁止；
-//! 而 `SET search_path` 对迁移脚本完全透明（迁移里没有任何 `public.` 前缀）。
+//! `pg_trgm` 是数据库级扩展，固定装在 `public`；测试 schema 的 `search_path` 同时包含
+//! `public`，避免并发测试在不同 schema 争抢同一个扩展后找不到 `gin_trgm_ops`。
 
 use std::time::Duration;
 
@@ -51,6 +52,10 @@ impl TestDb {
             .await
             .expect("连接测试用 PostgreSQL 失败");
         admin
+            .execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
+            .await
+            .expect("创建 pg_trgm 测试扩展失败");
+        admin
             .execute(format!("CREATE SCHEMA \"{schema}\"").as_str())
             .await
             .expect("创建测试 schema 失败");
@@ -64,7 +69,7 @@ impl TestDb {
                 // 每条连接都要设：连接池会在测试中途新建连接，漏设会让那条连接看不到表。
                 let schema = schema_for_connect.clone();
                 Box::pin(async move {
-                    conn.execute(format!("SET search_path TO \"{schema}\"").as_str())
+                    conn.execute(format!("SET search_path TO \"{schema}\", public").as_str())
                         .await?;
                     Ok(())
                 })

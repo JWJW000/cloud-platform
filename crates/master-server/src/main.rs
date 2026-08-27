@@ -60,6 +60,12 @@ enum Commands {
         #[arg(short, long, default_value_t = 24)]
         valid_hours: i64,
     },
+    /// 从 PostgreSQL 全量重建 OpenSearch 书目索引
+    ReindexCatalog {
+        /// 每次批量写入的文档数
+        #[arg(long, default_value_t = 500)]
+        batch_size: usize,
+    },
 }
 
 #[tokio::main]
@@ -130,6 +136,22 @@ async fn main() -> Result<()> {
             println!("过期时间: {}", code.expires_at.to_rfc3339());
             return Ok(());
         }
+        Commands::ReindexCatalog { batch_size } => {
+            let config = MasterConfig::load(&cli.config)?;
+            if !config.opensearch.enabled {
+                anyhow::bail!("OpenSearch 未启用，请先设置 OPENSEARCH_ENABLED=1");
+            }
+            let pool = store::connect(&config.database).await?;
+            if config.database.auto_migrate {
+                store::run_migrations(&pool).await?;
+            }
+            let client =
+                master_server::opensearch::OpenSearchClient::new(config.opensearch.clone())?;
+            let total =
+                master_server::opensearch::reindex_catalog(&pool, &client, batch_size).await?;
+            println!("OpenSearch 书目索引重建完成：{total} 条");
+            return Ok(());
+        }
         Commands::Serve => {
             let config = MasterConfig::load(&cli.config)?;
             tracing::info!("正在初始化 Master 运行时状态...");
@@ -144,6 +166,15 @@ async fn main() -> Result<()> {
 
             // V5：定期清理过期直连注册会话与超期申请（第 6.4 节）
             master_server::store::registration::spawn_registration_cleanup(state.pool.clone());
+
+            // OpenSearch 是可重建查询投影：故障时保留 Outbox 并由检索接口回退 PostgreSQL。
+            if let Some(client) = state.search.clone() {
+                master_server::opensearch::spawn_outbox_sync(
+                    state.pool.clone(),
+                    client,
+                    state.config.opensearch.clone(),
+                );
+            }
 
             // 启动 gRPC 服务
             let grpc_addr: SocketAddr =

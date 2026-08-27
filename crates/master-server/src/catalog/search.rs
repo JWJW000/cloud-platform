@@ -10,6 +10,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::opensearch::OpenSearchClient;
 use crate::store::catalog_v1::{
     get_edition_detail, search_editions, EditionDetail, EditionSearchItem,
 };
@@ -114,15 +115,98 @@ pub async fn search_catalog(
     pool: &PgPool,
     params: &CatalogSearchParams,
 ) -> AppResult<CatalogSearchResponse> {
+    search_catalog_with_opensearch(pool, None, params).await
+}
+
+/// 执行总库检索；存在非空关键词且 OpenSearch 可用时优先查询搜索投影。
+/// OpenSearch 超时或故障时自动回退 PostgreSQL，确保搜索集群不成为业务单点。
+pub async fn search_catalog_with_opensearch(
+    pool: &PgPool,
+    opensearch: Option<&OpenSearchClient>,
+    params: &CatalogSearchParams,
+) -> AppResult<CatalogSearchResponse> {
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
     let cursor = decode_cursor(params.cursor.as_deref())?;
     let forward = cursor
         .as_ref()
         .is_none_or(|cursor| cursor.direction == CursorDirection::Next);
 
+    let keyword = params
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if keyword.is_some_and(|value| value.chars().count() > 200) {
+        return Err(AppError::bad("检索关键词不能超过 200 个字符"));
+    }
+
+    if let (Some(client), Some(keyword)) = (opensearch, keyword) {
+        match client
+            .search(
+                keyword,
+                params.acquisition_status.as_deref(),
+                params.work_type.as_deref(),
+                params.language.as_deref(),
+                params.format.as_deref(),
+                params.resolution_status.as_deref(),
+                limit,
+                cursor.as_ref().map(|cursor| cursor.updated_at),
+                cursor.as_ref().map(|cursor| cursor.id),
+                forward,
+            )
+            .await
+        {
+            Ok(page) => {
+                let next_cursor = page.items.last().and_then(|item| {
+                    if !forward || page.has_more {
+                        encode_cursor(item, CursorDirection::Next)
+                    } else {
+                        None
+                    }
+                });
+                let previous_cursor = page.items.first().and_then(|item| {
+                    let has_previous = if forward {
+                        cursor.is_some()
+                    } else {
+                        page.has_more
+                    };
+                    has_previous
+                        .then(|| encode_cursor(item, CursorDirection::Previous))
+                        .flatten()
+                });
+                return Ok(CatalogSearchResponse {
+                    items: page.items,
+                    total: page.total,
+                    limit,
+                    offset: 0,
+                    next_cursor,
+                    previous_cursor,
+                    status_facets: page
+                        .status_facets
+                        .into_iter()
+                        .map(|(key, count)| FacetCount { key, count })
+                        .collect(),
+                    language_facets: page
+                        .language_facets
+                        .into_iter()
+                        .map(|(key, count)| FacetCount { key, count })
+                        .collect(),
+                    format_facets: page
+                        .format_facets
+                        .into_iter()
+                        .map(|(key, count)| FacetCount { key, count })
+                        .collect(),
+                });
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "OpenSearch 检索失败，回退 PostgreSQL");
+            }
+        }
+    }
+
     let (items, has_more) = search_editions(
         pool,
-        params.query.as_deref(),
+        keyword,
         params.acquisition_status.as_deref(),
         params.work_type.as_deref(),
         params.language.as_deref(),
@@ -150,7 +234,7 @@ pub async fn search_catalog(
     });
 
     // 2. 总数估算：完全避免同步阻塞全表统计，立即返回
-    let total: i64 = if params.query.is_none() {
+    let total: i64 = if keyword.is_none() {
         // 无关键词时：直接读取 pg_class 估算行数（0ms，瞬时返回）
         sqlx::query_scalar(
             "SELECT greatest(coalesce(reltuples, 0)::bigint, 0) FROM pg_class WHERE oid = 'editions'::regclass",

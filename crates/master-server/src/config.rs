@@ -475,8 +475,7 @@ impl MasterConfig {
             bail!("最小文件字节数不能为 0：站点错误页往往只有几 KB，阈值为 0 等于取消这道闸门");
         }
         if self.opensearch.enabled {
-            let url = url::Url::parse(&self.opensearch.url)
-                .context("OpenSearch URL 格式无效")?;
+            let url = url::Url::parse(&self.opensearch.url).context("OpenSearch URL 格式无效")?;
             if !matches!(url.scheme(), "http" | "https") {
                 bail!("OpenSearch URL 只允许 http/https");
             }
@@ -489,9 +488,11 @@ impl MasterConfig {
             if self.opensearch.index.is_empty()
                 || self.opensearch.index.len() > 128
                 || self.opensearch.index.starts_with(['_', '-', '+'])
-                || !self.opensearch.index.chars().all(|c| {
-                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_')
-                })
+                || !self
+                    .opensearch
+                    .index
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
             {
                 bail!("OpenSearch 索引名无效：只允许小写字母、数字、-、_");
             }
@@ -616,6 +617,32 @@ mod tests {
     fn zero_minimum_file_bytes_refuses_to_start() {
         let mut config = sample();
         config.nas.minimum_file_bytes = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn remote_plaintext_opensearch_is_rejected() {
+        let mut config = sample();
+        config.opensearch.enabled = true;
+        config.opensearch.url = "http://search.example.org:9200".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn docker_internal_and_remote_tls_opensearch_are_accepted() {
+        let mut config = sample();
+        config.opensearch.enabled = true;
+        config.opensearch.url = "http://opensearch:9200".to_string();
+        assert!(config.validate().is_ok());
+        config.opensearch.url = "https://search.internal.lan".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn unsafe_opensearch_index_name_is_rejected() {
+        let mut config = sample();
+        config.opensearch.enabled = true;
+        config.opensearch.index = "../../_all".to_string();
         assert!(config.validate().is_err());
     }
 }

@@ -53,6 +53,7 @@ async fn 管理员会话失效与动态查库校验() {
             scheduler: Default::default(),
             nas: Default::default(),
             webshare: Default::default(),
+            opensearch: Default::default(),
         }),
         cipher: std::sync::Arc::new(
             master_server::security::FieldCipher::from_base64(
@@ -64,6 +65,7 @@ async fn 管理员会话失效与动态查库校验() {
         ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
         events: Default::default(),
         links: Default::default(),
+        search: None,
     };
 
     // 1. 创建测试用户
@@ -227,6 +229,7 @@ async fn 会话表验证失败开放路径被堵死() {
             scheduler: Default::default(),
             nas: Default::default(),
             webshare: Default::default(),
+            opensearch: Default::default(),
         }),
         cipher: std::sync::Arc::new(
             master_server::security::FieldCipher::from_base64(
@@ -238,6 +241,7 @@ async fn 会话表验证失败开放路径被堵死() {
         ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
         events: Default::default(),
         links: Default::default(),
+        search: None,
     };
 
     let pwd_hash = hash_password("init_password").unwrap();

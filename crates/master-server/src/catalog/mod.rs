@@ -34,7 +34,7 @@ pub use inventory::{
 pub use outbox::process_outbox_events;
 pub use resolution::{resolve_item, ParsedCatalogItem, ResolutionResult};
 pub use search::{
-    get_catalog_edition_detail, search_catalog, CatalogSearchParams, CatalogSearchResponse,
-    FacetCount,
+    get_catalog_edition_detail, search_catalog, search_catalog_with_opensearch,
+    CatalogSearchParams, CatalogSearchResponse, FacetCount,
 };
 pub use storage::{commit_library_file, CommitLibraryFileRequest, CommitLibraryFileResult};

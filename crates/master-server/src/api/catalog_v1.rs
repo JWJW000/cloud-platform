@@ -16,9 +16,9 @@ use crate::catalog::ingestion::{
     execute_import, preview_import, ImportExecutionResult, ImportManifestRequest,
     ImportPreviewResult, StartImportRequest,
 };
-use crate::catalog::outbox::process_outbox_events;
 use crate::catalog::search::{
-    get_catalog_edition_detail, search_catalog, CatalogSearchParams, CatalogSearchResponse,
+    get_catalog_edition_detail, search_catalog_with_opensearch, CatalogSearchParams,
+    CatalogSearchResponse,
 };
 use crate::catalog::storage::{
     commit_library_file, CommitLibraryFileRequest, CommitLibraryFileResult,
@@ -239,7 +239,7 @@ pub async fn search_editions_handler(
     _auth: AuthenticatedUser,
     Query(params): Query<CatalogSearchParams>,
 ) -> AppResult<Json<CatalogSearchResponse>> {
-    let res = search_catalog(&state.pool, &params).await?;
+    let res = search_catalog_with_opensearch(&state.pool, state.search.as_ref(), &params).await?;
     Ok(Json(res))
 }
 
@@ -424,7 +424,7 @@ pub async fn list_acquisitions_handler(
     if params.acquisition_status.is_none() {
         params.acquisition_status = Some("__actionable__".to_string());
     }
-    let res = search_catalog(&state.pool, &params).await?;
+    let res = search_catalog_with_opensearch(&state.pool, state.search.as_ref(), &params).await?;
     Ok(Json(res))
 }
 
@@ -555,6 +555,12 @@ pub async fn process_outbox_handler(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
 ) -> AppResult<Json<serde_json::Value>> {
-    let processed = process_outbox_events(&state.pool, 100).await?;
+    let client = state
+        .search
+        .as_ref()
+        .ok_or_else(|| AppError::conflict("OpenSearch 未启用，不能处理搜索 Outbox"))?;
+    let processed = crate::opensearch::process_outbox_events(&state.pool, client, 100)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(serde_json::json!({ "processed": processed })))
 }

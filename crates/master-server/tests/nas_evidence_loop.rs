@@ -42,6 +42,7 @@ fn state_for(db: &support::TestDb) -> master_server::state::AppState {
             scheduler: Default::default(),
             nas: Default::default(),
             webshare: Default::default(),
+            opensearch: Default::default(),
         }),
         cipher: std::sync::Arc::new(
             master_server::security::FieldCipher::from_base64(
@@ -56,6 +57,7 @@ fn state_for(db: &support::TestDb) -> master_server::state::AppState {
         ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
         events: Default::default(),
         links: Default::default(),
+        search: None,
     }
 }
 

@@ -60,3 +60,14 @@ enabled = false
 api_key = ""
 sync_minutes = 30
 cooldown_minutes = 10
+
+[opensearch]
+enabled = false
+url = "http://opensearch:9200"
+index = "catalog-editions-v1"
+username = ""
+# 生产密码优先通过 OPENSEARCH_PASSWORD 环境变量注入。
+password = ""
+timeout_secs = 10
+batch_size = 250
+poll_millis = 1000

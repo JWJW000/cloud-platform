@@ -125,6 +125,7 @@ async fn 图书任务首次执行绑定代理且重试固定同一代理() {
             scheduler: Default::default(),
             nas: Default::default(),
             webshare: Default::default(),
+            opensearch: Default::default(),
         }),
         cipher: std::sync::Arc::new(cipher),
         tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
@@ -134,6 +135,7 @@ async fn 图书任务首次执行绑定代理且重试固定同一代理() {
         ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
         events: Default::default(),
         links: Default::default(),
+        search: None,
     };
 
     // 1. 分配第一个下载会话（绑定到 proxy1）
@@ -274,6 +276,7 @@ async fn 账号注册批次任务分配与事务原子状态更新() {
             scheduler: Default::default(),
             nas: Default::default(),
             webshare: Default::default(),
+            opensearch: Default::default(),
         }),
         cipher: std::sync::Arc::new(cipher),
         tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
@@ -283,6 +286,7 @@ async fn 账号注册批次任务分配与事务原子状态更新() {
         ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
         events: Default::default(),
         links: Default::default(),
+        search: None,
     };
 
     // 1. 分配账号注册会话

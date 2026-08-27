@@ -19,7 +19,7 @@
                     Master 8080 / 9443 (Docker 内网)
                          │
                          ▼
-                    PostgreSQL 16 (Docker 内网)
+             PostgreSQL 16 + OpenSearch（Docker 内网）
 ```
 
 ---
@@ -79,6 +79,7 @@ vim deploy/.env
 | `./deploy/manage.sh update` | 自动备份数据库、拉取最新 GHCR 镜像并平滑重启 Master |
 | `./deploy/manage.sh backup` | 手动备份 PostgreSQL 数据库到 `backups/` 目录 |
 | `./deploy/manage.sh create-admin <user> <pwd>` | 初始化或重置管理员账号 |
+| `./deploy/manage.sh reindex-catalog [batch]` | 从 PostgreSQL 全量重建 OpenSearch 书目索引 |
 
 ---
 
@@ -95,5 +96,6 @@ vim deploy/.env
 
 - [Worker 跨平台客户端发布与使用指南](docs/Worker跨平台客户端发布与使用指南.md)
 - [云端自动化平台部署与运维指南](docs/部署与运维指南.md)
+- [OpenSearch 接入与重建指南](docs/OpenSearch接入与重建指南.md)
 - [前端云端化与 Worker 直连注册实施方案](docs/前端云端化与Worker直连注册修复实施方案-v5.md)
 - [CSV 建批与业务任务统一下发方案](docs/CSV建批与业务任务统一下发实现方案-v6.md)

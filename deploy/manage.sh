@@ -80,11 +80,21 @@ case "$1" in
     docker exec -i drission-master master-server --config /app/config/master.toml create-admin --username "${USERNAME}" --password "${PASSWORD}"
     ;;
 
+  reindex-catalog)
+    BATCH_SIZE="${2:-500}"
+    if ! [[ "${BATCH_SIZE}" =~ ^[0-9]+$ ]] || [ "${BATCH_SIZE}" -lt 10 ] || [ "${BATCH_SIZE}" -gt 2000 ]; then
+      echo "用法: $0 reindex-catalog [批量大小 10..2000]"
+      exit 1
+    fi
+    docker exec -i drission-master master-server --config /app/config/master.toml \
+      reindex-catalog --batch-size "${BATCH_SIZE}"
+    ;;
+
   *)
     echo "============================================="
     echo " Cloud Platform 运维管理脚本"
     echo "============================================="
-    echo "用法: $0 {start|stop|restart|status|logs|update|backup|create-admin}"
+    echo "用法: $0 {start|stop|restart|status|logs|update|backup|create-admin|reindex-catalog}"
     echo ""
     echo "  start         - 启动所有容器服务"
     echo "  stop          - 停止所有容器服务"
@@ -94,6 +104,7 @@ case "$1" in
     echo "  update        - 自动备份DB、拉取最新镜像并平滑更新 Master"
     echo "  backup        - 手动备份 PostgreSQL 数据库"
     echo "  create-admin  - 初始化或创建管理员账号 (用法: $0 create-admin admin 123456)"
+    echo "  reindex-catalog - 从 PostgreSQL 全量重建 OpenSearch 书目索引"
     echo "============================================="
     exit 1
     ;;

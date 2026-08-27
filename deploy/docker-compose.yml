@@ -37,6 +37,40 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  opensearch:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-3.8.0}
+    container_name: drission-opensearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "${OPENSEARCH_JAVA_OPTS:--Xms1g -Xmx1g}"
+      # 仅允许 Docker 内网访问，不发布 9200。连接托管 OpenSearch 时不要启动本服务，改用 HTTPS 与账号密码。
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    expose:
+      - "9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   master:
     image: ${MASTER_IMAGE:-ghcr.io/jwjw000/cloud-platform-master:latest}
     build:
@@ -57,6 +91,11 @@ services:
       MASTER_REQUIRE_CLIENT_CERT: "${MASTER_REQUIRE_CLIENT_CERT:-1}"
       DRISSION_CATALOG_MANIFEST_ROOT: /app/catalog-manifests
       WEBSHARE_API_KEY: "${WEBSHARE_API_KEY:-}"
+      OPENSEARCH_ENABLED: "${OPENSEARCH_ENABLED:-1}"
+      OPENSEARCH_URL: "${OPENSEARCH_URL:-http://opensearch:9200}"
+      OPENSEARCH_INDEX: "${OPENSEARCH_INDEX:-catalog-editions-v1}"
+      OPENSEARCH_USERNAME: "${OPENSEARCH_USERNAME:-}"
+      OPENSEARCH_PASSWORD: "${OPENSEARCH_PASSWORD:-}"
       TZ: Asia/Shanghai
     volumes:
       # 卷由容器 root 初始化；Dockerfile 已确保 /app/data 属主为 appuser
@@ -82,3 +121,4 @@ services:
 volumes:
   pgdata:
   master_data:
+  opensearch_data:

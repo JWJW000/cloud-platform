@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::config::{MasterConfig, SchedulerConfig};
 use crate::events::EventHub;
+use crate::opensearch::OpenSearchClient;
 use crate::security::{FieldCipher, NodeCa, TokenIssuer};
 
 /// 单个节点下行通道的容量。
@@ -245,6 +246,8 @@ pub struct AppState {
     pub events: EventHub,
     /// 在线 Worker 的下行通道。
     pub links: NodeLinks,
+    /// 可选 OpenSearch 搜索投影客户端。
+    pub search: Option<OpenSearchClient>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -276,6 +279,11 @@ impl AppState {
             &config.security.ca_key_path,
             config.security.node_cert_days,
         )?;
+        let search = if config.opensearch.enabled {
+            Some(OpenSearchClient::new(config.opensearch.clone())?)
+        } else {
+            None
+        };
 
         Ok(Self {
             pool,
@@ -285,6 +293,7 @@ impl AppState {
             ca: Arc::new(ca),
             events: EventHub::default(),
             links: NodeLinks::new(),
+            search,
         })
     }
 

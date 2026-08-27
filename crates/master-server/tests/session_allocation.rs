@@ -95,6 +95,7 @@ async fn 会话独占锁定账号代理与槽位() {
             scheduler: Default::default(),
             nas: Default::default(),
             webshare: Default::default(),
+            opensearch: Default::default(),
         }),
         cipher: std::sync::Arc::new(
             master_server::security::FieldCipher::from_base64(
@@ -109,6 +110,7 @@ async fn 会话独占锁定账号代理与槽位() {
         ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
         events: Default::default(),
         links: Default::default(),
+        search: None,
     };
 
     // 3. 槽位 0 申请会话，应当成功锁定该账号和代理

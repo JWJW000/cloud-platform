@@ -9,7 +9,6 @@ use master_server::catalog::acquisition::{
 use master_server::catalog::ingestion::{
     execute_import, preview_import, ImportManifestRequest, StartImportRequest,
 };
-use master_server::catalog::outbox::process_outbox_events;
 use master_server::catalog::search::{
     get_catalog_edition_detail, search_catalog, CatalogSearchParams,
 };
@@ -143,8 +142,12 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
     assert_eq!(quarantined.len(), 1);
     assert_eq!(quarantined[0].error_reason, "书名为空或无效");
 
-    // 8. 搜索 Outbox 消费
-    let outbox_count = process_outbox_events(&db.pool, 50).await.unwrap();
+    // 8. 搜索 Outbox 必须等待 OpenSearch 确认后才能完成；数据库测试只验证事件可靠落库。
+    let outbox_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM catalog_outbox WHERE status = '待同步'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     assert!(outbox_count >= 3);
 }
 

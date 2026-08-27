@@ -3,6 +3,8 @@ admin-web/node_modules/
 admin-web/dist/
 web-admin/
 data/
+backups/
+deploy/config/
 config/master.toml
 config/master.local.toml
 config/worker.toml

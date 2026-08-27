@@ -18,6 +18,7 @@ pub mod error;
 pub mod events;
 pub mod grpc;
 pub mod models;
+pub mod opensearch;
 pub mod scheduler;
 pub mod security;
 pub mod state;
