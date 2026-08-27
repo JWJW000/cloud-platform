@@ -797,7 +797,7 @@ async fn execute_download_session(
         session_id: session_id.clone(),
         site_base: site_base.clone(),
         browser_path: None,
-        headless: true,
+        headless: config.execution.headless,
         profile_dir: config
             .storage
             .data_dir
@@ -1297,7 +1297,7 @@ async fn execute_registration_session(
         session_id: session_id.clone(),
         site_base: site_base.clone(),
         browser_path: None,
-        headless: true,
+        headless: config.execution.headless,
         profile_dir: config
             .storage
             .data_dir

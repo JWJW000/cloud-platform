@@ -118,10 +118,17 @@ pub struct ExecutionConfig {
     /// 是否使用模拟自动化引擎（用于测试或无桌面环境）。
     #[serde(default)]
     pub simulated: bool,
+    /// 是否开启无头浏览器模式（默认 true 静默无头；设为 false 时弹出可视化真实浏览器窗口）。
+    #[serde(default = "default_headless")]
+    pub headless: bool,
 }
 
 fn default_requested_slots() -> u32 {
     5
+}
+
+fn default_headless() -> bool {
+    true
 }
 
 impl Default for ExecutionConfig {
@@ -129,6 +136,7 @@ impl Default for ExecutionConfig {
         Self {
             requested_slots: default_requested_slots(),
             simulated: false,
+            headless: default_headless(),
         }
     }
 }
