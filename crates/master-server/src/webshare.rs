@@ -242,6 +242,17 @@ pub fn spawn_webshare_sync(state: AppState) {
             "Webshare 定时同步任务已启动"
         );
 
+        // 启动后立即先执行一次全量拉取，避免等待 30 分钟轮询周期
+        match sync_webshare_once(&state).await {
+            Ok(count) => {
+                tracing::info!(count = count, "Webshare 代理初始同步完成");
+                let _ = crate::scheduler::trigger_scheduler_sweep(&state).await;
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "Webshare 代理初始同步失败");
+            }
+        }
+
         let mut timer = tokio::time::interval(Duration::from_secs(interval_secs));
         timer.tick().await;
 
@@ -250,6 +261,7 @@ pub fn spawn_webshare_sync(state: AppState) {
             match sync_webshare_once(&state).await {
                 Ok(count) => {
                     tracing::info!(count = count, "Webshare 代理定时同步完成");
+                    let _ = crate::scheduler::trigger_scheduler_sweep(&state).await;
                 }
                 Err(err) => {
                     tracing::error!(error = %err, "Webshare 代理定时同步失败（数据库保持不变）");
