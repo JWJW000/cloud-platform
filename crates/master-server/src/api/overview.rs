@@ -118,15 +118,35 @@ pub async fn get_overview(
         .count();
     let error_slots = all_slots.iter().filter(|s| s.status == "异常").count();
 
-    let accounts = store::resource::list_accounts(&state.pool, None, 500, 0).await?;
-    let available_accounts = store::resource::count_available_accounts(&state.pool).await?;
-    let pending_reg = store::resource::count_pending_registration(&state.pool).await?;
+    let (total_acc, available_accounts, pending_reg): (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+         count(*)::bigint, \
+         count(*) FILTER (WHERE status = '可用' AND lease_session_id IS NULL)::bigint, \
+         count(*) FILTER (WHERE status = '待注册')::bigint \
+         FROM accounts",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or((0, 0, 0));
+    let total_accounts = total_acc as usize;
 
-    let proxies = store::resource::list_proxies(&state.pool, None, 500, 0).await?;
-    let available_proxies = store::resource::count_available_proxies(&state.pool).await?;
-    let occupied_proxies = proxies.iter().filter(|p| p.status == "已占用").count();
-    let cooling_proxies = proxies.iter().filter(|p| p.status == "冷却中").count();
-    let error_proxies = proxies.iter().filter(|p| p.status == "异常").count();
+    let (total_p, available_proxies, occupied_p, cooling_p, error_p): (i64, i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT \
+         count(*)::bigint, \
+         count(*) FILTER (WHERE status = '可用' AND (cooldown_until IS NULL OR cooldown_until < now()) AND lease_session_id IS NULL)::bigint, \
+         count(*) FILTER (WHERE status = '已占用')::bigint, \
+         count(*) FILTER (WHERE status = '冷却中' OR (status = '可用' AND cooldown_until >= now()))::bigint, \
+         count(*) FILTER (WHERE status = '异常')::bigint \
+         FROM proxies",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or((0, 0, 0, 0, 0));
+    let total_proxies = total_p as usize;
+    let occupied_proxies = occupied_p as usize;
+    let cooling_proxies = cooling_p as usize;
+    let error_proxies = error_p as usize;
 
     let task_counts = store::task::count_by_status(&state.pool).await?;
     let mut pending_tasks = 0;
@@ -184,12 +204,12 @@ pub async fn get_overview(
         },
         today,
         accounts: AccountStats {
-            total: accounts.len(),
+            total: total_accounts,
             available: available_accounts,
             pending_reg,
         },
         proxies: ProxyStats {
-            total: proxies.len(),
+            total: total_proxies,
             available: available_proxies,
             occupied: occupied_proxies,
             cooling: cooling_proxies,
