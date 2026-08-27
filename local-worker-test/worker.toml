@@ -1,0 +1,21 @@
+# ========================================================
+#   本地调试用 Worker 配置（验证浏览器是否弹窗）
+# ========================================================
+
+[master]
+endpoint = "https://grpc.5wjw.cn"
+tls_domain = "grpc.5wjw.cn"
+
+identity_file = "data/identity.json"
+client_cert_file = "data/client.crt"
+client_key_file = "data/client.key"
+node_ca_file = "data/node-ca.crt"
+
+[storage]
+data_dir = "data"
+nas_mount = "./data/nas"
+
+[execution]
+requested_slots = 1
+simulated = false
+headless = false

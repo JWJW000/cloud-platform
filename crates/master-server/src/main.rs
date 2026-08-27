@@ -176,6 +176,42 @@ async fn main() -> Result<()> {
                 );
             }
 
+            // 启动书目统计后台定时预热与刷新协程（每 60 秒刷新一次，保障前端 100% 毫秒级响应）
+            {
+                let state_clone = state.clone();
+                tokio::spawn(async move {
+                    // 启动即刻预热一次
+                    if let Ok(stats) =
+                        master_server::store::catalog_v1::get_catalog_stats(&state_clone.pool).await
+                    {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        if let Ok(mut guard) = state_clone.catalog_stats_cache.lock() {
+                            *guard = Some((now, stats));
+                        }
+                    }
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                    interval.tick().await; // skip initial immediate tick
+                    loop {
+                        interval.tick().await;
+                        if let Ok(stats) =
+                            master_server::store::catalog_v1::get_catalog_stats(&state_clone.pool)
+                                .await
+                        {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            if let Ok(mut guard) = state_clone.catalog_stats_cache.lock() {
+                                *guard = Some((now, stats));
+                            }
+                        }
+                    }
+                });
+            }
+
             // 启动 gRPC 服务
             let grpc_addr: SocketAddr =
                 state.config.server.grpc_listen.parse().with_context(|| {

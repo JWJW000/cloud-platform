@@ -421,6 +421,11 @@ impl MasterConfig {
                 self.security.cookie_secure = false;
             }
         }
+        if let Ok(alert_gb) = std::env::var("NAS_FREE_SPACE_ALERT_GB") {
+            if let Ok(parsed) = alert_gb.parse::<i64>() {
+                self.nas.free_space_alert_gb = parsed;
+            }
+        }
     }
 
     fn validate(&self) -> Result<()> {

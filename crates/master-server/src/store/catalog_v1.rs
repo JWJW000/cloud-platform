@@ -773,107 +773,78 @@ pub async fn list_quarantined_records(
 }
 
 /// 统计总库核心指标。
-#[allow(clippy::field_reassign_with_default)]
 pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
-    let mut stats = CatalogStats::default();
-
-    stats.total_sources = sqlx::query_scalar("SELECT count(*) FROM catalog_sources")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-    stats.total_source_records = sqlx::query_scalar("SELECT count(*) FROM source_records")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-    stats.total_works = sqlx::query_scalar("SELECT count(*) FROM works WHERE work_type != '章节'")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-    stats.total_chapters =
-        sqlx::query_scalar("SELECT count(*) FROM works WHERE work_type = '章节'")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0);
-
-    stats.total_editions = sqlx::query_scalar("SELECT count(*) FROM editions")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-    stats.total_holdings = sqlx::query_scalar("SELECT count(*) FROM holdings")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-    let (file_count, file_bytes): (i64, i64) = sqlx::query_as(
-        "SELECT count(*)::bigint, coalesce(sum(actual_size_bytes), 0)::bigint FROM library_files WHERE verify_status = '有效'"
+    use sqlx::Row;
+    // 采用单一联合聚合查询，同时命中部分索引，将 9~14 次扫描合并为单次查询
+    let row = sqlx::query(
+        r#"
+        SELECT
+          (SELECT count(*) FROM catalog_sources)::bigint as total_sources,
+          (SELECT count(*) FROM source_records)::bigint as total_source_records,
+          (SELECT count(*) FROM works WHERE work_type != '章节')::bigint as total_works,
+          (SELECT count(*) FROM works WHERE work_type = '章节')::bigint as total_chapters,
+          (SELECT count(*) FROM editions)::bigint as total_editions,
+          (SELECT count(*) FROM holdings)::bigint as total_holdings,
+          (SELECT count(*) FROM library_files WHERE verify_status = '有效')::bigint as total_library_files,
+          (SELECT coalesce(sum(actual_size_bytes), 0) FROM library_files WHERE verify_status = '有效')::bigint as total_library_bytes,
+          (SELECT count(*) FROM acquisition_targets WHERE status = '已下载')::bigint as acquired_targets,
+          (SELECT count(*) FROM acquisition_targets WHERE status IN ('待下载', '排队中'))::bigint as pending_targets,
+          (SELECT count(*) FROM acquisition_targets WHERE status IN ('已领取', '下载中', '校验中'))::bigint as downloading_targets,
+          (SELECT count(*) FROM acquisition_targets WHERE status IN ('暂时失败', '来源无效'))::bigint as failed_targets,
+          (SELECT count(*) FROM acquisition_targets WHERE status = '人工确认')::bigint as needs_confirm_targets,
+          (SELECT count(*) FROM quarantined_records WHERE NOT resolved)::bigint as total_quarantined,
+          (SELECT count(*) FROM works WHERE resolution_status = '待消歧')::bigint as ambiguous_works_count,
+          (SELECT count(*) FROM holdings WHERE created_at >= CURRENT_DATE)::bigint as today_downloaded_count,
+          (SELECT count(*) FROM works WHERE created_at >= CURRENT_DATE AND work_type != '章节')::bigint as today_added_works_count
+        "#,
     )
     .fetch_one(pool)
-    .await
-    .unwrap_or((0, 0));
-    stats.total_library_files = file_count;
-    stats.total_library_bytes = file_bytes;
+    .await;
 
-    let (acquired, pending, downloading, failed, confirm): (i64, i64, i64, i64, i64) =
-        sqlx::query_as(
-            "SELECT \
-             count(*) FILTER (WHERE status = '已下载')::bigint, \
-             count(*) FILTER (WHERE status IN ('待下载', '排队中'))::bigint, \
-             count(*) FILTER (WHERE status IN ('已领取', '下载中', '校验中'))::bigint, \
-             count(*) FILTER (WHERE status IN ('暂时失败', '来源无效'))::bigint, \
-             count(*) FILTER (WHERE status = '人工确认')::bigint \
-         FROM acquisition_targets",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0, 0, 0, 0, 0));
-    stats.acquired_targets = acquired;
-    stats.pending_targets = pending;
-    stats.downloading_targets = downloading;
-    stats.failed_targets = failed;
-    stats.needs_confirm_targets = confirm;
+    let mut stats = match row {
+        Ok(r) => CatalogStats {
+            total_sources: r.try_get("total_sources").unwrap_or(0),
+            total_source_records: r.try_get("total_source_records").unwrap_or(0),
+            total_works: r.try_get("total_works").unwrap_or(0),
+            total_chapters: r.try_get("total_chapters").unwrap_or(0),
+            total_editions: r.try_get("total_editions").unwrap_or(0),
+            total_holdings: r.try_get("total_holdings").unwrap_or(0),
+            total_library_files: r.try_get("total_library_files").unwrap_or(0),
+            total_library_bytes: r.try_get("total_library_bytes").unwrap_or(0),
+            acquired_targets: r.try_get("acquired_targets").unwrap_or(0),
+            pending_targets: r.try_get("pending_targets").unwrap_or(0),
+            downloading_targets: r.try_get("downloading_targets").unwrap_or(0),
+            failed_targets: r.try_get("failed_targets").unwrap_or(0),
+            needs_confirm_targets: r.try_get("needs_confirm_targets").unwrap_or(0),
+            total_quarantined: r.try_get("total_quarantined").unwrap_or(0),
+            missing_isbn_count: 0,
+            missing_author_count: 0,
+            ambiguous_works_count: r.try_get("ambiguous_works_count").unwrap_or(0),
+            today_downloaded_count: r.try_get("today_downloaded_count").unwrap_or(0),
+            today_added_works_count: r.try_get("today_added_works_count").unwrap_or(0),
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "获取图书总库统计指标失败，使用默认值");
+            CatalogStats::default()
+        }
+    };
 
-    stats.total_quarantined =
-        sqlx::query_scalar("SELECT count(*) FROM quarantined_records WHERE NOT resolved")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0);
-
-    stats.missing_isbn_count = sqlx::query_scalar(
-        "SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.identifier_type IN ('isbn13', 'isbn10') AND i.is_valid)"
+    // 缺失 ISBN 与作者的计数采用轻量独立计算
+    let missing_isbn: i64 = sqlx::query_scalar(
+        r#"SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.identifier_type IN ('isbn13', 'isbn10') AND i.is_valid)"#
     )
     .fetch_one(pool)
     .await
     .unwrap_or(0);
+    stats.missing_isbn_count = missing_isbn;
 
-    stats.missing_author_count = sqlx::query_scalar(
-        "SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM edition_contributors ec WHERE ec.edition_id = e.id)"
+    let missing_author: i64 = sqlx::query_scalar(
+        r#"SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM edition_contributors ec WHERE ec.edition_id = e.id)"#
     )
     .fetch_one(pool)
     .await
     .unwrap_or(0);
-
-    stats.ambiguous_works_count =
-        sqlx::query_scalar("SELECT count(*) FROM works WHERE resolution_status = '待消歧'")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0);
-
-    stats.today_downloaded_count =
-        sqlx::query_scalar("SELECT count(*) FROM holdings WHERE created_at >= CURRENT_DATE")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0);
-
-    stats.today_added_works_count = sqlx::query_scalar(
-        "SELECT count(*) FROM works WHERE created_at >= CURRENT_DATE AND work_type != '章节'",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
+    stats.missing_author_count = missing_author;
 
     Ok(stats)
 }
