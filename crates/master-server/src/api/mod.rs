@@ -237,7 +237,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/catalog/imports/preview",
-            post(catalog_v1::preview_import_handler),
+            post(catalog_v1::preview_import_handler).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route(
             "/api/catalog/imports/manifests",
@@ -245,7 +245,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/catalog/imports/submit",
-            post(catalog_v1::submit_import_handler),
+            post(catalog_v1::submit_import_handler).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route(
+            "/api/catalog/imports/submitRequest",
+            post(catalog_v1::submit_import_handler).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route(
             "/api/catalog/imports/runs",
