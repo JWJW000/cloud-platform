@@ -458,6 +458,14 @@ async fn apply_success_in_tx(
         node_id,
     )
     .await?;
+    super::catalog_bridge::success_in_tx(
+        tx,
+        report.task_id,
+        report.execution_id,
+        report.node_id,
+        file,
+    )
+    .await?;
 
     store::session::finish_execution(
         &mut **tx,
@@ -604,6 +612,8 @@ async fn apply_failure_in_tx(
         report.duration_ms,
     )
     .await?;
+    super::catalog_bridge::failure_in_tx(tx, report.execution_id, attribution.result, reason)
+        .await?;
 
     if let (Some(account_id), Some(status)) = (context.account_id, attribution.account_status) {
         store::resource::set_account_status(&mut **tx, account_id, status, Some(reason)).await?;
@@ -1008,6 +1018,7 @@ async fn apply_proxy_status(
 /// 取消上报：任务状态由管理员那条路径决定，这里只收尾执行记录。
 /// Worker 确认收到分配（`TaskAccepted`）：任务从「已分配」进入「执行中」。
 pub async fn accept_task(state: &AppState, execution_id: Uuid, task_id: Uuid) -> AppResult<bool> {
+    let mut tx = state.pool.begin().await?;
     let affected = sqlx::query(
         "UPDATE book_tasks SET status = $3, stage = $4, updated_at = now() \
          WHERE id = $1 AND lease_execution_id = $2 AND status = $5",
@@ -1017,9 +1028,13 @@ pub async fn accept_task(state: &AppState, execution_id: Uuid, task_id: Uuid) ->
     .bind(TaskStatus::Running.as_str())
     .bind("已接受")
     .bind(TaskStatus::Claimed.as_str())
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
+    if affected > 0 {
+        super::catalog_bridge::task_accepted(&mut *tx, task_id, execution_id).await?;
+    }
+    tx.commit().await?;
     Ok(affected > 0)
 }
 
@@ -1036,6 +1051,7 @@ pub async fn record_progress(
     stage: &str,
     stage_version: i32,
 ) -> AppResult<bool> {
+    let mut tx = state.pool.begin().await?;
     let affected = sqlx::query(
         "UPDATE book_tasks SET downloaded_bytes = $3, \
              total_bytes = GREATEST(total_bytes, $4), \
@@ -1054,9 +1070,13 @@ pub async fn record_progress(
     .bind(TaskStatus::Claimed.as_str())
     .bind(TaskStatus::Running.as_str())
     .bind(TaskStatus::AwaitingIngest.as_str())
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
+    if affected > 0 {
+        super::catalog_bridge::progress(&mut *tx, task_id, execution_id, stage).await?;
+    }
+    tx.commit().await?;
     Ok(affected > 0)
 }
 

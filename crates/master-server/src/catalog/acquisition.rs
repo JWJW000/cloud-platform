@@ -277,6 +277,7 @@ pub async fn report_acquisition_task(
 
 /// 管理员手动重试或重置任务。
 pub async fn retry_acquisition_target(pool: &PgPool, target_id: Uuid) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "UPDATE acquisition_targets SET \
              status = '待下载', \
@@ -291,8 +292,22 @@ pub async fn retry_acquisition_target(pool: &PgPool, target_id: Uuid) -> AppResu
          WHERE id = $1",
     )
     .bind(target_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    // 已经物化给旧 Worker 状态机的目标必须同步复位，否则 acquisition_targets
+    // 显示待下载，而镜像任务仍停在失败/待确认，永远不会再次被领取。
+    sqlx::query(
+        "UPDATE book_tasks SET status = '待处理', attempts = 0, next_attempt_at = now(), \
+             stage = '', stage_version = stage_version + 1, cancel_requested = FALSE, \
+             lease_node_id = NULL, lease_session_id = NULL, lease_execution_id = NULL, \
+             lease_expires_at = NULL, last_error = NULL, updated_at = now() WHERE id = $1",
+    )
+    .bind(target_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
 
     Ok(())
 }

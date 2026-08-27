@@ -13,6 +13,8 @@ use master_server::catalog::search::{
     get_catalog_edition_detail, search_catalog, CatalogSearchParams,
 };
 use master_server::catalog::storage::{commit_library_file, CommitLibraryFileRequest};
+use master_server::scheduler::catalog_bridge::{materialize_next_target, success_in_tx};
+use master_server::scheduler::FileEvidence;
 use master_server::store::catalog_v1::{get_catalog_stats, list_quarantined_records};
 use uuid::Uuid;
 
@@ -238,4 +240,125 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
     assert_eq!(target.satisfied_holding_id, Some(commit_res.holding_id));
     assert_eq!(detail.holdings.len(), 1);
     assert_eq!(detail.holdings[0].1.sha256, sha256_hash);
+}
+
+#[tokio::test]
+async fn 总库目标_可物化为现有worker任务并双向同步状态() {
+    let db = require_db!();
+    let csv_content = "title,author,publisher,isbn,format,filesize\n兼容调度测试书,测试作者,测试出版社,9787111999999,pdf,5000000\n";
+    execute_import(
+        &db.pool,
+        &StartImportRequest {
+            source_name: "worker_bridge_test".to_string(),
+            source_type: Some("csv".to_string()),
+            file_name: "worker_bridge_test.csv".to_string(),
+            sheet_name: None,
+            text_content: Some(csv_content.to_string()),
+            server_manifest: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut tx = db.pool.begin().await.unwrap();
+    assert!(materialize_next_target(&mut tx).await.unwrap());
+    tx.commit().await.unwrap();
+
+    let (target_id, task_id, batch_status): (Uuid, Uuid, String) = sqlx::query_as(
+        "SELECT at.id, bt.id, db.status FROM acquisition_targets at \
+         JOIN book_tasks bt ON bt.id = at.id \
+         JOIN batch_books bb ON bb.book_id = bt.book_id \
+         JOIN download_batches db ON db.id = bb.batch_id \
+         WHERE at.edition_id = (SELECT id FROM editions WHERE edition_title = $1 LIMIT 1)",
+    )
+    .bind("兼容调度测试书")
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(target_id, task_id, "镜像任务必须与总库目标共用编号");
+    assert_eq!(batch_status, "执行中");
+
+    let execution_id = Uuid::new_v4();
+    sqlx::query(
+        "UPDATE book_tasks SET status = '已分配', attempts = 1, \
+             lease_execution_id = $2, lease_expires_at = now() + interval '5 minutes' \
+         WHERE id = $1",
+    )
+    .bind(task_id)
+    .bind(execution_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mirrored: (String, i32, Option<Uuid>) = sqlx::query_as(
+        "SELECT status, attempts, lease_execution_id FROM acquisition_targets WHERE id = $1",
+    )
+    .bind(target_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(mirrored.0, "已领取");
+    assert_eq!(mirrored.1, 1);
+    assert_eq!(mirrored.2, Some(execution_id));
+
+    retry_acquisition_target(&db.pool, target_id).await.unwrap();
+    let reset: (String, String, i32) = sqlx::query_as(
+        "SELECT at.status, bt.status, bt.attempts FROM acquisition_targets at \
+         JOIN book_tasks bt ON bt.id = at.id WHERE at.id = $1",
+    )
+    .bind(target_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(reset, ("待下载".to_string(), "待处理".to_string(), 0));
+
+    let node_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO worker_nodes \
+             (id, name, hostname, os, status, node_token_hash, registration_status) \
+         VALUES ($1, $2, $2, 'Linux', '在线', $3, '已批准')",
+    )
+    .bind(node_id)
+    .bind(format!("bridge-node-{node_id}"))
+    .bind("test-token-hash")
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("UPDATE book_tasks SET status = '已完成' WHERE id = $1")
+        .bind(task_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    success_in_tx(
+        &mut tx,
+        target_id,
+        Uuid::new_v4(),
+        Some(node_id),
+        &FileEvidence {
+            nas_relative_path: "文件/兼容调度测试书.pdf".to_string(),
+            file_name: "兼容调度测试书.pdf".to_string(),
+            size_bytes: 5_000_000,
+            sha256: sha256.to_string(),
+            format: "pdf".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let evidence: (String, i64, i64) = sqlx::query_as(
+        "SELECT at.status, \
+                (SELECT count(*) FROM holdings h WHERE h.edition_id = at.edition_id), \
+                (SELECT count(*) FROM library_file_locations lfl \
+                 JOIN holdings h ON h.library_file_id = lfl.library_file_id \
+                 WHERE h.edition_id = at.edition_id AND lfl.verify_status = '有效') \
+         FROM acquisition_targets at WHERE at.id = $1",
+    )
+    .bind(target_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(evidence, ("已下载".to_string(), 1, 1));
 }

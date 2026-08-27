@@ -57,6 +57,19 @@ pub async fn recompute_acquisition_state(
     .execute(&mut *tx)
     .await?;
 
+    if new_status == "待下载" {
+        sqlx::query(
+            "UPDATE book_tasks SET status = '待处理', attempts = 0, next_attempt_at = now(), \
+                 stage = '', stage_version = stage_version + 1, cancel_requested = FALSE, \
+                 lease_node_id = NULL, lease_session_id = NULL, lease_execution_id = NULL, \
+                 lease_expires_at = NULL, last_error = NULL, updated_at = now() \
+             WHERE id IN (SELECT id FROM acquisition_targets WHERE edition_id = $1)",
+        )
+        .bind(edition_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     tx.commit().await?;
     Ok(Some(new_status.to_string()))
 }

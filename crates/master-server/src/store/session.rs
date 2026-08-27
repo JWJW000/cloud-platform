@@ -394,7 +394,7 @@ pub async fn finish_execution(
 
 /// 把会话里所有未收尾的执行记录一并判定，回收租约时用。
 pub async fn finish_open_executions_of_session(
-    executor: impl PgExecutor<'_>,
+    executor: impl PgExecutor<'_> + Copy,
     session_id: Uuid,
     result: ExecutionResult,
     error: &str,
@@ -409,6 +409,15 @@ pub async fn finish_open_executions_of_session(
     .execute(executor)
     .await?
     .rows_affected();
+    sqlx::query(
+        "UPDATE acquisition_executions SET result = '超时', stage = '已结束', \
+             error_message = $2, finished_at = now() \
+         WHERE session_id = $1 AND finished_at IS NULL",
+    )
+    .bind(session_id)
+    .bind(error)
+    .execute(executor)
+    .await?;
     Ok(affected)
 }
 

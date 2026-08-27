@@ -16,6 +16,7 @@
 //! 的判定（租约编号 + 阶段版本），判定不通过的事件只留档、不改状态。
 
 pub mod allocate;
+pub mod catalog_bridge;
 pub mod claim;
 pub mod reaper;
 pub mod select_work;

@@ -161,6 +161,9 @@ pub async fn claim_next_task(
     let proxy_exit_ip = proxy_info.as_ref().and_then(|p| p.exit_ip.clone());
 
     let mut tx = state.pool.begin().await?;
+    // 总库是唯一持续任务池。按需物化一个目标到现有 Worker 状态机，避免一次性
+    // 为数万条目标复制任务，同时保持旧 Worker 协议与断线恢复逻辑不变。
+    super::catalog_bridge::materialize_next_target(&mut tx).await?;
     let Some(candidate) = lock_candidate(&mut tx, proxy_id).await? else {
         tx.rollback().await?;
         return Ok(ClaimOutcome::Unavailable(Unavailable {
@@ -233,6 +236,15 @@ pub async fn claim_next_task(
             attempt: attempts,
             stage_version,
         },
+    )
+    .await?;
+    super::catalog_bridge::execution_started(
+        &mut tx,
+        candidate.id,
+        execution_id,
+        node_id,
+        session_id,
+        session.slot_index,
     )
     .await?;
 

@@ -113,7 +113,7 @@ pub async fn commit_library_file(
     .await?;
 
     // 3. 推进目标获取状态为「已下载」并清除租约
-    sqlx::query(
+    let target_id: Option<Uuid> = sqlx::query_scalar(
         "UPDATE acquisition_targets SET \
              status = '已下载', \
              satisfied_holding_id = $2, \
@@ -123,12 +123,26 @@ pub async fn commit_library_file(
              lease_expires_at = NULL, \
              last_error = NULL, \
              updated_at = now() \
-         WHERE edition_id = $1",
+         WHERE edition_id = $1 RETURNING id",
     )
     .bind(req.edition_id)
     .bind(actual_holding_id)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+
+    // 若该目标已被物化进 Worker 兼容状态机，馆藏证据优先于仍在途的旧任务。
+    // 迟到的 Worker 结果随后会按“任务已完成”只留审计，不会重复扣额度或入库。
+    if let Some(target_id) = target_id {
+        sqlx::query(
+            "UPDATE book_tasks SET status = '已完成', stage = '已完成', \
+                 stage_version = stage_version + 1, \
+                 lease_node_id = NULL, lease_session_id = NULL, lease_execution_id = NULL, \
+                 lease_expires_at = NULL, last_error = NULL, updated_at = now() WHERE id = $1",
+        )
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     tx.commit().await?;
 
