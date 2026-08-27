@@ -12,7 +12,6 @@ mod support;
 
 use master_server::models::ImportRow;
 use master_server::scheduler::submit::{submit_result, FileEvidence, ResultReport};
-use master_server::state::AppState;
 use master_server::store;
 use master_server::store::catalog::ImportRequest;
 use platform_domain::{
@@ -109,46 +108,7 @@ async fn 结果上报重复提交与去重测试() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    let state = AppState {
-        pool: db.pool.clone(),
-        config: std::sync::Arc::new(master_server::config::MasterConfig {
-            server: Default::default(),
-            database: master_server::config::DatabaseConfig {
-                url: "postgres://localhost/dummy".to_string(),
-                max_connections: 5,
-                auto_migrate: false,
-            },
-            security: master_server::config::SecurityConfig {
-                jwt_secret: "1234567890123456".to_string(),
-                jwt_hours: 12,
-                field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
-                ca_key_path: std::path::PathBuf::from("data/ca.key"),
-                node_cert_days: 365,
-                require_client_cert: false,
-
-                cookie_secure: true,
-            },
-            scheduler: Default::default(),
-            nas: Default::default(),
-            webshare: Default::default(),
-            opensearch: Default::default(),
-        }),
-        cipher: std::sync::Arc::new(
-            master_server::security::FieldCipher::from_base64(
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            )
-            .unwrap(),
-        ),
-        tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
-            "1234567890123456",
-            12,
-        )),
-        ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
-        events: Default::default(),
-        links: Default::default(),
-        search: None,
-    };
+    let state = db.create_test_state();
 
     // 领取任务
     let outcome = master_server::scheduler::claim::claim_next_task(&state, node.id, session.id)

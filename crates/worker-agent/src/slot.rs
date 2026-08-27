@@ -1885,6 +1885,7 @@ mod tests {
             execution: crate::config::ExecutionConfig {
                 requested_slots: 3,
                 simulated: true,
+                headless: true,
             },
             inventory: crate::inventory::InventoryConfig::default(),
         }

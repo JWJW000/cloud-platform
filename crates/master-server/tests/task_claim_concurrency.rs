@@ -11,7 +11,6 @@ mod support;
 use futures::future::join_all;
 use master_server::models::ImportRow;
 use master_server::scheduler::claim::{claim_next_task, ClaimOutcome};
-use master_server::state::AppState;
 use master_server::store;
 use master_server::store::catalog::ImportRequest;
 use platform_domain::{AccountStatus, BatchStatus, ProxyStatus, TaskStatus, WorkerStatus};
@@ -121,46 +120,7 @@ async fn 五个worker并发领取同一任务只能有一个成功() {
         session_nodes.push((node.id, session.id));
     }
 
-    let state = std::sync::Arc::new(AppState {
-        pool: db.pool.clone(),
-        config: std::sync::Arc::new(master_server::config::MasterConfig {
-            server: Default::default(),
-            database: master_server::config::DatabaseConfig {
-                url: "postgres://localhost/dummy".to_string(),
-                max_connections: 10,
-                auto_migrate: false,
-            },
-            security: master_server::config::SecurityConfig {
-                jwt_secret: "1234567890123456".to_string(),
-                jwt_hours: 12,
-                field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
-                ca_key_path: std::path::PathBuf::from("data/ca.key"),
-                node_cert_days: 365,
-                require_client_cert: false,
-
-                cookie_secure: true,
-            },
-            scheduler: Default::default(),
-            nas: Default::default(),
-            webshare: Default::default(),
-            opensearch: Default::default(),
-        }),
-        cipher: std::sync::Arc::new(
-            master_server::security::FieldCipher::from_base64(
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            )
-            .unwrap(),
-        ),
-        tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
-            "1234567890123456",
-            12,
-        )),
-        ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
-        events: Default::default(),
-        links: Default::default(),
-        search: None,
-    });
+    let state = std::sync::Arc::new(db.create_test_state());
 
     // 3. 并发调用 claim_next_task
     let handles: Vec<_> = session_nodes

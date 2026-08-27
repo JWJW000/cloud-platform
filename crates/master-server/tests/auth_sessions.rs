@@ -12,8 +12,7 @@ use axum::extract::FromRequestParts;
 use axum::http::header::AUTHORIZATION;
 use axum::http::Request;
 use master_server::api::auth::AuthenticatedUser;
-use master_server::security::{hash_password, TokenIssuer};
-use master_server::state::AppState;
+use master_server::security::hash_password;
 use master_server::store;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -29,44 +28,8 @@ fn token_hash(token: &str) -> String {
 async fn 管理员会话失效与动态查库校验() {
     let db = require_db!();
 
-    let tokens = std::sync::Arc::new(TokenIssuer::new("1234567890123456", 12));
-    let state = AppState {
-        pool: db.pool.clone(),
-        config: std::sync::Arc::new(master_server::config::MasterConfig {
-            server: Default::default(),
-            database: master_server::config::DatabaseConfig {
-                url: "postgres://localhost/dummy".to_string(),
-                max_connections: 5,
-                auto_migrate: false,
-            },
-            security: master_server::config::SecurityConfig {
-                jwt_secret: "1234567890123456".to_string(),
-                jwt_hours: 12,
-                field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
-                ca_key_path: std::path::PathBuf::from("data/ca.key"),
-                node_cert_days: 365,
-                require_client_cert: false,
-
-                cookie_secure: true,
-            },
-            scheduler: Default::default(),
-            nas: Default::default(),
-            webshare: Default::default(),
-            opensearch: Default::default(),
-        }),
-        cipher: std::sync::Arc::new(
-            master_server::security::FieldCipher::from_base64(
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            )
-            .unwrap(),
-        ),
-        tokens: tokens.clone(),
-        ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
-        events: Default::default(),
-        links: Default::default(),
-        search: None,
-    };
+    let state = db.create_test_state();
+    let tokens = state.tokens.clone();
 
     // 1. 创建测试用户
     let pwd_hash = hash_password("init_password").unwrap();
@@ -205,44 +168,8 @@ async fn 管理员会话失效与动态查库校验() {
 async fn 会话表验证失败开放路径被堵死() {
     let db = require_db!();
 
-    let tokens = std::sync::Arc::new(TokenIssuer::new("1234567890123456", 12));
-    let state = AppState {
-        pool: db.pool.clone(),
-        config: std::sync::Arc::new(master_server::config::MasterConfig {
-            server: Default::default(),
-            database: master_server::config::DatabaseConfig {
-                url: "postgres://localhost/dummy".to_string(),
-                max_connections: 5,
-                auto_migrate: false,
-            },
-            security: master_server::config::SecurityConfig {
-                jwt_secret: "1234567890123456".to_string(),
-                jwt_hours: 12,
-                field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
-                ca_key_path: std::path::PathBuf::from("data/ca.key"),
-                node_cert_days: 365,
-                require_client_cert: false,
-
-                cookie_secure: true,
-            },
-            scheduler: Default::default(),
-            nas: Default::default(),
-            webshare: Default::default(),
-            opensearch: Default::default(),
-        }),
-        cipher: std::sync::Arc::new(
-            master_server::security::FieldCipher::from_base64(
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            )
-            .unwrap(),
-        ),
-        tokens: tokens.clone(),
-        ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
-        events: Default::default(),
-        links: Default::default(),
-        search: None,
-    };
+    let state = db.create_test_state();
+    let tokens = state.tokens.clone();
 
     let pwd_hash = hash_password("init_password").unwrap();
     let user = store::admin::create_user(&db.pool, "test_hardening", &pwd_hash, "超级管理员")
@@ -397,7 +324,11 @@ async fn 会话表验证失败开放路径被堵死() {
 }
 
 /// 用给定 jti 签发令牌。
-fn jwt_mint(state: &AppState, user: &master_server::models::User, jti: &str) -> String {
+fn jwt_mint(
+    state: &master_server::state::AppState,
+    user: &master_server::models::User,
+    jti: &str,
+) -> String {
     state
         .tokens
         .issue(&user.id.to_string(), jti, &user.username, &user.role, 1)

@@ -102,6 +102,50 @@ impl TestDb {
             .expect("删除测试 schema 失败");
         admin.close().await;
     }
+
+    /// 构造用于测试的 AppState 实例
+    pub fn create_test_state(&self) -> master_server::state::AppState {
+        master_server::state::AppState {
+            pool: self.pool.clone(),
+            config: std::sync::Arc::new(master_server::config::MasterConfig {
+                server: Default::default(),
+                database: master_server::config::DatabaseConfig {
+                    url: self.url.clone(),
+                    max_connections: 5,
+                    auto_migrate: false,
+                },
+                security: master_server::config::SecurityConfig {
+                    jwt_secret: "1234567890123456".to_string(),
+                    jwt_hours: 12,
+                    field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                    ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
+                    ca_key_path: std::path::PathBuf::from("data/ca.key"),
+                    node_cert_days: 30,
+                    require_client_cert: false,
+                    cookie_secure: true,
+                },
+                scheduler: Default::default(),
+                nas: Default::default(),
+                webshare: master_server::config::WebshareConfig::default(),
+                opensearch: master_server::config::OpenSearchConfig::default(),
+            }),
+            cipher: std::sync::Arc::new(
+                master_server::security::FieldCipher::from_base64(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                )
+                .unwrap(),
+            ),
+            tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
+                "1234567890123456",
+                12,
+            )),
+            ca: std::sync::Arc::new(master_server::security::NodeCa::generate(30).unwrap()),
+            events: master_server::events::EventHub::default(),
+            links: master_server::state::NodeLinks::new(),
+            search: None,
+            catalog_stats_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
 }
 
 /// 未配置连接串时统一的跳过提示。

@@ -5,7 +5,6 @@ mod support;
 use master_server::scheduler::allocate::allocate_session;
 use master_server::scheduler::claim::claim_next_task;
 use master_server::scheduler::submit::{submit_registration_result, RegistrationResultReport};
-use master_server::state::AppState;
 use master_server::store;
 use platform_domain::{
     AccountRegistrationTaskStatus, AccountStatus, BatchStatus, ExecutionResult, ManualActionType,
@@ -103,40 +102,7 @@ async fn 图书任务首次执行绑定代理且重试固定同一代理() {
         .await
         .unwrap();
 
-    let state = AppState {
-        pool: db.pool.clone(),
-        config: std::sync::Arc::new(master_server::config::MasterConfig {
-            server: Default::default(),
-            database: master_server::config::DatabaseConfig {
-                url: "postgres://localhost/dummy".to_string(),
-                max_connections: 5,
-                auto_migrate: false,
-            },
-            security: master_server::config::SecurityConfig {
-                jwt_secret: "1234567890123456".to_string(),
-                jwt_hours: 12,
-                field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
-                ca_key_path: std::path::PathBuf::from("data/ca.key"),
-                node_cert_days: 365,
-                require_client_cert: false,
-                cookie_secure: true,
-            },
-            scheduler: Default::default(),
-            nas: Default::default(),
-            webshare: Default::default(),
-            opensearch: Default::default(),
-        }),
-        cipher: std::sync::Arc::new(cipher),
-        tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
-            "1234567890123456",
-            12,
-        )),
-        ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
-        events: Default::default(),
-        links: Default::default(),
-        search: None,
-    };
+    let state = db.create_test_state();
 
     // 1. 分配第一个下载会话（绑定到 proxy1）
     let outcome = allocate_session(&state, node.id, TaskType::BookDownload, Some(0))
@@ -254,40 +220,7 @@ async fn 账号注册批次任务分配与事务原子状态更新() {
     .await
     .unwrap();
 
-    let state = AppState {
-        pool: db.pool.clone(),
-        config: std::sync::Arc::new(master_server::config::MasterConfig {
-            server: Default::default(),
-            database: master_server::config::DatabaseConfig {
-                url: "postgres://localhost/dummy".to_string(),
-                max_connections: 5,
-                auto_migrate: false,
-            },
-            security: master_server::config::SecurityConfig {
-                jwt_secret: "1234567890123456".to_string(),
-                jwt_hours: 12,
-                field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
-                ca_key_path: std::path::PathBuf::from("data/ca.key"),
-                node_cert_days: 365,
-                require_client_cert: false,
-                cookie_secure: true,
-            },
-            scheduler: Default::default(),
-            nas: Default::default(),
-            webshare: Default::default(),
-            opensearch: Default::default(),
-        }),
-        cipher: std::sync::Arc::new(cipher),
-        tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
-            "1234567890123456",
-            12,
-        )),
-        ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
-        events: Default::default(),
-        links: Default::default(),
-        search: None,
-    };
+    let state = db.create_test_state();
 
     // 1. 分配账号注册会话
     let outcome = allocate_session(&state, node.id, TaskType::AccountRegister, Some(0))

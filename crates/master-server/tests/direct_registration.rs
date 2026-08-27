@@ -101,45 +101,7 @@ impl TestWorker {
 }
 
 fn state_for(db: &support::TestDb) -> AppState {
-    AppState {
-        pool: db.pool.clone(),
-        config: std::sync::Arc::new(master_server::config::MasterConfig {
-            server: Default::default(),
-            database: master_server::config::DatabaseConfig {
-                url: "postgres://localhost/dummy".to_string(),
-                max_connections: 5,
-                auto_migrate: false,
-            },
-            security: master_server::config::SecurityConfig {
-                jwt_secret: "12345678901234567890123456789012".to_string(),
-                jwt_hours: 12,
-                field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
-                ca_cert_path: std::path::PathBuf::from("data/ca.crt"),
-                ca_key_path: std::path::PathBuf::from("data/ca.key"),
-                node_cert_days: 365,
-                require_client_cert: true,
-                cookie_secure: false,
-            },
-            scheduler: Default::default(),
-            nas: Default::default(),
-            webshare: Default::default(),
-            opensearch: Default::default(),
-        }),
-        cipher: std::sync::Arc::new(
-            master_server::security::FieldCipher::from_base64(
-                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            )
-            .unwrap(),
-        ),
-        tokens: std::sync::Arc::new(master_server::security::TokenIssuer::new(
-            "12345678901234567890123456789012",
-            12,
-        )),
-        ca: std::sync::Arc::new(master_server::security::NodeCa::generate(365).unwrap()),
-        events: Default::default(),
-        links: Default::default(),
-        search: None,
-    }
+    db.create_test_state()
 }
 
 /// 创建真实的管理员用户（approved_by/rejected_by 外键引用 users 表）。
