@@ -229,7 +229,30 @@ pub async fn get_stats(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
 ) -> AppResult<Json<CatalogStats>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // 1. 命中 60 秒内存缓存则直接 1ms 返回
+    {
+        if let Ok(guard) = state.catalog_stats_cache.lock() {
+            if let Some((ts, cached)) = guard.as_ref() {
+                if now.saturating_sub(*ts) < 60 {
+                    return Ok(Json(cached.clone()));
+                }
+            }
+        }
+    }
+
+    // 2. 缓存未命中或过期：计算最新指标
     let stats = get_catalog_stats(&state.pool).await?;
+
+    // 3. 写入缓存
+    if let Ok(mut guard) = state.catalog_stats_cache.lock() {
+        *guard = Some((now, stats.clone()));
+    }
+
     Ok(Json(stats))
 }
 

@@ -17,7 +17,7 @@ import {
   ErrorBox,
   Input,
   Select,
-  Spinner,
+  SkeletonTable,
   StatusBadge,
   Table,
   Td,
@@ -110,9 +110,6 @@ export function WorkersPage() {
     }
   };
 
-  if (loading) return <Spinner label="正在加载节点..." />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -138,78 +135,84 @@ export function WorkersPage() {
         </div>
       </div>
 
+      {error && <ErrorBox message={error} onRetry={reload} />}
+
       <Card>
         <Table
           headers={["名称", "状态", "注册状态", "系统", "槽位", "来源 IP", "心跳", "操作"]}
-          empty={!nodes || nodes.length === 0 ? <EmptyRow colSpan={8} text="暂无节点" /> : undefined}
+          empty={!loading && (!nodes || nodes.length === 0) ? <EmptyRow colSpan={8} text="暂无节点" /> : undefined}
         >
-          {(nodes ?? []).map((n) => (
-            <tr key={n.id}>
-              <Td>
-                <Link to={`/workers/${n.id}`} className="font-medium text-blue-700 hover:underline">
-                  {n.name}
-                </Link>
-                <div className="text-xs text-slate-400">#{shortId(n.id)}</div>
-              </Td>
-              <Td>
-                <StatusBadge status={n.status} />
-              </Td>
-              <Td>
-                <RegistrationBadge status={n.registration_status} />
-              </Td>
-              <Td className="text-xs text-slate-600">
-                {n.os} {n.os_version}
-              </Td>
-              <Td>
-                {n.configured_slots ?? n.requested_slots ?? n.max_slots}
-                <span className="text-xs text-slate-400">/ {n.max_slots}</span>
-              </Td>
-              <Td className="text-xs text-slate-500">{n.first_seen_ip ?? "-"}</Td>
-              <Td className="text-xs text-slate-500">
-                {n.connected ? (
-                  <Badge className="bg-green-100 text-green-700">在线</Badge>
-                ) : (
-                  relativeTime(n.last_heartbeat_at)
-                )}
-              </Td>
-              <Td>
-                <div className="flex items-center gap-1">
-                  {n.registration_status === "待审核" && (
-                    <>
-                      {canApprove ? (
-                        <>
-                          <Button size="sm" variant="success" onClick={() => setApproving(n)}>
-                            批准
-                          </Button>
-                          <Button size="sm" variant="danger" onClick={() => setRejecting(n)}>
-                            拒绝
-                          </Button>
-                        </>
-                      ) : (
-                        <span className="text-xs text-slate-400" title={deniedMessage("approve_node")}>
-                          仅超级管理员可审批
-                        </span>
-                      )}
-                    </>
-                  )}
-                  {n.status === "已禁用" ? (
-                    <Button size="sm" variant="secondary" onClick={() => toggleEnabled(n)}>
-                      启用
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant="ghost" onClick={() => toggleEnabled(n)}>
-                      禁用
-                    </Button>
-                  )}
-                  <Link to={`/workers/${n.id}`}>
-                    <Button size="sm" variant="ghost">
-                      详情
-                    </Button>
+          {loading && (!nodes || nodes.length === 0) ? (
+            <SkeletonTable columns={8} rows={5} />
+          ) : (
+            (nodes ?? []).map((n) => (
+              <tr key={n.id}>
+                <Td>
+                  <Link to={`/workers/${n.id}`} className="font-medium text-blue-700 hover:underline">
+                    {n.name}
                   </Link>
-                </div>
-              </Td>
-            </tr>
-          ))}
+                  <div className="text-xs text-slate-400">#{shortId(n.id)}</div>
+                </Td>
+                <Td>
+                  <StatusBadge status={n.status} />
+                </Td>
+                <Td>
+                  <RegistrationBadge status={n.registration_status} />
+                </Td>
+                <Td className="text-xs text-slate-600">
+                  {n.os} {n.os_version}
+                </Td>
+                <Td>
+                  {n.configured_slots ?? n.requested_slots ?? n.max_slots}
+                  <span className="text-xs text-slate-400">/ {n.max_slots}</span>
+                </Td>
+                <Td className="text-xs text-slate-500">{n.first_seen_ip ?? "-"}</Td>
+                <Td className="text-xs text-slate-500">
+                  {n.connected ? (
+                    <Badge className="bg-green-100 text-green-700">在线</Badge>
+                  ) : (
+                    relativeTime(n.last_heartbeat_at)
+                  )}
+                </Td>
+                <Td>
+                  <div className="flex items-center gap-1">
+                    {n.registration_status === "待审核" && (
+                      <>
+                        {canApprove ? (
+                          <>
+                            <Button size="sm" variant="success" onClick={() => setApproving(n)}>
+                              批准
+                            </Button>
+                            <Button size="sm" variant="danger" onClick={() => setRejecting(n)}>
+                              拒绝
+                            </Button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-400" title={deniedMessage("approve_node")}>
+                            仅超级管理员可审批
+                          </span>
+                        )}
+                      </>
+                    )}
+                    {n.status === "已禁用" ? (
+                      <Button size="sm" variant="secondary" onClick={() => toggleEnabled(n)}>
+                        启用
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="ghost" onClick={() => toggleEnabled(n)}>
+                        禁用
+                      </Button>
+                    )}
+                    <Link to={`/workers/${n.id}`}>
+                      <Button size="sm" variant="ghost">
+                        详情
+                      </Button>
+                    </Link>
+                  </div>
+                </Td>
+              </tr>
+            ))
+          )}
         </Table>
       </Card>
 

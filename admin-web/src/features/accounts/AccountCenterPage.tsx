@@ -29,7 +29,8 @@ import {
   EmptyRow,
   ErrorBox,
   Input,
-  Spinner,
+  SkeletonCard,
+  SkeletonTable,
   StatusBadge,
   Table,
   Td,
@@ -306,9 +307,6 @@ export function AccountCenterPage() {
     URL.revokeObjectURL(url);
   };
 
-  if (loading) return <Spinner label="正在加载账号资源池..." />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
-
   const accounts = data?.items ?? [];
   const summary = data?.summary;
   const total = summary?.total ?? data?.total ?? 0;
@@ -363,54 +361,67 @@ export function AccountCenterPage() {
         </div>
       </div>
 
+      {error && <ErrorBox message={error} onRetry={reload} />}
+
       {/* 邮件验证码服务 Provider 实时状态 */}
       <MailProviderStatus />
 
       {/* 账号池概况卡片 */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Card className="p-4">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>总账号数</span>
-            <Users className="h-4 w-4 text-slate-400" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-slate-900">{total}</div>
-          <div className="mt-1 text-xs text-slate-400">
-            已注册 <span className="font-semibold text-green-600">{registered}</span>
-            <span className="mx-1 text-slate-300">·</span>
-            可用 <span className="font-semibold text-green-600">{available}</span>
-          </div>
-        </Card>
+        {loading && !data ? (
+          <>
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </>
+        ) : (
+          <>
+            <Card className="p-4">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span>总账号数</span>
+                <Users className="h-4 w-4 text-slate-400" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-slate-900">{total}</div>
+              <div className="mt-1 text-xs text-slate-400">
+                已注册 <span className="font-semibold text-green-600">{registered}</span>
+                <span className="mx-1 text-slate-300">·</span>
+                可用 <span className="font-semibold text-green-600">{available}</span>
+              </div>
+            </Card>
 
-        <Card className="p-4">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>待注册账号</span>
-            <Clock className="h-4 w-4 text-amber-500" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-amber-600">{pendingReg}</div>
-          <div className="mt-1 text-xs text-slate-400">
-            <Link to="/accounts/registrations" className="text-blue-600 hover:underline inline-flex items-center gap-1">
-              前往注册队列执行 <ArrowRight className="h-3 w-3" />
-            </Link>
-          </div>
-        </Card>
+            <Card className="p-4">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span>待注册账号</span>
+                <Clock className="h-4 w-4 text-amber-500" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-amber-600">{pendingReg}</div>
+              <div className="mt-1 text-xs text-slate-400">
+                <Link to="/accounts/registrations" className="text-blue-600 hover:underline inline-flex items-center gap-1">
+                  前往注册队列执行 <ArrowRight className="h-3 w-3" />
+                </Link>
+              </div>
+            </Card>
 
-        <Card className="p-4">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>今日额度耗尽</span>
-            <AlertCircle className="h-4 w-4 text-orange-500" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-orange-600">{limitReached}</div>
-          <div className="mt-1 text-xs text-slate-400">次日自动恢复重置</div>
-        </Card>
+            <Card className="p-4">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span>今日额度耗尽</span>
+                <AlertCircle className="h-4 w-4 text-orange-500" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-orange-600">{limitReached}</div>
+              <div className="mt-1 text-xs text-slate-400">次日自动恢复重置</div>
+            </Card>
 
-        <Card className="p-4">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span>已禁用账号</span>
-            <ShieldCheck className="h-4 w-4 text-slate-400" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-slate-700">{disabled}</div>
-          <div className="mt-1 text-xs text-slate-400">管理员停用或风控</div>
-        </Card>
+            <Card className="p-4">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span>已禁用账号</span>
+                <ShieldCheck className="h-4 w-4 text-slate-400" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-slate-700">{disabled}</div>
+              <div className="mt-1 text-xs text-slate-400">管理员停用或风控</div>
+            </Card>
+          </>
+        )}
       </div>
 
       {/* 账号资源表格 */}
@@ -423,31 +434,35 @@ export function AccountCenterPage() {
         </div>
         <Table
           headers={["邮箱", "昵称", "状态", "当日用量", "额度", "最近登录", "操作"]}
-          empty={!data || data.items.length === 0 ? <EmptyRow colSpan={7} text="暂无账号" /> : undefined}
+          empty={!loading && (!data || data.items.length === 0) ? <EmptyRow colSpan={7} text="暂无账号" /> : undefined}
         >
-          {accounts.map((a) => (
-            <tr key={a.id}>
-              <Td className="font-medium text-slate-800">{a.email}</Td>
-              <Td className="text-xs text-slate-500">{a.nickname ?? "-"}</Td>
-              <Td>
-                <StatusBadge status={a.status} />
-              </Td>
-              <Td className="text-xs text-slate-500">
-                <span className={a.daily_used >= a.daily_limit ? "font-bold text-orange-600" : ""}>
-                  {a.daily_used}
-                </span>
-              </Td>
-              <Td className="text-xs text-slate-500">{a.daily_limit}</Td>
-              <Td className="text-xs text-slate-500">{formatTime(a.last_login_at)}</Td>
-              <Td>
-                {canManage && (
-                  <Button size="sm" variant="ghost" onClick={() => toggle(a)}>
-                    {a.status === "已禁用" ? "启用" : "禁用"}
-                  </Button>
-                )}
-              </Td>
-            </tr>
-          ))}
+          {loading && !data ? (
+            <SkeletonTable columns={7} rows={6} />
+          ) : (
+            accounts.map((a) => (
+              <tr key={a.id}>
+                <Td className="font-medium text-slate-800">{a.email}</Td>
+                <Td className="text-xs text-slate-500">{a.nickname ?? "-"}</Td>
+                <Td>
+                  <StatusBadge status={a.status} />
+                </Td>
+                <Td className="text-xs text-slate-500">
+                  <span className={a.daily_used >= a.daily_limit ? "font-bold text-orange-600" : ""}>
+                    {a.daily_used}
+                  </span>
+                </Td>
+                <Td className="text-xs text-slate-500">{a.daily_limit}</Td>
+                <Td className="text-xs text-slate-500">{formatTime(a.last_login_at)}</Td>
+                <Td>
+                  {canManage && (
+                    <Button size="sm" variant="ghost" onClick={() => toggle(a)}>
+                      {a.status === "已禁用" ? "启用" : "禁用"}
+                    </Button>
+                  )}
+                </Td>
+              </tr>
+            ))
+          )}
         </Table>
         {data && data.total > 0 && (
           <div className="border-t border-slate-100 p-4 flex items-center justify-between">

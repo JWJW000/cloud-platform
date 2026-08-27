@@ -248,6 +248,8 @@ pub struct AppState {
     pub links: NodeLinks,
     /// 可选 OpenSearch 搜索投影客户端。
     pub search: Option<OpenSearchClient>,
+    /// 书目统计内存快照缓存（(获取时间戳秒, CatalogStats)）
+    pub catalog_stats_cache: Arc<Mutex<Option<(u64, crate::store::catalog_v1::CatalogStats)>>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -294,6 +296,7 @@ impl AppState {
             events: EventHub::default(),
             links: NodeLinks::new(),
             search,
+            catalog_stats_cache: Arc::new(Mutex::new(None)),
         })
     }
 

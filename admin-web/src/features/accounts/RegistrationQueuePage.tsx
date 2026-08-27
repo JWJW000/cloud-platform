@@ -27,6 +27,7 @@ import {
   ErrorBox,
   Input,
   Select,
+  SkeletonTable,
   Spinner,
   StatusBadge,
   Table,
@@ -94,9 +95,6 @@ export function RegistrationQueuePage() {
     }
   };
 
-  if (loading) return <Spinner label="正在加载注册队列..." />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
-
   const batches = data ?? [];
 
   return (
@@ -133,6 +131,8 @@ export function RegistrationQueuePage() {
         </div>
       </div>
 
+      {error && <ErrorBox message={error} onRetry={reload} />}
+
       <MailProviderStatus />
 
       <Card>
@@ -141,91 +141,95 @@ export function RegistrationQueuePage() {
         </div>
         <Table
           headers={["分组名称", "状态", "优先级", "执行进度", "创建时间", "操作"]}
-          empty={batches.length === 0 ? <EmptyRow colSpan={6} text="当前无注册分组" /> : undefined}
+          empty={!loading && batches.length === 0 ? <EmptyRow colSpan={6} text="当前无注册分组" /> : undefined}
         >
-          {batches.map((b) => {
-            const p = b.progress;
-            const pct = p && p.total > 0 ? Math.round(((p.completed + p.failed) / p.total) * 100) : 0;
-            return (
-              <tr key={b.id}>
-                <Td>
-                  <Link
-                    to={`/accounts/registrations/${b.id}`}
-                    className="font-medium text-blue-600 hover:underline"
-                  >
-                    {b.name}
-                  </Link>
-                </Td>
-                <Td>
-                  <StatusBadge status={b.status} />
-                </Td>
-                <Td className="text-xs text-slate-500">{b.priority}</Td>
-                <Td>
-                  {p ? (
-                    <div className="w-48 space-y-1">
-                      <div className="flex justify-between text-xs text-slate-500">
-                        <span>
-                          {p.completed}/{p.total}
-                          {p.failed > 0 && <span className="ml-1 text-red-500">({p.failed} 失败)</span>}
-                        </span>
-                        <span>{pct}%</span>
+          {loading && batches.length === 0 ? (
+            <SkeletonTable columns={6} rows={5} />
+          ) : (
+            batches.map((b) => {
+              const p = b.progress;
+              const pct = p && p.total > 0 ? Math.round(((p.completed + p.failed) / p.total) * 100) : 0;
+              return (
+                <tr key={b.id}>
+                  <Td>
+                    <Link
+                      to={`/accounts/registrations/${b.id}`}
+                      className="font-medium text-blue-600 hover:underline"
+                    >
+                      {b.name}
+                    </Link>
+                  </Td>
+                  <Td>
+                    <StatusBadge status={b.status} />
+                  </Td>
+                  <Td className="text-xs text-slate-500">{b.priority}</Td>
+                  <Td>
+                    {p ? (
+                      <div className="w-48 space-y-1">
+                        <div className="flex justify-between text-xs text-slate-500">
+                          <span>
+                            {p.completed}/{p.total}
+                            {p.failed > 0 && <span className="ml-1 text-red-500">({p.failed} 失败)</span>}
+                          </span>
+                          <span>{pct}%</span>
+                        </div>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className={`h-full transition-all ${
+                              b.status === "已完成"
+                                ? "bg-green-500"
+                                : b.status === "执行中"
+                                  ? "bg-blue-500"
+                                  : "bg-slate-400"
+                            }`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                        <div
-                          className={`h-full transition-all ${
-                            b.status === "已完成"
-                              ? "bg-green-500"
-                              : b.status === "执行中"
-                                ? "bg-blue-500"
-                                : "bg-slate-400"
-                          }`}
-                          style={{ width: `${pct}%` }}
-                        />
+                    ) : (
+                      <span className="text-xs text-slate-400">-</span>
+                    )}
+                  </Td>
+                  <Td className="text-xs text-slate-500">{formatTime(b.created_at)}</Td>
+                  <Td>
+                    {isSuperAdmin && (
+                      <div className="flex items-center gap-1">
+                        {b.status === "草稿" && (
+                          <Button size="sm" variant="ghost" onClick={() => runAction(b, "start")}>
+                            <Play className="mr-1 h-3.5 w-3.5 text-green-600" />
+                            启动
+                          </Button>
+                        )}
+                        {b.status === "执行中" && (
+                          <Button size="sm" variant="ghost" onClick={() => runAction(b, "pause")}>
+                            <Pause className="mr-1 h-3.5 w-3.5 text-amber-600" />
+                            暂停
+                          </Button>
+                        )}
+                        {b.status === "已暂停" && (
+                          <Button size="sm" variant="ghost" onClick={() => runAction(b, "resume")}>
+                            <Play className="mr-1 h-3.5 w-3.5 text-blue-600" />
+                            恢复
+                          </Button>
+                        )}
+                        {["草稿", "执行中", "已暂停"].includes(b.status) && (
+                          <Button size="sm" variant="ghost" onClick={() => runAction(b, "cancel")}>
+                            <XCircle className="mr-1 h-3.5 w-3.5 text-red-600" />
+                            取消
+                          </Button>
+                        )}
+                        <Link to={`/accounts/registrations/${b.id}`}>
+                          <Button size="sm" variant="ghost">
+                            详情
+                          </Button>
+                        </Link>
                       </div>
-                    </div>
-                  ) : (
-                    <span className="text-xs text-slate-400">-</span>
-                  )}
-                </Td>
-                <Td className="text-xs text-slate-500">{formatTime(b.created_at)}</Td>
-                <Td>
-                  {isSuperAdmin && (
-                    <div className="flex items-center gap-1">
-                      {b.status === "草稿" && (
-                        <Button size="sm" variant="ghost" onClick={() => runAction(b, "start")}>
-                          <Play className="mr-1 h-3.5 w-3.5 text-green-600" />
-                          启动
-                        </Button>
-                      )}
-                      {b.status === "执行中" && (
-                        <Button size="sm" variant="ghost" onClick={() => runAction(b, "pause")}>
-                          <Pause className="mr-1 h-3.5 w-3.5 text-amber-600" />
-                          暂停
-                        </Button>
-                      )}
-                      {b.status === "已暂停" && (
-                        <Button size="sm" variant="ghost" onClick={() => runAction(b, "resume")}>
-                          <Play className="mr-1 h-3.5 w-3.5 text-blue-600" />
-                          恢复
-                        </Button>
-                      )}
-                      {["草稿", "执行中", "已暂停"].includes(b.status) && (
-                        <Button size="sm" variant="ghost" onClick={() => runAction(b, "cancel")}>
-                          <XCircle className="mr-1 h-3.5 w-3.5 text-red-600" />
-                          取消
-                        </Button>
-                      )}
-                      <Link to={`/accounts/registrations/${b.id}`}>
-                        <Button size="sm" variant="ghost">
-                          详情
-                        </Button>
-                      </Link>
-                    </div>
-                  )}
-                </Td>
-              </tr>
-            );
-          })}
+                    )}
+                  </Td>
+                </tr>
+              );
+            })
+          )}
         </Table>
       </Card>
 

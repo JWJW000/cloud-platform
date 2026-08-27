@@ -11,7 +11,7 @@ import {
   Card,
   EmptyRow,
   ErrorBox,
-  Spinner,
+  SkeletonTable,
   StatusBadge,
   Table,
   Td,
@@ -34,9 +34,6 @@ export function SessionsPage() {
     }
   };
 
-  if (loading) return <Spinner label="正在加载会话..." />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -48,34 +45,41 @@ export function SessionsPage() {
           刷新
         </Button>
       </div>
+
+      {error && <ErrorBox message={error} onRetry={reload} />}
+
       <Card>
         <Table
           headers={["会话", "节点", "槽位", "类型", "状态", "本地端口", "完成数", "开始时间", "操作"]}
-          empty={!data || data.length === 0 ? <EmptyRow colSpan={9} text="暂无会话" /> : undefined}
+          empty={!loading && (!data || data.length === 0) ? <EmptyRow colSpan={9} text="暂无会话" /> : undefined}
         >
-          {(data ?? []).map((s) => (
-            <tr key={s.id}>
-              <Td className="font-mono text-xs">{shortId(s.id)}</Td>
-              <Td className="font-mono text-xs text-slate-500">{shortId(s.node_id)}</Td>
-              <Td className="text-xs">#{s.slot_index}</Td>
-              <Td className="text-xs text-slate-500">{s.task_type}</Td>
-              <Td>
-                <StatusBadge status={s.status} />
-              </Td>
-              <Td className="font-mono text-xs text-slate-500">{s.local_forward_port}</Td>
-              <Td className="text-xs text-slate-500">{s.completed_count}</Td>
-              <Td className="text-xs text-slate-500">{formatTime(s.started_at)}</Td>
-              <Td>
-                {canManage && s.status !== "已结束" && s.status !== "失败" ? (
-                  <Button size="sm" variant="danger" onClick={() => terminate(s)}>
-                    终止
-                  </Button>
-                ) : (
-                  <span className="text-xs text-slate-300">-</span>
-                )}
-              </Td>
-            </tr>
-          ))}
+          {loading && (!data || data.length === 0) ? (
+            <SkeletonTable columns={9} rows={6} />
+          ) : (
+            (data ?? []).map((s) => (
+              <tr key={s.id}>
+                <Td className="font-mono text-xs">{shortId(s.id)}</Td>
+                <Td className="font-mono text-xs text-slate-500">{shortId(s.node_id)}</Td>
+                <Td className="text-xs">#{s.slot_index}</Td>
+                <Td className="text-xs text-slate-500">{s.task_type}</Td>
+                <Td>
+                  <StatusBadge status={s.status} />
+                </Td>
+                <Td className="font-mono text-xs text-slate-500">{s.local_forward_port}</Td>
+                <Td className="text-xs text-slate-500">{s.completed_count}</Td>
+                <Td className="text-xs text-slate-500">{formatTime(s.started_at)}</Td>
+                <Td>
+                  {canManage && s.status !== "已结束" && s.status !== "失败" ? (
+                    <Button size="sm" variant="danger" onClick={() => terminate(s)}>
+                      终止
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-slate-300">-</span>
+                  )}
+                </Td>
+              </tr>
+            ))
+          )}
         </Table>
       </Card>
     </div>

@@ -14,7 +14,7 @@ import {
 import { getCatalogStats, listCatalogImportRuns, api } from "../../lib/api";
 import { CatalogStats, ImportRun, Overview } from "../../lib/types";
 import { formatBytes, formatTime } from "../../lib/format";
-import { Card, Spinner } from "../../components/ui";
+import { Card, Skeleton, SkeletonCard } from "../../components/ui";
 
 interface RecentExecution {
   id: string;
@@ -58,10 +58,6 @@ export function OverviewPage() {
   useEffect(() => {
     loadData();
   }, []);
-
-  if (loading && !stats && !overview) {
-    return <Spinner label="正在汇总总库、获取进度与集群全局指标..." />;
-  }
 
   const formatSize = (bytes: number) => {
     if (!bytes || bytes === 0) return "0 B";
@@ -123,7 +119,12 @@ export function OverviewPage() {
             <h2 className="text-sm font-semibold text-slate-900">总库补齐进度轨</h2>
           </div>
           <div className="text-xs text-slate-500">
-            获取池覆盖率: <span className="font-bold text-blue-600">{acqRate}%</span>
+            获取池覆盖率:{" "}
+            {loading && !stats ? (
+              <Skeleton className="inline-block h-3 w-10 align-middle" />
+            ) : (
+              <span className="font-bold text-blue-600">{acqRate}%</span>
+            )}
           </div>
         </div>
 
@@ -131,28 +132,28 @@ export function OverviewPage() {
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
             <div className="text-[11px] font-medium text-slate-500">1. 书目总库</div>
             <div className="mt-1 text-lg font-bold text-slate-900">
-              {stats?.total_works?.toLocaleString() || 0}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_works?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-slate-400">规范作品</div>
           </div>
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
             <div className="text-[11px] font-medium text-slate-500">2. 来源记录</div>
             <div className="mt-1 text-lg font-bold text-slate-900">
-              {stats?.total_source_records?.toLocaleString() || 0}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_source_records?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-slate-400">出处记录</div>
           </div>
           <div className="rounded-lg bg-blue-50/50 p-3 border border-blue-100">
             <div className="text-[11px] font-medium text-blue-700">3. 排队待抓</div>
             <div className="mt-1 text-lg font-bold text-blue-700">
-              {stats?.pending_targets?.toLocaleString() || 0}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.pending_targets?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-blue-500">待调度任务</div>
           </div>
           <div className="rounded-lg bg-amber-50/50 p-3 border border-amber-100">
             <div className="text-[11px] font-medium text-amber-700">4. 获取执行中</div>
             <div className="mt-1 text-lg font-bold text-amber-700">
-              {stats?.downloading_targets?.toLocaleString() || 0}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.downloading_targets?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-amber-500">
               {overview ? `占用 ${overview.slots.running} 槽位` : "Worker 下载中"}
@@ -161,73 +162,86 @@ export function OverviewPage() {
           <div className="rounded-lg bg-purple-50/50 p-3 border border-purple-100">
             <div className="text-[11px] font-medium text-purple-700">5. 馆藏记录</div>
             <div className="mt-1 text-lg font-bold text-purple-700">
-              {stats?.total_holdings?.toLocaleString() || 0}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_holdings?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-purple-500">SHA-256 完好</div>
           </div>
           <div className="rounded-lg bg-green-50/50 p-3 border border-green-100">
             <div className="text-[11px] font-medium text-green-700">6. 已入总馆藏</div>
             <div className="mt-1 text-lg font-bold text-green-700">
-              {stats?.acquired_targets?.toLocaleString() || 0}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.acquired_targets?.toLocaleString() || 0)}
             </div>
-            <div className="text-[11px] text-green-500">{formatSize(stats?.total_library_bytes || 0)}</div>
+            <div className="text-[11px] text-green-500">
+              {loading && !stats ? <Skeleton className="h-3 w-12" /> : formatSize(stats?.total_library_bytes || 0)}
+            </div>
           </div>
         </div>
       </div>
 
       {/* 核心指标卡片 */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Card className="p-4 border-l-4 border-l-blue-500">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span className="font-medium text-slate-600">待下载书目池</span>
-            <Clock className="h-4 w-4 text-blue-500" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-blue-600">
-            {stats?.pending_targets?.toLocaleString() || 0}
-          </div>
-          <div className="mt-1 text-xs text-slate-400">
-            排队中待调度下载
-          </div>
-        </Card>
+        {loading && !stats ? (
+          <>
+            <SkeletonCard className="border-l-4 border-l-blue-500" />
+            <SkeletonCard className="border-l-4 border-l-emerald-500" />
+            <SkeletonCard className="border-l-4 border-l-amber-500" />
+            <SkeletonCard className="border-l-4 border-l-purple-500" />
+          </>
+        ) : (
+          <>
+            <Card className="p-4 border-l-4 border-l-blue-500">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span className="font-medium text-slate-600">待下载书目池</span>
+                <Clock className="h-4 w-4 text-blue-500" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-blue-600">
+                {stats?.pending_targets?.toLocaleString() || 0}
+              </div>
+              <div className="mt-1 text-xs text-slate-400">
+                排队中待调度下载
+              </div>
+            </Card>
 
-        <Card className="p-4 border-l-4 border-l-emerald-500">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span className="font-medium text-slate-600">总下载 / 已入馆</span>
-            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-emerald-600">
-            {stats?.acquired_targets?.toLocaleString() || 0}
-          </div>
-          <div className="mt-1 text-xs text-slate-400">
-            实体馆藏 {formatSize(stats?.total_library_bytes || 0)}
-          </div>
-        </Card>
+            <Card className="p-4 border-l-4 border-l-emerald-500">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span className="font-medium text-slate-600">总下载 / 已入馆</span>
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-emerald-600">
+                {stats?.acquired_targets?.toLocaleString() || 0}
+              </div>
+              <div className="mt-1 text-xs text-slate-400">
+                实体馆藏 {formatSize(stats?.total_library_bytes || 0)}
+              </div>
+            </Card>
 
-        <Card className="p-4 border-l-4 border-l-amber-500">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span className="font-medium text-slate-600">今日下载完成</span>
-            <TrendingUp className="h-4 w-4 text-amber-500" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-amber-600">
-            {stats?.today_downloaded_count?.toLocaleString() || 0}
-          </div>
-          <div className="mt-1 text-xs text-slate-400">
-            今日入库 {stats?.today_added_works_count?.toLocaleString() || 0} 本书目
-          </div>
-        </Card>
+            <Card className="p-4 border-l-4 border-l-amber-500">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span className="font-medium text-slate-600">今日下载完成</span>
+                <TrendingUp className="h-4 w-4 text-amber-500" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-amber-600">
+                {stats?.today_downloaded_count?.toLocaleString() || 0}
+              </div>
+              <div className="mt-1 text-xs text-slate-400">
+                今日入库 {stats?.today_added_works_count?.toLocaleString() || 0} 本书目
+              </div>
+            </Card>
 
-        <Card className="p-4 border-l-4 border-l-purple-500">
-          <div className="flex items-center justify-between text-slate-500 text-xs">
-            <span className="font-medium text-slate-600">总库规范书目</span>
-            <BookOpen className="h-4 w-4 text-purple-500" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-purple-600">
-            {stats?.total_editions?.toLocaleString() || 0}
-          </div>
-          <div className="mt-1 text-xs text-slate-400">
-            对应 {stats?.total_works?.toLocaleString() || 0} 部规范作品
-          </div>
-        </Card>
+            <Card className="p-4 border-l-4 border-l-purple-500">
+              <div className="flex items-center justify-between text-slate-500 text-xs">
+                <span className="font-medium text-slate-600">总库规范书目</span>
+                <BookOpen className="h-4 w-4 text-purple-500" />
+              </div>
+              <div className="mt-2 text-2xl font-bold text-purple-600">
+                {stats?.total_editions?.toLocaleString() || 0}
+              </div>
+              <div className="mt-1 text-xs text-slate-400">
+                对应 {stats?.total_works?.toLocaleString() || 0} 部规范作品
+              </div>
+            </Card>
+          </>
+        )}
       </div>
 
       {/* 下半区：运行健康与最近记录 */}

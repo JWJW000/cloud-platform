@@ -11,7 +11,7 @@ import {
   EmptyRow,
   ErrorBox,
   Select,
-  Spinner,
+  SkeletonTable,
   Table,
   Td,
 } from "../components/ui";
@@ -24,9 +24,6 @@ export function LogsPage() {
     () => api.get("/api/logs", { level: level === "全部" ? undefined : level, limit: 200 }),
     [level],
   );
-
-  if (loading) return <Spinner label="正在加载日志..." />;
-  if (error) return <ErrorBox message={error} onRetry={reload} />;
 
   return (
     <div className="space-y-4">
@@ -48,40 +45,47 @@ export function LogsPage() {
           </Button>
         </div>
       </div>
+
+      {error && <ErrorBox message={error} onRetry={reload} />}
+
       <Card>
         <Table
           headers={["时间", "级别", "来源", "操作人", "动作", "目标", "详情"]}
-          empty={!data || data.length === 0 ? <EmptyRow colSpan={7} text="暂无日志" /> : undefined}
+          empty={!loading && (!data || data.length === 0) ? <EmptyRow colSpan={7} text="暂无日志" /> : undefined}
         >
-          {(data ?? []).map((l) => (
-            <tr key={l.id}>
-              <Td className="whitespace-nowrap text-xs text-slate-500">{formatTime(l.created_at)}</Td>
-              <Td>
-                <Badge
-                  className={
-                    l.level === "错误"
-                      ? "bg-red-100 text-red-700"
-                      : l.level === "警告"
-                        ? "bg-amber-100 text-amber-700"
-                        : "bg-slate-100 text-slate-600"
-                  }
-                >
-                  {l.level}
-                </Badge>
-              </Td>
-              <Td className="text-xs text-slate-500">{l.source}</Td>
-              <Td className="text-xs text-slate-600">{l.actor}</Td>
-              <Td className="text-xs font-medium text-slate-700">{l.action}</Td>
-              <Td className="max-w-40 truncate font-mono text-xs text-slate-500" title={l.target}>
-                {l.target || "-"}
-              </Td>
-              <Td className="max-w-96">
-                <div className="truncate text-xs text-slate-500" title={l.detail}>
-                  {l.detail}
-                </div>
-              </Td>
-            </tr>
-          ))}
+          {loading && (!data || data.length === 0) ? (
+            <SkeletonTable columns={7} rows={8} />
+          ) : (
+            (data ?? []).map((l) => (
+              <tr key={l.id}>
+                <Td className="whitespace-nowrap text-xs text-slate-500">{formatTime(l.created_at)}</Td>
+                <Td>
+                  <Badge
+                    className={
+                      l.level === "错误"
+                        ? "bg-red-100 text-red-700"
+                        : l.level === "警告"
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-slate-100 text-slate-600"
+                    }
+                  >
+                    {l.level}
+                  </Badge>
+                </Td>
+                <Td className="text-xs text-slate-500">{l.source}</Td>
+                <Td className="text-xs text-slate-600">{l.actor}</Td>
+                <Td className="text-xs font-medium text-slate-700">{l.action}</Td>
+                <Td className="max-w-40 truncate font-mono text-xs text-slate-500" title={l.target}>
+                  {l.target || "-"}
+                </Td>
+                <Td className="max-w-96">
+                  <div className="truncate text-xs text-slate-500" title={l.detail}>
+                    {l.detail}
+                  </div>
+                </Td>
+              </tr>
+            ))
+          )}
         </Table>
       </Card>
     </div>

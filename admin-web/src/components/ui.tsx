@@ -198,7 +198,60 @@ export function EmptyRow({ colSpan, text }: { colSpan: number; text: string }) {
   );
 }
 
-// ---------------------------------------------------------------- 加载/错误
+// ---------------------------------------------------------------- 加载/骨架屏/错误
+
+export function Skeleton({ className }: { className?: string }) {
+  return (
+    <div
+      className={clsx("animate-pulse rounded bg-slate-200/80", className)}
+      aria-hidden="true"
+    />
+  );
+}
+
+export function SkeletonCard({ className }: { className?: string }) {
+  return (
+    <Card className={clsx("p-4 space-y-3", className)}>
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-4 w-20" />
+        <Skeleton className="h-4 w-4 rounded-full" />
+      </div>
+      <Skeleton className="h-8 w-28" />
+      <Skeleton className="h-3 w-36" />
+    </Card>
+  );
+}
+
+export function SkeletonTable({
+  columns = 5,
+  rows = 5,
+}: {
+  columns?: number;
+  rows?: number;
+}) {
+  return (
+    <tbody className="divide-y divide-slate-100">
+      {Array.from({ length: rows }).map((_, rIdx) => (
+        <tr key={rIdx}>
+          {Array.from({ length: columns }).map((_, cIdx) => (
+            <Td key={cIdx}>
+              <Skeleton
+                className={clsx(
+                  "h-4",
+                  cIdx === 0
+                    ? "w-3/4"
+                    : cIdx === columns - 1
+                      ? "w-16"
+                      : "w-1/2"
+                )}
+              />
+            </Td>
+          ))}
+        </tr>
+      ))}
+    </tbody>
+  );
+}
 
 export function Spinner({ label }: { label?: string }) {
   return (

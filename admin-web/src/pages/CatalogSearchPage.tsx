@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { searchCatalog } from "../lib/api";
 import { CatalogSearchResponse } from "../lib/types";
-import { Card, Spinner, StatusBadge, Button, Input } from "../components/ui";
+import { Card, Skeleton, StatusBadge, Button, Input } from "../components/ui";
 
 export function CatalogSearchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -236,10 +236,23 @@ export function CatalogSearchPage() {
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1">
-            {loading ? (
-              <Card className="p-12 text-center">
-                <Spinner label="正在检索总库书目..." />
-              </Card>
+            {loading && !data ? (
+              <div className="space-y-3">
+                {Array.from({ length: 5 }).map((_, idx) => (
+                  <Card key={idx} className="p-4 space-y-3 shadow-sm">
+                    <div className="flex items-center gap-2">
+                      <Skeleton className="h-5 w-48" />
+                      <Skeleton className="h-4 w-12" />
+                    </div>
+                    <div className="flex gap-4">
+                      <Skeleton className="h-3.5 w-32" />
+                      <Skeleton className="h-3.5 w-36" />
+                      <Skeleton className="h-3.5 w-20" />
+                    </div>
+                    <Skeleton className="h-3 w-64" />
+                  </Card>
+                ))}
+              </div>
             ) : data?.items.length === 0 ? (
               <Card className="p-12 text-center text-slate-500">
                 未找到匹配的书目记录，请尝试调整检索关键词或分面筛选条件。
