@@ -68,7 +68,14 @@ pub struct CreateBatchRequest {
     pub source_file: Option<String>,
     #[serde(default)]
     pub priority: i32,
+    #[serde(default)]
     pub account_ids: Vec<Uuid>,
+    /// 是否将全部未入队的待注册账号自动打包入本批次
+    #[serde(default)]
+    pub include_all_pending: bool,
+    /// 创建后是否立即启动注册
+    #[serde(default)]
+    pub start_immediately: bool,
 }
 
 async fn create_batch(
@@ -95,18 +102,52 @@ async fn create_batch(
     )
     .await?;
 
-    for acc_id in req.account_ids {
+    let mut target_account_ids = req.account_ids;
+    if req.include_all_pending {
+        let pending_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT a.id FROM accounts a \
+             WHERE a.status = '待注册' \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM account_registration_tasks t \
+                 WHERE t.account_id = a.id AND t.status IN ('待认领', '执行中', '成功') \
+             )",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for pid in pending_ids {
+            if !target_account_ids.contains(&pid) {
+                target_account_ids.push(pid);
+            }
+        }
+    }
+
+    for acc_id in target_account_ids {
         store::account_registration::create_task(&mut *tx, batch.id, acc_id, req.priority).await?;
     }
 
+    if req.start_immediately {
+        store::account_registration::update_batch_status(
+            &mut *tx,
+            batch.id,
+            BatchStatus::NotStarted,
+            BatchStatus::Running,
+        )
+        .await?;
+    }
+
     tx.commit().await?;
+
+    if req.start_immediately {
+        let _ = scheduler::trigger_scheduler_sweep(&state).await;
+    }
 
     state.events.publish(
         "账号注册批次变更",
         serde_json::json!({ "批次": batch.id, "动作": "创建" }),
     );
 
-    Ok((StatusCode::CREATED, Json(batch)))
+    let created = store::account_registration::get_batch(&state.pool, batch.id).await?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 async fn get_batch(

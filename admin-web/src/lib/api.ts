@@ -232,7 +232,9 @@ export async function createAccountRegistrationBatch(data: {
   name: string;
   source_file?: string;
   priority?: number;
-  account_ids: string[];
+  account_ids?: string[];
+  include_all_pending?: boolean;
+  start_immediately?: boolean;
 }): Promise<AccountRegistrationBatch> {
   return api.post<AccountRegistrationBatch>("/api/account-registration-batches", data);
 }

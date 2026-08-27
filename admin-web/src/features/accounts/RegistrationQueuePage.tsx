@@ -6,6 +6,7 @@ import { useAuth } from "../../context/AuthContext";
 import {
   cancelAccountRegistrationBatch,
   cancelAccountRegistrationTask,
+  createAccountRegistrationBatch,
   getAccountRegistrationBatch,
   listAccountRegistrationBatches,
   listAccountRegistrationBatchTasks,
@@ -21,21 +22,55 @@ import { parseTaskPhase, REGISTRATION_PHASE_CONFIG } from "./registrationPhases"
 import {
   Button,
   Card,
+  Dialog,
   EmptyRow,
   ErrorBox,
+  Input,
   Select,
   Spinner,
   StatusBadge,
   Table,
   Td,
 } from "../../components/ui";
-import { ArrowLeft, Play, Pause, XCircle, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Play, Pause, XCircle, ShieldAlert, Plus } from "lucide-react";
 
 export function RegistrationQueuePage() {
   const { user } = useAuth();
   const toast = useToast();
   const isSuperAdmin = user?.role === "超级管理员";
   const { data, loading, error, reload } = useApi<BatchWithProgress[]>(listAccountRegistrationBatches);
+
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [batchName, setBatchName] = useState("");
+  const [priority, setPriority] = useState("10");
+  const [startImmediately, setStartImmediately] = useState(true);
+  const [creating, setCreating] = useState(false);
+
+  const handleOpenCreateModal = () => {
+    setBatchName("");
+    setPriority("10");
+    setStartImmediately(true);
+    setCreateModalOpen(true);
+  };
+
+  const handleCreateBatch = async () => {
+    setCreating(true);
+    try {
+      const batch = await createAccountRegistrationBatch({
+        name: batchName.trim() || `注册批次-${new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 14)}`,
+        priority: Number(priority),
+        include_all_pending: true,
+        start_immediately: startImmediately,
+      });
+      toast.success(`注册批次「${batch.name}」已创建${startImmediately ? "并启动" : ""}`);
+      setCreateModalOpen(false);
+      reload();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "创建失败");
+    } finally {
+      setCreating(false);
+    }
+  };
 
   const runAction = async (batch: BatchWithProgress, action: "start" | "pause" | "resume" | "cancel") => {
     const label = {
@@ -80,6 +115,12 @@ export function RegistrationQueuePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {isSuperAdmin && (
+            <Button size="sm" onClick={handleOpenCreateModal}>
+              <Plus className="mr-1.5 h-4 w-4" />
+              新建注册批次
+            </Button>
+          )}
           <Link to="/attention/manual?type=account">
             <Button variant="secondary" size="sm">
               <ShieldAlert className="mr-1.5 h-4 w-4 text-amber-600" />
@@ -187,6 +228,50 @@ export function RegistrationQueuePage() {
           })}
         </Table>
       </Card>
+
+      {/* 新建注册批次 Dialog */}
+      <Dialog
+        open={createModalOpen}
+        title="新建账号注册批次"
+        onClose={() => !creating && setCreateModalOpen(false)}
+        footer={
+          <>
+            <Button variant="secondary" disabled={creating} onClick={() => setCreateModalOpen(false)}>
+              取消
+            </Button>
+            <Button loading={creating} onClick={handleCreateBatch}>
+              创建批次
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-lg bg-blue-50/60 p-3 border border-blue-100 text-xs text-blue-800">
+            将自动将当前待注册账号池中<strong>所有未入队账号</strong>打包入本批次，并下发给在线 Worker 执行自动化注册。
+          </div>
+          <Input
+            label="批次名称（选填）"
+            value={batchName}
+            onChange={(e) => setBatchName(e.target.value)}
+            placeholder="默认按当前时间自动命名"
+          />
+          <Input
+            label="批次优先级"
+            type="number"
+            value={priority}
+            onChange={(e) => setPriority(e.target.value)}
+          />
+          <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-700">
+            <input
+              type="checkbox"
+              checked={startImmediately}
+              onChange={(e) => setStartImmediately(e.target.checked)}
+              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>创建后立即启动调度（立即让在线 Worker 认领注册任务）</span>
+          </label>
+        </div>
+      </Dialog>
     </div>
   );
 }
