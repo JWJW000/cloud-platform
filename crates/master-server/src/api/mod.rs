@@ -306,6 +306,10 @@ pub fn router(state: AppState) -> Router {
         // 馆藏扫描与审核（方案第 10 节）
         .nest("/api/catalog", inventory::inventory_routes())
         // 批次
+        .route(
+            "/api/download-control",
+            get(batches::get_global_download_control).put(batches::update_global_download_control),
+        )
         .route("/api/batches", get(batches::list_batches))
         .route("/api/batches/:id", get(batches::get_batch))
         .route(

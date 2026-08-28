@@ -139,6 +139,12 @@ export interface BatchProgress {
   percent: number;
 }
 
+export interface GlobalDownloadControl {
+  paused: boolean;
+  updated_at: string;
+  running_tasks: number;
+}
+
 // ---------------------------------------------------------------- 任务
 
 export interface Task {

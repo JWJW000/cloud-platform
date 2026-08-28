@@ -88,7 +88,13 @@ pub async fn put_setting(
 ) -> AppResult<Json<serde_json::Value>> {
     auth.require_super_admin()?;
     let normalized = key.trim().to_ascii_lowercase();
-    if key.len() > 128 || key.is_empty() || normalized == "mail_code_provider" {
+    if key.len() > 128
+        || key.is_empty()
+        || matches!(
+            normalized.as_str(),
+            "mail_code_provider" | "global_download_paused"
+        )
+    {
         return Err(AppError::bad("该设置键无效或必须使用类型化设置接口"));
     }
     if ["secret", "password", "token", "api_key"]

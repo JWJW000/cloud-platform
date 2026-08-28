@@ -31,6 +31,13 @@ describe("批次操作接口映射", () => {
         if (url === "/api/batches" && method === "GET") {
           return { ok: true, status: 200, json: async () => BATCHES } as Response;
         }
+        if (url === "/api/download-control" && method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ paused: false, updated_at: "2026-01-01T00:00:00Z", running_tasks: 0 }),
+          } as Response;
+        }
         if (url === "/api/batches/b1/pause" && method === "POST") {
           return { ok: true, status: 200, json: async () => BATCHES[0] } as Response;
         }
@@ -93,6 +100,13 @@ describe("批次页操作按钮可见性", () => {
       if (url === "/api/batches") {
         return { ok: true, status: 200, json: async () => BATCHES } as Response;
       }
+      if (url === "/api/download-control") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ paused: false, updated_at: "2026-01-01T00:00:00Z", running_tasks: 0 }),
+        } as Response;
+      }
       if (url.includes("/api/batches/b1/pause") || url.includes("/api/batches/b1/cancel")) {
         return { ok: true, status: 200, json: async () => BATCHES[0] } as Response;
       }
@@ -113,6 +127,59 @@ describe("批次页操作按钮可见性", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "暂停" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "取消" })).toBeInTheDocument();
+    });
+  });
+
+  it("全局暂停使用持久化控制接口", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/auth/me") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "u1", username: "admin", role: "超级管理员", status: "启用",
+            token_version: 1, created_at: "2026-01-01T00:00:00Z", last_login_at: null,
+          }),
+        } as Response;
+      }
+      if (url === "/api/batches") {
+        return { ok: true, status: 200, json: async () => BATCHES } as Response;
+      }
+      if (url === "/api/download-control" && method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ paused: false, updated_at: "2026-01-01T00:00:00Z", running_tasks: 0 }),
+        } as Response;
+      }
+      if (url === "/api/download-control" && method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ paused: true, updated_at: "2026-01-01T00:01:00Z", running_tasks: 0 }),
+        } as Response;
+      }
+      return { ok: false, status: 500, json: async () => ({}) } as Response;
+    });
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <ToastProvider>
+            <BatchesPage />
+          </ToastProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "全局暂停下载" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/download-control",
+        expect.objectContaining({ method: "PUT", body: JSON.stringify({ paused: true }) }),
+      );
     });
   });
 });

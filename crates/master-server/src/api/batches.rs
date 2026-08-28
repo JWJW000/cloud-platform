@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::Json;
 use platform_domain::BatchStatus;
 use platform_proto::v1 as pb;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::auth::AuthenticatedUser;
@@ -48,6 +48,82 @@ fn default_max_attempts() -> i32 {
 #[derive(Debug, Deserialize)]
 pub struct UpdatePriorityRequest {
     pub priority: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateGlobalDownloadControlRequest {
+    pub paused: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GlobalDownloadControlResponse {
+    pub paused: bool,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub running_tasks: i64,
+}
+
+/// GET /api/download-control
+pub async fn get_global_download_control(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+) -> AppResult<Json<GlobalDownloadControlResponse>> {
+    let control = crate::scheduler::get_global_download_control(&state.pool).await?;
+    Ok(Json(global_control_response(&state, control).await?))
+}
+
+/// PUT /api/download-control
+pub async fn update_global_download_control(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Json(req): Json<UpdateGlobalDownloadControlRequest>,
+) -> AppResult<Json<GlobalDownloadControlResponse>> {
+    auth.require_write()?;
+    let control = crate::scheduler::set_global_download_paused(&state.pool, req.paused).await?;
+
+    let action = if req.paused {
+        "全局暂停下载"
+    } else {
+        "恢复全局下载"
+    };
+    store::admin::log(
+        &state.pool,
+        platform_domain::OperationSource::Admin,
+        platform_domain::LogLevel::Warn,
+        &auth.username,
+        action,
+        "global-download-control",
+        if req.paused {
+            "已停止派发新的图书下载任务；执行中任务继续安全收尾"
+        } else {
+            "已恢复图书下载任务派发"
+        },
+    )
+    .await?;
+
+    if !req.paused {
+        let _ = crate::scheduler::trigger_scheduler_sweep(&state).await;
+    }
+    state.events.publish(
+        "全局下载控制变更",
+        serde_json::json!({ "已暂停": req.paused, "操作人": auth.username }),
+    );
+    Ok(Json(global_control_response(&state, control).await?))
+}
+
+async fn global_control_response(
+    state: &AppState,
+    control: crate::scheduler::GlobalDownloadControl,
+) -> AppResult<GlobalDownloadControlResponse> {
+    let running_tasks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM book_tasks WHERE status IN ('已分配', '执行中', '等待入库')",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(GlobalDownloadControlResponse {
+        paused: control.paused,
+        updated_at: control.updated_at,
+        running_tasks,
+    })
 }
 
 /// GET /api/batches

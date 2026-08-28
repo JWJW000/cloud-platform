@@ -193,6 +193,15 @@ pub async fn allocate_session(
     let (account_need, proxy_need) = needs_of(task_type);
     let mut tx = state.pool.begin().await?;
 
+    // 选择队列与真正占用槽位之间可能恰好发生全局暂停；在资源领取事务内再次
+    // 检查并持有共享锁，保证暂停成功返回后不会新建下载会话或占住账号/代理。
+    if task_type == TaskType::BookDownload
+        && super::control::global_download_is_paused(&mut tx).await?
+    {
+        tx.rollback().await?;
+        return Ok(unavailable("全局图书下载已暂停".to_string(), 20));
+    }
+
     let Some(slot_index) = claim_slot(&mut tx, node_id, preferred_slot).await? else {
         tx.rollback().await?;
         return Ok(unavailable("没有空闲槽位".to_string(), 15));

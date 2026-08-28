@@ -18,6 +18,7 @@
 pub mod allocate;
 pub mod catalog_bridge;
 pub mod claim;
+pub mod control;
 pub mod reaper;
 pub mod select_work;
 pub mod submit;
@@ -27,6 +28,7 @@ pub use allocate::{
     Unavailable,
 };
 pub use claim::{claim_next_task, BookTarget, ClaimOutcome, TaskAssignment};
+pub use control::{get_global_download_control, set_global_download_paused, GlobalDownloadControl};
 pub use reaper::{reap_once, resume_protected_sessions, spawn_reaper, ReapReport};
 pub use select_work::{handle_work_request, trigger_scheduler_sweep};
 pub use submit::{

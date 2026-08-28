@@ -161,6 +161,13 @@ pub async fn claim_next_task(
     let proxy_exit_ip = proxy_info.as_ref().and_then(|p| p.exit_ip.clone());
 
     let mut tx = state.pool.begin().await?;
+    if super::control::global_download_is_paused(&mut tx).await? {
+        tx.rollback().await?;
+        return Ok(ClaimOutcome::Unavailable(Unavailable {
+            reason: "全局图书下载已暂停".to_string(),
+            retry_after_secs: 20,
+        }));
+    }
     // 总库是唯一持续任务池。按需物化一个目标到现有 Worker 状态机，避免一次性
     // 为数万条目标复制任务，同时保持旧 Worker 协议与断线恢复逻辑不变。
     super::catalog_bridge::materialize_next_target(&mut tx).await?;

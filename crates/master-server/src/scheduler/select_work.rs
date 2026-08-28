@@ -130,8 +130,13 @@ async fn select_best_task_type(
 ) -> AppResult<Option<TaskType>> {
     let mut candidates: Vec<QueueCandidate> = Vec::new();
 
+    // 全局暂停只关闭图书下载队列；账号注册、NAS 核验和代理检测仍可正常运行。
+    let download_paused = super::control::get_global_download_control(&state.pool)
+        .await?
+        .paused;
+
     // 1. 图书下载队列评估
-    if supported.contains(&TaskType::BookDownload) && node.nas_healthy {
+    if !download_paused && supported.contains(&TaskType::BookDownload) && node.nas_healthy {
         let book_stat: Option<(i64, i32)> = sqlx::query_as(
             "SELECT count(*), COALESCE(max(b.priority), 0) \
              FROM book_tasks t \

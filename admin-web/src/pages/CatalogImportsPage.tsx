@@ -23,6 +23,7 @@ import {
   QuarantinedRecord,
 } from "../lib/types";
 import { Card, Spinner, StatusBadge, Button, Input } from "../components/ui";
+import { GlobalDownloadControlCard } from "../components/GlobalDownloadControlCard";
 import { useToast } from "../context/ToastContext";
 
 export function CatalogImportsPage() {
@@ -178,6 +179,8 @@ export function CatalogImportsPage() {
           新建数据导入
         </Button>
       </div>
+
+      <GlobalDownloadControlCard />
 
       {error && (
         <div className="rounded-lg bg-red-50 p-4 border border-red-200 text-sm text-red-700 flex items-center gap-2">

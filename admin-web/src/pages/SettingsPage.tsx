@@ -94,7 +94,9 @@ export function SettingsPage() {
   if (loading) return <Spinner label="正在加载设置..." />;
   if (error) return <ErrorBox message={error} onRetry={reload} />;
 
-  const settings = (data ?? []).filter((setting) => setting.key !== "mail_code_provider");
+  const settings = (data ?? []).filter(
+    (setting) => !["mail_code_provider", "global_download_paused"].includes(setting.key),
+  );
   const grouped: Array<{ title: string; description: string; pattern: RegExp; items: Setting[] }> = GROUP_RULES.map((group) => ({
     ...group,
     items: settings.filter((setting) => group.pattern.test(setting.key)),

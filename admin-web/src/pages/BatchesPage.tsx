@@ -30,6 +30,7 @@ import {
   Td,
 } from "../components/ui";
 import { Download, FileUp, AlertTriangle } from "lucide-react";
+import { GlobalDownloadControlCard } from "../components/GlobalDownloadControlCard";
 
 export function BatchesPage() {
   const { user } = useAuth();
@@ -178,6 +179,8 @@ export function BatchesPage() {
           </Button>
         </div>
       </div>
+
+      <GlobalDownloadControlCard />
 
       <Card>
         <Table

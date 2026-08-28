@@ -38,6 +38,13 @@ async fn 全迁移_幂等_约束生效() {
     .unwrap();
     assert_eq!(evidence_checks, 4, "证据字段 CHECK 约束必须全部存在");
 
+    let global_download_paused: serde_json::Value =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'global_download_paused'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(global_download_paused, serde_json::json!(false));
+
     // 2. 重复执行迁移：幂等，不报错（sqlx 按版本记录跳过）
     master_server::store::run_migrations(&db.pool)
         .await

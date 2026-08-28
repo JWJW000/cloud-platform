@@ -306,6 +306,16 @@ export async function listBatches(): Promise<Batch[]> {
   return api.get<Batch[]>("/api/batches");
 }
 
+export async function getGlobalDownloadControl(): Promise<import("./types").GlobalDownloadControl> {
+  return api.get<import("./types").GlobalDownloadControl>("/api/download-control");
+}
+
+export async function updateGlobalDownloadControl(
+  paused: boolean,
+): Promise<import("./types").GlobalDownloadControl> {
+  return api.put<import("./types").GlobalDownloadControl>("/api/download-control", { paused });
+}
+
 export async function getBatch(id: string): Promise<Batch> {
   return api.get<Batch>(`/api/batches/${id}`);
 }
