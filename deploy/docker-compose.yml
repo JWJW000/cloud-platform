@@ -96,6 +96,7 @@ services:
       OPENSEARCH_INDEX: "${OPENSEARCH_INDEX:-catalog-editions-v1}"
       OPENSEARCH_USERNAME: "${OPENSEARCH_USERNAME:-}"
       OPENSEARCH_PASSWORD: "${OPENSEARCH_PASSWORD:-}"
+      NAS_FREE_SPACE_ALERT_GB: "${NAS_FREE_SPACE_ALERT_GB:-5}"
       TZ: Asia/Shanghai
     volumes:
       # 卷由容器 root 初始化；Dockerfile 已确保 /app/data 属主为 appuser
