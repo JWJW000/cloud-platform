@@ -10,7 +10,7 @@ web_root = "/app/admin-web/dist"
 # 目标站点根地址，由 Master 下发给所有 Worker。
 # 必须填真实地址：留空则 Worker 拒绝开启浏览器会话，占位域名（.invalid / example.com）
 # 会让 Master 启动时直接报错（第 3.3 节）。
-site_base = ""
+site_base = "https://zh.loves.works"
 # 可信反向代理网段（CIDR 或精确 IP，逗号分隔）：只有来自这些地址的
 # X-Forwarded-For 才被信任（第 13.4 节）。Docker 部署示例：trusted_proxies = ["172.16.0.0/12"]
 trusted_proxies = []

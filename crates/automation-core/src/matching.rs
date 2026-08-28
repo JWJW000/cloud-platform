@@ -207,10 +207,21 @@ pub fn select_candidate(target: &MatchTarget<'_>, candidates: &[CandidateBook]) 
     }
 
     let want_title = normalize_title(target.title);
-    let title_hits: Vec<&CandidateBook> = candidates
+    let exact_hits: Vec<&CandidateBook> = candidates
         .iter()
         .filter(|c| normalize_title(&c.title) == want_title)
         .collect();
+    // 桌面版用双向包含兼容「第2版」等后缀；精确命中优先，避免「习题解答」抢走正书。
+    let title_hits: Vec<&CandidateBook> = if exact_hits.is_empty() {
+        candidates
+            .iter()
+            .filter(|c| {
+                crate::verify::filename_matches_title(std::path::Path::new(&c.title), target.title)
+            })
+            .collect()
+    } else {
+        exact_hits
+    };
 
     if title_hits.is_empty() {
         return MatchOutcome::NotFound {
@@ -475,5 +486,17 @@ mod tests {
     fn person_normalization_strips_country_marks() {
         assert_eq!(normalize_person("[美] Thomas H. Cormen"), "thomashcormen");
         assert_eq!(normalize_person("（美）科曼"), "科曼");
+    }
+
+    #[test]
+    fn edition_suffix_is_accepted_when_no_exact_title() {
+        let candidates = vec![candidate(0, "水利工程建设投资控制 第2版", "", "", "")];
+        let t = target("水利工程建设投资控制", None, None, None);
+        match select_candidate(&t, &candidates) {
+            MatchOutcome::Matched { candidate, .. } => {
+                assert_eq!(candidate.index, 0);
+            }
+            other => panic!("版本后缀应命中，实际 {other:?}"),
+        }
     }
 }

@@ -48,3 +48,5 @@ nas_mount = "/mnt/nas/books"
 requested_slots = 5
 # 是否启用模拟自动化引擎（生产环境必须为 false，以真实启动 Chromium 执行下载）
 simulated = false
+# 与桌面版一致：有头窗口更容易通过站点 JS 挑战。无桌面环境再改为 true。
+headless = false

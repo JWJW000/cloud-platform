@@ -649,8 +649,10 @@ async fn handle_heartbeat(
         );
     }
 
-    // 续租该节点活跃的会话
-    let renew_secs = state.config.scheduler.session_renew_secs as i64;
+    // 续租该节点活跃的会话。必须用任务租约时长（默认 120s），不能用
+    // `session_renew_secs`（默认 30s）：心跳一旦把租约缩短到 30s，启动浏览器
+    // 稍慢就会被巡检判成「卡死」并立刻再开一个新会话，Chrome 窗口叠加上去。
+    let renew_secs = state.config.scheduler.task_lease_secs as i64;
     for session_id_str in &heartbeat.active_session_ids {
         if let Ok(session_id) = parse_uuid(session_id_str, "活跃会话") {
             let active = store::session::renew_session(&state.pool, session_id, renew_secs).await?;

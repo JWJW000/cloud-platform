@@ -12,10 +12,12 @@
 pub mod browser;
 pub mod cancel;
 pub mod engine;
+pub mod http_download;
 pub mod mail_code;
 pub mod matching;
 pub mod real;
 pub mod simulated;
+pub mod site;
 pub mod types;
 pub mod verify;
 

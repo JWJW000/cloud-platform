@@ -28,5 +28,5 @@ nas_mount = "./data/nas"
 requested_slots = 5
 # 是否启用模拟引擎（生产下载保持 false）
 simulated = false
-# 是否开启无头模式（默认 true 静默运行；设为 false 时弹出可视化真实 Chrome 窗口）
-headless = true
+# 是否开启无头模式。默认 false（与桌面版一致，反爬特征更接近真人）；true 时不弹窗但更容易被站点拦截
+headless = false

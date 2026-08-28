@@ -118,7 +118,7 @@ pub struct ExecutionConfig {
     /// 是否使用模拟自动化引擎（用于测试或无桌面环境）。
     #[serde(default)]
     pub simulated: bool,
-    /// 是否开启无头浏览器模式（默认 true 静默无头；设为 false 时弹出可视化真实浏览器窗口）。
+    /// 是否开启无头浏览器模式。默认 false：站点 JS 挑战对无头更敏感，与桌面版一致走有头窗口。
     #[serde(default = "default_headless")]
     pub headless: bool,
 }
@@ -128,7 +128,7 @@ fn default_requested_slots() -> u32 {
 }
 
 fn default_headless() -> bool {
-    true
+    false
 }
 
 impl Default for ExecutionConfig {

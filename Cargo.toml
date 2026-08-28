@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "MIT"
 
@@ -73,6 +73,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sysinfo = "0.32"
 rust_drission = "0.2"
 url = "2"
+ureq = "2"
 regex = "1"
 httparse = "1.9"
 libc = "0.2"

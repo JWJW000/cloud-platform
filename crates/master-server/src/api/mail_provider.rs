@@ -169,8 +169,10 @@ pub(crate) async fn validate_outlook_endpoint(
     }
     let url = url::Url::parse(endpoint)
         .map_err(|_| AppError::BadRequest("端点不是合法 URL".to_string()))?;
-    if url.scheme() != "https" {
-        return Err(AppError::BadRequest("端点必须使用 HTTPS".to_string()));
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(AppError::BadRequest(
+            "端点必须使用 HTTP 或 HTTPS".to_string(),
+        ));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(AppError::BadRequest(

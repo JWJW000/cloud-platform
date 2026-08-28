@@ -1596,30 +1596,31 @@ async fn execute_registration_session(
         }
     };
 
-    let (exec_result, result_reason, already_exists, awaiting_verification) = match reg_result {
-        Ok(outcome) => {
-            let reason = if outcome.already_exists {
-                "站点提示邮箱已存在".to_string()
-            } else if outcome.awaiting_verification {
-                "等待邮箱验证码".to_string()
-            } else {
-                "注册成功".to_string()
-            };
-            (
-                ExecutionResult::Success,
-                reason,
-                outcome.already_exists,
-                outcome.awaiting_verification,
-            )
-        }
-        Err(err) => {
-            let res = match err.class {
-                platform_domain::FailureClass::Fatal => ExecutionResult::FatalFailure,
-                _ => ExecutionResult::RetryableFailure,
-            };
-            (res, err.reason, false, false)
-        }
-    };
+    let (mut exec_result, mut result_reason, mut already_exists, mut awaiting_verification) =
+        match reg_result {
+            Ok(outcome) => {
+                let reason = if outcome.already_exists {
+                    "站点提示邮箱已存在".to_string()
+                } else if outcome.awaiting_verification {
+                    "等待邮箱验证码".to_string()
+                } else {
+                    "注册成功".to_string()
+                };
+                (
+                    ExecutionResult::Success,
+                    reason,
+                    outcome.already_exists,
+                    outcome.awaiting_verification,
+                )
+            }
+            Err(err) => {
+                let res = match err.class {
+                    platform_domain::FailureClass::Fatal => ExecutionResult::FatalFailure,
+                    _ => ExecutionResult::RetryableFailure,
+                };
+                (res, err.reason, false, false)
+            }
+        };
 
     {
         let mut state = shared.mail_provider_state.write().await;
@@ -1630,6 +1631,91 @@ async fn execute_registration_session(
         } else {
             "执行异常".to_string()
         };
+    }
+
+    if awaiting_verification {
+        let res_event_id = format!("evt-reg-res-{session_id}-{reg_task_id}-pending");
+        bus.send_reliable(
+            &res_event_id,
+            pb::worker_message::Payload::RegistrationTaskResult(pb::RegistrationTaskResult {
+                session_id: session_id.clone(),
+                execution_id: exec_id.clone(),
+                registration_task_id: reg_task_id.clone(),
+                stage_version,
+                attempt: assign.attempt,
+                result: exec_result.as_str().to_string(),
+                reason: result_reason.clone(),
+                already_exists,
+                awaiting_verification: true,
+                completed_at: chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .await;
+
+        let wait_deadline = Instant::now() + Duration::from_secs(10 * 60);
+        while Instant::now() < wait_deadline && awaiting_verification {
+            if registration_cancel.is_cancelled() {
+                exec_result = ExecutionResult::Cancelled;
+                result_reason = "注册已取消".to_string();
+                awaiting_verification = false;
+                break;
+            }
+            tokio::select! {
+                command = rx.recv(), if command_channel_open => {
+                    match command {
+                        Some(SlotCommand::ContinueManualAction(cont))
+                            if cont.execution_id == exec_id =>
+                        {
+                            match engine
+                                .submit_verification_code(
+                                    &session_handle,
+                                    &cont.action_payload,
+                                    &sink,
+                                    &registration_cancel,
+                                )
+                                .await
+                            {
+                                Ok(outcome) => {
+                                    already_exists = outcome.already_exists;
+                                    awaiting_verification = outcome.awaiting_verification;
+                                    exec_result = ExecutionResult::Success;
+                                    result_reason = if already_exists {
+                                        "站点提示邮箱已存在".to_string()
+                                    } else if awaiting_verification {
+                                        "等待邮箱验证码".to_string()
+                                    } else {
+                                        "注册成功".to_string()
+                                    };
+                                }
+                                Err(err) => {
+                                    exec_result = match err.class {
+                                        platform_domain::FailureClass::Fatal => {
+                                            ExecutionResult::FatalFailure
+                                        }
+                                        _ => ExecutionResult::RetryableFailure,
+                                    };
+                                    result_reason = err.reason;
+                                    awaiting_verification = false;
+                                }
+                            }
+                        }
+                        Some(SlotCommand::Pause) => shared.paused.store(true, Ordering::SeqCst),
+                        Some(SlotCommand::Resume) => shared.paused.store(false, Ordering::SeqCst),
+                        Some(_) => {}
+                        None => {
+                            command_channel_open = false;
+                            registration_cancel.cancel("Worker 命令通道已关闭");
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+        }
+        if awaiting_verification {
+            exec_result = ExecutionResult::RetryableFailure;
+            result_reason = "等待人工验证码超时，浏览器会话仍在但未完成注册".to_string();
+            awaiting_verification = false;
+        }
     }
 
     let res_event_id = format!("evt-reg-res-{session_id}-{reg_task_id}");

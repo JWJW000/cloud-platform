@@ -211,9 +211,9 @@ impl OutlookHttpMailCodeAdapter {
     pub fn new(mut config: OutlookConfig) -> Result<Self, MailCodeError> {
         let endpoint = reqwest::Url::parse(config.endpoint.trim())
             .map_err(|_| MailCodeError::Unavailable("Outlook 端点不是合法 URL".to_string()))?;
-        if endpoint.scheme() != "https" {
+        if !matches!(endpoint.scheme(), "http" | "https") {
             return Err(MailCodeError::Unavailable(
-                "SSRF 防护：Outlook 服务端点必须使用 HTTPS".to_string(),
+                "SSRF 防护：Outlook 服务端点必须使用 HTTP 或 HTTPS".to_string(),
             ));
         }
         if !endpoint.username().is_empty() || endpoint.password().is_some() {
@@ -469,7 +469,12 @@ mod tests {
         config.endpoint = "https://mail.example.com".to_string();
         assert!(OutlookHttpMailCodeAdapter::new(config.clone()).is_err());
         config.allowed_hosts = vec!["mail.example.com".to_string()];
-        assert!(OutlookHttpMailCodeAdapter::new(config).is_ok());
+        assert!(OutlookHttpMailCodeAdapter::new(config.clone()).is_ok());
+        config.endpoint = "http://mail.example.com:5000/".to_string();
+        assert!(
+            OutlookHttpMailCodeAdapter::new(config).is_ok(),
+            "桌面版正在使用的 HTTP Outlook 端点必须能通过允许列表校验"
+        );
     }
 
     #[test]

@@ -106,6 +106,15 @@ pub trait AutomationEngine: Send + Sync {
         events: &EventSink,
     ) -> Result<RegistrationOutcome, AutomationError>;
 
+    /// 在仍打开的注册页上提交邮箱验证码（人工降级后浏览器必须还在）。
+    async fn submit_verification_code(
+        &self,
+        session: &SessionHandle,
+        code: &str,
+        events: &EventSink,
+        cancel: &CancelToken,
+    ) -> Result<RegistrationOutcome, AutomationError>;
+
     /// 读取站点配额指示器（`.caret-scroll__title`，形如 `7/10`）。
     ///
     /// 返回 `None` 表示读不到指示器，此时**不得**把账号标记为额度耗尽。

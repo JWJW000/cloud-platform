@@ -329,6 +329,26 @@ impl AutomationEngine for SimulatedEngine {
         })
     }
 
+    async fn submit_verification_code(
+        &self,
+        _session: &SessionHandle,
+        code: &str,
+        events: &EventSink,
+        _cancel: &CancelToken,
+    ) -> Result<RegistrationOutcome, AutomationError> {
+        events.stage("提交验证码中");
+        if code.trim().is_empty() {
+            return Ok(RegistrationOutcome {
+                already_exists: false,
+                awaiting_verification: true,
+            });
+        }
+        Ok(RegistrationOutcome {
+            already_exists: false,
+            awaiting_verification: false,
+        })
+    }
+
     async fn read_quota_indicator(
         &self,
         session: &SessionHandle,

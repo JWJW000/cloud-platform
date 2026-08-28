@@ -32,14 +32,14 @@ use serde_json::json;
 use crate::browser::{detect_browser, launch_args};
 use crate::cancel::CancelToken;
 use crate::engine::{AutomationEngine, EventSink};
-use crate::matching::{
-    select_candidate, CandidateBook, MatchBasis, MatchOutcome, MatchRecord, MatchTarget,
-};
+use crate::http_download::{self, HttpDownloadOutcome, HttpDownloadRequest};
+use crate::matching::{select_candidate, MatchRecord, MatchTarget};
+use crate::site::{self, SiteCard};
 use crate::types::{
     AccountCredential, AutomationError, DownloadOutcome, DownloadSpec, RegistrationOutcome,
     RegistrationSpec, SessionHandle, SessionSpec,
 };
-use crate::verify::{normalize_title, verify_and_collect, VerifyError};
+use crate::verify::{verify_and_collect, VerifyError};
 
 /// 轮询页面状态的间隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -48,21 +48,64 @@ const RESULTS_TIMEOUT: Duration = Duration::from_secs(20);
 /// 等待登录结果的上限。
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
 /// 扫描暂存目录的间隔。
+#[cfg(test)]
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 /// 文件大小需要连续多少次不变才算写完。
+#[cfg(test)]
 const STABLE_SCANS: u32 = 3;
 
-/// 搜索结果卡片的候选选择器。
-const CARD_SELECTORS: &str = ".book-item, .search-result-item, .card";
-/// 卡片内书名、作者、出版社、ISBN 的候选选择器。
-const TITLE_SELECTORS: &str = ".book-title, .title, h3, h2, a";
-const AUTHOR_SELECTORS: &str = ".book-author, .author, .authors";
-const PUBLISHER_SELECTORS: &str = ".book-publisher, .publisher, .press";
-const ISBN_SELECTORS: &str = ".book-isbn, .isbn";
-/// 下载按钮的候选选择器。
-const DOWNLOAD_SELECTORS: &str = ".download-btn, a[href*='download'], button.btn-download";
-/// 站点配额指示器（第 10.3 节：形如 `7/10`）。
-const QUOTA_SELECTORS: &str = ".caret-scroll__title, .quota-badge, .user-quota";
+/// 登录弹窗与注册表单（zh.loves.works 真实 DOM，不是通用 /login）。
+const LOGIN_LINK: &str = "a[data-action='login']";
+const LOGIN_FORM: &str = "#loginForm";
+const LOGIN_EMAIL: &str = "#loginForm input[name='email']";
+const LOGIN_PASSWORD: &str = "#loginForm input[name='password']";
+const LOGIN_SUBMIT: &str = "#loginForm button[type='submit']";
+const LOGIN_ERROR: &str = "#loginForm .validation-error";
+const REG_FORM: &str = "#registrationForm";
+const REG_EMAIL: &str = "#registrationForm input[name='email']";
+const REG_PASSWORD: &str = "#registrationForm input[name='password']";
+const REG_NAME: &str = "#registrationForm input[name='name']";
+const REG_SUBMIT: &str = "#registrationForm button[type='submit']";
+const REG_ERROR: &str = "#registrationForm .validation-error";
+const VERIFY_INPUT: &str = "#verificationContent input";
+const VERIFY_FORM_INPUTS: &str = "#verificationContent form input";
+const VERIFY_SUBMIT: &str = "#verificationContent .btn-submit, #verificationContent button";
+const BONUS_POPUP: &str = ".btnCloseRegBonusPopup";
+const LOGOUT_SELECTORS: &str =
+    "a[data-action='logout'], [data-action='logout'], a[href*='/logout'], .logout-link, #logout-link";
+
+/// `ChromiumPage` 本身 Drop 不会关浏览器进程（桌面版因此包了 `WorkerPage`）。
+/// 登录失败若直接 `return Err`，Chrome 窗口会留下来，Master 立刻再开下一会话，
+/// 5 个槽位限制挡不住窗口堆积。
+struct OwnedPage {
+    page: Option<ChromiumPage>,
+}
+
+impl OwnedPage {
+    fn new(page: ChromiumPage) -> Self {
+        Self { page: Some(page) }
+    }
+
+    fn page(&self) -> &ChromiumPage {
+        self.page
+            .as_ref()
+            .expect("OwnedPage 在 into_inner 之后不可再用")
+    }
+
+    fn into_inner(mut self) -> ChromiumPage {
+        self.page
+            .take()
+            .expect("OwnedPage 在 into_inner 之后不可再用")
+    }
+}
+
+impl Drop for OwnedPage {
+    fn drop(&mut self) {
+        if let Some(mut page) = self.page.take() {
+            page.close_browser();
+        }
+    }
+}
 
 /// 包装一个真实的 ChromiumPage 实例。
 struct RealBrowserSession {
@@ -107,6 +150,413 @@ impl RealAutomationEngine {
             .ok_or_else(|| AutomationError::new(FailureClass::Fatal, "执行会话不存在或已关闭"))?;
         f(session)
     }
+
+    async fn navigate(
+        &self,
+        session_id: &str,
+        url: &str,
+        cancel: &CancelToken,
+    ) -> Result<(), AutomationError> {
+        const MAX_ATTEMPTS: usize = 3;
+        for attempt in 1..=MAX_ATTEMPTS {
+            cancel.check()?;
+            let get_err = self.with_session(session_id, |sess| {
+                sess.page.get(url).map_err(|err| {
+                    AutomationError::new(
+                        FailureClass::SiteUnavailable,
+                        format!("页面导航失败：{err} ({url})"),
+                    )
+                })
+            });
+            if let Err(err) = get_err {
+                if site::navigation_error_is_site_unavailable(&err.reason) && attempt < MAX_ATTEMPTS
+                {
+                    if !cancel
+                        .sleep(Duration::from_secs(2 + attempt as u64 * 2))
+                        .await
+                    {
+                        return Err(cancel.check().unwrap_err());
+                    }
+                    continue;
+                }
+                return Err(err);
+            }
+            if !cancel.sleep(Duration::from_millis(1500)).await {
+                return Err(cancel.check().unwrap_err());
+            }
+            let blocked = self.with_session(session_id, |sess| {
+                if let Some(reason) = site_unavailable_reason(&sess.page) {
+                    return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
+                }
+                if js_flag(&sess.page, site::CONNECTION_PROBLEM_SCRIPT) {
+                    return Err(AutomationError::new(
+                        FailureClass::SiteUnavailable,
+                        format!("站点重复返回 Connection Problem 页面: {url}"),
+                    ));
+                }
+                Ok(())
+            });
+            match blocked {
+                Ok(()) => return Ok(()),
+                Err(_err) if attempt < MAX_ATTEMPTS => {
+                    if !cancel
+                        .sleep(Duration::from_secs(2 + attempt as u64 * 2))
+                        .await
+                    {
+                        return Err(cancel.check().unwrap_err());
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(AutomationError::new(
+            FailureClass::SiteUnavailable,
+            format!("页面导航失败: {url}"),
+        ))
+    }
+
+    async fn wait_for_search_hit(
+        &self,
+        session: &SessionHandle,
+        spec: &DownloadSpec,
+        events: &EventSink,
+        cancel: &CancelToken,
+    ) -> Result<SearchHit, AutomationError> {
+        let deadline = Instant::now() + RESULTS_TIMEOUT;
+        loop {
+            cancel.check()?;
+            let snapshot = self.with_session(&session.session_id, |sess| {
+                if let Some(reason) = site_unavailable_reason(&sess.page) {
+                    return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
+                }
+                if js_flag(&sess.page, site::QUOTA_LIMIT_PAGE_SCRIPT) {
+                    let quota = read_quota_from_page(&sess.page);
+                    return Err(if site::quota_is_exhausted(quota) {
+                        AutomationError::new(
+                            FailureClass::AccountQuotaExhausted,
+                            "daily download quota exhausted",
+                        )
+                    } else {
+                        AutomationError::new(
+                            FailureClass::SiteRateLimited,
+                            "site shows quota page but account local usage is low",
+                        )
+                    });
+                }
+                if js_flag(&sess.page, site::NOT_FOUND_SCRIPT) {
+                    return Err(AutomationError::new(
+                        FailureClass::BookNotFound,
+                        format!("book not found: {}", spec.book.title),
+                    ));
+                }
+                if js_flag(&sess.page, site::SIMILAR_BOOKS_SCRIPT) {
+                    return Err(AutomationError::new(
+                        FailureClass::BookNotFound,
+                        "站点仅返回相似图书（搜索无精确匹配），已跳过",
+                    ));
+                }
+                Ok((page_title(&sess.page), collect_site_cards(&sess.page)))
+            })?;
+
+            let (title, cards) = snapshot;
+            if title.contains(site::SEARCH_PAGE_TITLE_MARK) || !cards.is_empty() {
+                if let Some(card) = site::find_download_in_cards(
+                    &cards,
+                    &spec.book.title,
+                    spec.book.isbn.as_deref(),
+                ) {
+                    let target = MatchTarget {
+                        title: &spec.book.title,
+                        author: spec.book.author.as_deref(),
+                        publisher: spec.book.publisher.as_deref(),
+                        isbn: spec.book.isbn.as_deref(),
+                    };
+                    let candidates: Vec<_> = cards.iter().map(SiteCard::to_candidate).collect();
+                    let basis = match select_candidate(&target, &candidates) {
+                        crate::matching::MatchOutcome::Matched { basis, .. } => basis,
+                        _ => crate::matching::MatchBasis::UniqueTitle,
+                    };
+                    return Ok(SearchHit {
+                        card: card.clone(),
+                        candidate_count: cards.len(),
+                        basis,
+                    });
+                }
+                if !cards.is_empty() && title.contains(site::SEARCH_PAGE_TITLE_MARK) {
+                    events.log(
+                        "信息",
+                        format!("搜索页已渲染 {} 张卡片，但都不匹配目标书", cards.len()),
+                    );
+                    return Err(AutomationError::new(
+                        FailureClass::BookNotFound,
+                        format!("book not found: {}", spec.book.title),
+                    ));
+                }
+            }
+
+            if Instant::now() >= deadline {
+                return Err(AutomationError::new(
+                    FailureClass::BookNotFound,
+                    format!("book not found: {}", spec.book.title),
+                ));
+            }
+            if !cancel.sleep(POLL_INTERVAL).await {
+                return Err(cancel.check().unwrap_err());
+            }
+        }
+    }
+
+    fn prepare_http_download(
+        &self,
+        session: &SessionHandle,
+        site_base: &str,
+        refresh_token: bool,
+        events: &EventSink,
+    ) -> Result<(Option<String>, String, Vec<rust_drission::Cookie>, String), AutomationError> {
+        self.with_session(&session.session_id, |sess| {
+            let root = site::site_root_url(site_base);
+            if refresh_token || challenge_token_value(&sess.page, &root).is_none() {
+                let previous = sess.page.tab().url().ok();
+                let before = challenge_token_value(&sess.page, &root);
+                let _ = sess.page.get(&root);
+                std::thread::sleep(Duration::from_millis(300));
+                let deadline = Instant::now() + Duration::from_secs(15);
+                loop {
+                    let after = challenge_token_value(&sess.page, &root);
+                    let page_real = !js_flag(&sess.page, site::CHALLENGE_PAGE_SCRIPT);
+                    if site::refresh_decision(before.as_deref(), after.as_deref(), page_real)
+                        .is_some()
+                    {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        events.log("警告", "刷新 c_token 超时，沿用旧 token 继续");
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                if let Some(previous) = previous {
+                    if !previous.eq_ignore_ascii_case(&root) {
+                        let _ = sess.page.get(&previous);
+                    }
+                }
+            }
+            let proxy_url = sess
+                .proxy_endpoint
+                .as_ref()
+                .map(|endpoint| format!("http://{endpoint}"));
+            let user_agent = sess
+                .page
+                .run_js("(() => navigator.userAgent)()")
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("value")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "Mozilla/5.0".to_string());
+            let cookie_urls = vec![root];
+            let cookies = sess.page.cookies(Some(&cookie_urls)).unwrap_or_default();
+            let referer = sess
+                .page
+                .tab()
+                .url()
+                .unwrap_or_else(|_| site_base.to_string());
+            Ok((proxy_url, user_agent, cookies, referer))
+        })
+    }
+
+    async fn register_once(
+        &self,
+        session: &SessionHandle,
+        spec: &RegistrationSpec,
+        events: &EventSink,
+    ) -> Result<RegistrationOutcome, AutomationError> {
+        events.stage("注册中");
+        let site_base =
+            self.with_session(&session.session_id, |sess| Ok(sess.site_base.clone()))?;
+        self.with_session(&session.session_id, |sess| {
+            for selector in LOGOUT_SELECTORS.split(',') {
+                if let Ok(Some(node)) = sess.page.ele(&css(selector.trim())) {
+                    let _ = node.click();
+                    std::thread::sleep(Duration::from_millis(1000));
+                    break;
+                }
+            }
+            let _ = sess.page.tab().clear_cache(true, true, true, false);
+            Ok(())
+        })?;
+        let registration_url = format!(
+            "{}{}",
+            site_base.trim_end_matches('/'),
+            site::REGISTRATION_PATH
+        );
+        self.navigate(&session.session_id, &registration_url, &spec.cancel)
+            .await?;
+
+        let deadline = Instant::now() + LOGIN_TIMEOUT;
+        loop {
+            spec.cancel.check()?;
+            let ready = self.with_session(&session.session_id, |sess| {
+                Ok(first_page_element(&sess.page, REG_FORM).is_some())
+            })?;
+            if ready {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(AutomationError::new(
+                    FailureClass::SiteUnavailable,
+                    "注册页未出现 #registrationForm，站点结构可能已变化",
+                ));
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+
+        let nickname = if spec.account.nickname.trim().is_empty() {
+            site::nickname_from_email(&spec.account.email)
+        } else {
+            spec.account.nickname.clone()
+        };
+
+        let mail_cursor = if let Some(provider) = &spec.mail_provider {
+            match provider
+                .prepare(&spec.account.email, Duration::from_secs(10 * 60))
+                .await
+            {
+                Ok(cursor) => Some(cursor),
+                Err(err) => {
+                    events.log(
+                        "警告",
+                        format!("邮件验证码 Provider 准备失败（{err}），将尝试人工/降级路径"),
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        self.with_session(&session.session_id, |sess| {
+            fill_field(&sess.page, REG_EMAIL, &spec.account.email)?;
+            fill_field(&sess.page, REG_PASSWORD, &spec.account.password)?;
+            fill_field(&sess.page, REG_NAME, &nickname)?;
+            let submit = first_page_element(&sess.page, REG_SUBMIT).ok_or_else(|| {
+                AutomationError::new(FailureClass::SiteUnavailable, "注册页未找到提交按钮")
+            })?;
+            submit.click().map_err(|err| {
+                AutomationError::new(FailureClass::Retryable, format!("点击注册按钮失败：{err}"))
+            })
+        })?;
+
+        let exists_deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < exists_deadline {
+            let exists = self.with_session(&session.session_id, |sess| {
+                Ok(js_flag(&sess.page, site::EMAIL_EXISTS_SCRIPT))
+            })?;
+            if exists {
+                return Ok(RegistrationOutcome {
+                    already_exists: true,
+                    awaiting_verification: false,
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+
+        let input_deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            spec.cancel.check()?;
+            let state = self.with_session(&session.session_id, |sess| {
+                if js_flag(&sess.page, site::EMAIL_EXISTS_SCRIPT) {
+                    return Ok(Err(true));
+                }
+                if let Some(validation) = first_page_element(&sess.page, REG_ERROR)
+                    .and_then(|el| el.text().ok())
+                    .map(|text| text.trim().to_string())
+                    .filter(|text| !text.is_empty())
+                {
+                    return Err(AutomationError::new(
+                        classify_form_error(&validation),
+                        format!("registration rejected: {validation}"),
+                    ));
+                }
+                let ready = first_page_element(&sess.page, VERIFY_INPUT)
+                    .and_then(|input| input.is_displayed().ok())
+                    .unwrap_or(false);
+                Ok(Ok(ready))
+            })?;
+            match state {
+                Err(true) => {
+                    return Ok(RegistrationOutcome {
+                        already_exists: true,
+                        awaiting_verification: false,
+                    });
+                }
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(_) => {}
+            }
+            if Instant::now() >= input_deadline {
+                return Err(AutomationError::new(
+                    FailureClass::Retryable,
+                    "verification input did not appear",
+                ));
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+
+        if !spec.needs_mail_code {
+            events.log(
+                "警告",
+                "站点要求邮箱验证码，但本次注册未启用邮箱验证，注册无法自动完成",
+            );
+            return Ok(RegistrationOutcome {
+                already_exists: false,
+                awaiting_verification: true,
+            });
+        }
+
+        if let (Some(provider), Some(cursor)) = (&spec.mail_provider, &mail_cursor) {
+            events.stage("自动提取验证码");
+            match provider.await_code(cursor, &spec.cancel).await {
+                Ok(res) => {
+                    return self
+                        .submit_verification_code(session, &res.code, events, &spec.cancel)
+                        .await;
+                }
+                Err(crate::mail_code::MailCodeError::Cancelled) => {
+                    return Err(spec.cancel.check().unwrap_err());
+                }
+                Err(err) => {
+                    events.log(
+                        "警告",
+                        format!("自动提取邮件验证码失败（{err}），转为待人工确认"),
+                    );
+                    return Ok(RegistrationOutcome {
+                        already_exists: false,
+                        awaiting_verification: true,
+                    });
+                }
+            }
+        }
+
+        Ok(RegistrationOutcome {
+            already_exists: false,
+            awaiting_verification: true,
+        })
+    }
+}
+
+struct SearchHit {
+    card: SiteCard,
+    candidate_count: usize,
+    basis: crate::matching::MatchBasis,
+}
+
+fn js_flag_session(engine: &RealAutomationEngine, session: &SessionHandle, script: &str) -> bool {
+    engine
+        .with_session(&session.session_id, |sess| Ok(js_flag(&sess.page, script)))
+        .unwrap_or(false)
 }
 
 impl Default for RealAutomationEngine {
@@ -192,61 +642,6 @@ fn css(selectors: &str) -> String {
     format!("css:{selectors}")
 }
 
-/// 最小 percent-encoding：书名里的空格、中文与标点必须编码后才能进 URL。
-///
-/// 只保留 RFC 3986 的 unreserved 集合。规则短到可以一眼看完，
-/// 也不必为此多引一个依赖。
-fn urlencoding_simple(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len() * 3);
-    for byte in raw.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char);
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
-}
-
-/// 按**优先顺序**逐个试选择器，取第一个非空文本。
-///
-/// 不把逗号列表整体丢给一次查询：那样返回的是文档顺序里最靠前的元素，
-/// 而不是选择器列表里最可信的那个。`.book-title` 必须优先于兜底的 `h3`/`a`，
-/// 否则卡片上的一段促销文字就可能被当成书名，进而让匹配层拿错数据去判断。
-fn first_text(card: &rust_drission::Element, selectors: &str) -> String {
-    for selector in selectors.split(',') {
-        let selector = selector.trim();
-        if selector.is_empty() {
-            continue;
-        }
-        if let Ok(Some(text)) = card.element_text(&css(selector)) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
-    }
-    String::new()
-}
-
-/// 在卡片内按优先顺序找第一个存在的元素。
-fn first_child_element(
-    card: &rust_drission::Element,
-    selectors: &str,
-) -> Option<rust_drission::Element> {
-    for selector in selectors.split(',') {
-        let selector = selector.trim();
-        if selector.is_empty() {
-            continue;
-        }
-        if let Ok(Some(element)) = card.element(&css(selector)) {
-            return Some(element);
-        }
-    }
-    None
-}
-
 /// 在整页内按优先顺序找第一个存在的元素。
 fn first_page_element(page: &ChromiumPage, selectors: &str) -> Option<rust_drission::Element> {
     for selector in selectors.split(',') {
@@ -259,39 +654,6 @@ fn first_page_element(page: &ChromiumPage, selectors: &str) -> Option<rust_driss
         }
     }
     None
-}
-
-/// 把搜索结果页解析成结构化候选（第 8.3 节的输入）。
-///
-/// 读不出书名的卡片直接丢弃：没有书名就无法参与任何一层匹配，
-/// 留着只会把候选数量撑大，让「候选唯一」这个判断失真。
-fn collect_candidates(page: &ChromiumPage) -> Vec<CandidateBook> {
-    let cards = match page.eles(&css(CARD_SELECTORS)) {
-        Ok(cards) => cards,
-        Err(_) => return Vec::new(),
-    };
-    let mut candidates = Vec::new();
-    for (index, card) in cards.iter().enumerate() {
-        let title = first_text(card, TITLE_SELECTORS);
-        if title.is_empty() {
-            continue;
-        }
-        let mut isbn = first_text(card, ISBN_SELECTORS);
-        if isbn.is_empty() {
-            // 有些站点只把 ISBN 放在卡片属性里
-            if let Ok(value) = card.attr("data-isbn") {
-                isbn = value.trim().to_string();
-            }
-        }
-        candidates.push(CandidateBook {
-            index,
-            title,
-            author: first_text(card, AUTHOR_SELECTORS),
-            publisher: first_text(card, PUBLISHER_SELECTORS),
-            isbn,
-        });
-    }
-    candidates
 }
 
 /// 把浏览器的下载目录切到 `dir`（第 8.2 节）。
@@ -331,9 +693,11 @@ fn set_download_behavior(page: &ChromiumPage, dir: &str) -> Result<(), Automatio
 }
 
 /// 浏览器写到一半的临时文件后缀。
+#[cfg(test)]
 const PARTIAL_SUFFIXES: [&str; 3] = [".crdownload", ".tmp", ".part"];
 
 /// 一次任务目录扫描的结果。
+#[cfg(test)]
 #[derive(Debug)]
 struct DirSnapshot {
     /// 目录内最大的非临时文件。
@@ -349,6 +713,7 @@ struct DirSnapshot {
 /// 刻意**不按扩展名筛选**候选文件：站点把 epub 当 pdf 发下来时，
 /// 这里挑出那个文件、交给 [`crate::verify`] 报出「扩展名不符」，
 /// 比在这里视而不见然后一路等到停滞超时要诚实得多。
+#[cfg(test)]
 async fn scan_task_dir(dir: &Path) -> Result<DirSnapshot, AutomationError> {
     let mut entries = tokio::fs::read_dir(dir).await.map_err(|err| {
         AutomationError::new(
@@ -375,8 +740,14 @@ async fn scan_task_dir(dir: &Path) -> Result<DirSnapshot, AutomationError> {
         if !metadata.is_file() {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        if PARTIAL_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
+        if crate::verify::is_companion_file(&entry.path()) {
+            continue;
+        }
+        let lower = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if PARTIAL_SUFFIXES
+            .iter()
+            .any(|suffix| lower.ends_with(suffix))
+        {
             snapshot.partial_present = true;
             snapshot.partial_bytes = snapshot.partial_bytes.max(metadata.len());
             continue;
@@ -420,6 +791,7 @@ async fn discard_dir_files(dir: &Path) -> u32 {
 ///
 /// 取消或停滞时删掉目录里的文件：留着半个文件，下一次尝试扫描到它就会
 /// 把它当成本次下载的产物。
+#[cfg(test)]
 async fn wait_for_download(
     spec: &DownloadSpec,
     events: &EventSink,
@@ -474,46 +846,92 @@ async fn wait_for_download(
     }
 }
 
-/// 登录/注册表单的候选选择器。
-const EMAIL_SELECTORS: &str =
-    "input[name='email'], input[type='email'], #email, input[name='username']";
-const PASSWORD_SELECTORS: &str = "input[name='password'], input[type='password'], #password";
-const NICKNAME_SELECTORS: &str = "input[name='nickname'], #nickname, input[name='name']";
-const SUBMIT_SELECTORS: &str =
-    "button[type='submit'], input[type='submit'], .login-btn, .btn-login, .register-btn";
-/// 站点报错提示。
-const FORM_ERROR_SELECTORS: &str = ".alert-danger, .error-msg, .login-error, .form-error";
-/// 已登录标识：读到其中任意一个才算登录成功。
-const LOGGED_IN_SELECTORS: &str = ".caret-scroll__title, .quota-badge, .user-quota, .user-info, \
-     .user-nickname, a[href*='logout'], .logout";
-/// 邮箱验证码输入框：出现说明注册还没走完。
-const MAIL_CODE_SELECTORS: &str =
-    "input[name='code'], input[name='verify_code'], .mail-code, .verify-code";
-
 /// 读取站点配额指示器，形如 `7/10`（第 10.3 节）。
 ///
 /// 读不到就返回 `None`。**不得**把「读不到」当成「额度耗尽」：
 /// 那会因为一次页面改版就把一批正常账号停用掉。
 fn read_quota_from_page(page: &ChromiumPage) -> Option<(u32, u32)> {
-    let element = first_page_element(page, QUOTA_SELECTORS)?;
-    let text = element.text().ok()?;
-    let pattern = regex::Regex::new(r"(\d+)\s*/\s*(\d+)").ok()?;
-    let captures = pattern.captures(&text)?;
-    let used = captures.get(1)?.as_str().parse::<u32>().ok()?;
-    let total = captures.get(2)?.as_str().parse::<u32>().ok()?;
-    Some((used, total))
+    let value = page.run_js(site::QUOTA_SCRIPT).ok()?;
+    site::parse_quota(&value)
 }
 
-/// 读取表单错误提示文本。
-fn form_error_text(page: &ChromiumPage) -> Option<String> {
-    let element = first_page_element(page, FORM_ERROR_SELECTORS)?;
-    let text = element.text().ok()?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+fn js_flag(page: &ChromiumPage, script: &str) -> bool {
+    page.run_js(script)
+        .ok()
+        .map(|value| site::js_bool(&value))
+        .unwrap_or(false)
+}
+
+fn page_title(page: &ChromiumPage) -> String {
+    page.tab().title().unwrap_or_default()
+}
+
+fn collect_site_cards(page: &ChromiumPage) -> Vec<SiteCard> {
+    match page.run_js(site::CARD_SCRAPE_SCRIPT) {
+        Ok(value) => site::parse_cards(&value),
+        Err(_) => Vec::new(),
     }
+}
+
+fn site_unavailable_reason(page: &ChromiumPage) -> Option<String> {
+    let current_url = page.tab().url().unwrap_or_default();
+    if current_url.starts_with("chrome-error://") {
+        return Some(format!("Chrome 网络错误页: {current_url}"));
+    }
+    let text = page
+        .run_js(site::BODY_TEXT_SCRIPT)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    site::site_unavailable_text(&text).then(|| {
+        let summary = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("网络错误页");
+        format!("{} ({current_url})", summary.trim())
+    })
+}
+
+fn challenge_token_value(page: &ChromiumPage, root_url: &str) -> Option<String> {
+    let urls = vec![root_url.to_string()];
+    let cookies = page.cookies(Some(&urls)).ok()?;
+    cookies
+        .iter()
+        .find(|cookie| cookie.name == site::CHALLENGE_COOKIE)
+        .map(|cookie| cookie.value.clone())
+}
+
+fn close_bonus_popup(page: &ChromiumPage) {
+    if let Ok(Some(button)) = page.ele(&css(BONUS_POPUP)) {
+        let _ = button.click();
+    }
+}
+
+fn fill_verification_digits(page: &ChromiumPage, code: &str) -> Result<(), AutomationError> {
+    let inputs = page.eles(&css(VERIFY_FORM_INPUTS)).map_err(|err| {
+        AutomationError::new(
+            FailureClass::Retryable,
+            format!("读取验证码输入框失败：{err}"),
+        )
+    })?;
+    if inputs.len() < code.chars().count() {
+        // 站点偶发单框：退回整串填写
+        return fill_field(page, VERIFY_INPUT, code);
+    }
+    for (input, digit) in inputs.into_iter().zip(code.chars()) {
+        input.input(&digit.to_string()).map_err(|err| {
+            AutomationError::new(FailureClass::Retryable, format!("填写验证码失败：{err}"))
+        })?;
+    }
+    if let Some(button) = first_page_element(page, VERIFY_SUBMIT) {
+        let _ = button.click();
+    }
+    Ok(())
 }
 
 /// 判断表单错误属于「凭据不对」还是「暂时性问题」。
@@ -559,70 +977,125 @@ fn fill_field(page: &ChromiumPage, selectors: &str, value: &str) -> Result<(), A
     })
 }
 
-/// 登录站点，并**确认**登录成功（第 8.1 节）。
-///
-/// 只检查「有没有错误提示」是不够的：站点可能既不报错也没登录成功（验证码、
-/// 风控跳转、表单静默失败）。那种情况下继续搜索会得到一个空结果页，
-/// 于是任务被记成「站点未收录」——一个错误的终态。
-/// 所以确认不到已登录标识时返回可重试，而不是继续往下走。
+/// 登录站点：首页弹窗 `#loginForm`，瞬时拒绝最多 3 次并刷新挑战 token。
 async fn login_site(
     page: &ChromiumPage,
     site_base: &str,
     account: &AccountCredential,
 ) -> Result<(), AutomationError> {
-    page.get(&format!("{site_base}/login")).map_err(|err| {
+    const MAX_LOGIN_ATTEMPTS: usize = 3;
+    let mut last_auth: Option<AutomationError> = None;
+    for attempt in 1..=MAX_LOGIN_ATTEMPTS {
+        match login_attempt(page, site_base, account).await {
+            Ok(()) => return Ok(()),
+            Err(err) if err.class == FailureClass::AuthFailed => {
+                last_auth = Some(err);
+                if attempt < MAX_LOGIN_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_auth.unwrap_or_else(|| {
+        AutomationError::new(FailureClass::AuthFailed, "login failed after retries")
+    }))
+}
+
+async fn login_attempt(
+    page: &ChromiumPage,
+    site_base: &str,
+    account: &AccountCredential,
+) -> Result<(), AutomationError> {
+    let root = site::site_root_url(site_base);
+    page.get(&root).map_err(|err| {
         AutomationError::new(
             FailureClass::SiteUnavailable,
-            format!("打开登录页失败：{err}"),
+            format!("打开首页失败：{err}"),
         )
     })?;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
-    // Profile 里可能还留着有效会话，此时登录页会直接跳回站内
+    if js_flag(page, site::CONNECTION_PROBLEM_SCRIPT) {
+        return Err(AutomationError::new(
+            FailureClass::SiteUnavailable,
+            format!("站点返回 Connection Problem 页面: {root}"),
+        ));
+    }
+    if let Some(reason) = site_unavailable_reason(page) {
+        return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
+    }
+
+    // 已登录：没有登录入口
+    if first_page_element(page, LOGIN_LINK).is_none()
+        && first_page_element(page, LOGIN_FORM).is_none()
+    {
+        close_bonus_popup(page);
+        return Ok(());
+    }
+
     let deadline = Instant::now() + LOGIN_TIMEOUT;
     loop {
-        if first_page_element(page, LOGGED_IN_SELECTORS).is_some() {
-            return Ok(());
+        if let Ok(Some(link)) = page.ele(&css(LOGIN_LINK)) {
+            let _ = link.click();
+            break;
         }
-        if first_page_element(page, EMAIL_SELECTORS).is_some() {
+        if first_page_element(page, LOGIN_FORM).is_some() {
             break;
         }
         if Instant::now() >= deadline {
             return Err(AutomationError::new(
                 FailureClass::SiteUnavailable,
-                "登录页既没有已登录标识也没有邮箱输入框，站点结构可能已变化",
+                "首页未出现登录入口，站点结构可能已变化",
             ));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 
-    fill_field(page, EMAIL_SELECTORS, &account.email)?;
-    fill_field(page, PASSWORD_SELECTORS, &account.password)?;
-    let submit = first_page_element(page, SUBMIT_SELECTORS).ok_or_else(|| {
+    let form_deadline = Instant::now() + LOGIN_TIMEOUT;
+    loop {
+        if first_page_element(page, LOGIN_FORM).is_some() {
+            break;
+        }
+        if Instant::now() >= form_deadline {
+            return Err(AutomationError::new(
+                FailureClass::SiteUnavailable,
+                "登录弹窗 #loginForm 未出现",
+            ));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    fill_field(page, LOGIN_EMAIL, &account.email)?;
+    fill_field(page, LOGIN_PASSWORD, &account.password)?;
+    let submit = first_page_element(page, LOGIN_SUBMIT).ok_or_else(|| {
         AutomationError::new(FailureClass::SiteUnavailable, "登录页未找到提交按钮")
     })?;
     submit.click().map_err(|err| {
         AutomationError::new(FailureClass::Retryable, format!("点击登录按钮失败：{err}"))
     })?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
-    let deadline = Instant::now() + LOGIN_TIMEOUT;
-    loop {
-        if let Some(message) = form_error_text(page) {
-            return Err(AutomationError::new(
-                classify_form_error(&message),
-                format!("站点拒绝登录：{message}"),
-            ));
-        }
-        if first_page_element(page, LOGGED_IN_SELECTORS).is_some() {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(AutomationError::new(
-                FailureClass::Retryable,
-                "登录状态无法确认：既没有错误提示，也没有出现已登录标识",
-            ));
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
+    if let Some(message) = first_page_element(page, LOGIN_ERROR)
+        .and_then(|el| el.text().ok())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+    {
+        return Err(AutomationError::new(
+            FailureClass::AuthFailed,
+            format!("login validation error: {message}"),
+        ));
     }
+    if let Some(form) = first_page_element(page, LOGIN_FORM) {
+        if form.is_displayed().unwrap_or(false) {
+            return Err(AutomationError::new(
+                FailureClass::AuthFailed,
+                "login form is still visible after submit",
+            ));
+        }
+    }
+    close_bonus_popup(page);
+    Ok(())
 }
 
 #[async_trait]
@@ -682,14 +1155,18 @@ impl AutomationEngine for RealAutomationEngine {
             config = config.set_argument(arg, None::<String>);
         }
         // 启动是一段有界的同步过程；之后所有等待都改用异步，不再阻塞运行时线程。
-        let page = ChromiumPage::new(config).map_err(|err| {
+        let launched = ChromiumPage::new(config).map_err(|err| {
             AutomationError::new(FailureClass::Retryable, format!("启动浏览器失败：{err}"))
         })?;
+        let owned = OwnedPage::new(launched);
 
         if spec.auto_login {
-            login_site(&page, &site_base, &spec.account).await?;
+            if let Err(err) = login_site(owned.page(), &site_base, &spec.account).await {
+                return Err(err);
+            }
         }
 
+        let page = owned.into_inner();
         let mut guard = match self.sessions.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -832,192 +1309,140 @@ impl AutomationEngine for RealAutomationEngine {
             );
         }
 
-        events.stage("搜索中");
-        // 搜索一律按书名：ISBN 查询在实战中经常搜不到（`BookTarget::title` 的注释）
-        let search_url = format!("{site_base}/s/{}", urlencoding_simple(&spec.book.title));
-        self.with_session(&session.session_id, |sess| {
-            sess.page.get(&search_url).map_err(|err| {
-                AutomationError::new(
-                    FailureClass::SiteUnavailable,
-                    format!("打开搜索页失败：{err}"),
-                )
-            })
-        })?;
-
-        // 等结果渲染。每一轮都先查一次取消：等待期间收到取消要立刻停，
-        // 而不是等这一觉睡满（第 10.1 节）。
-        let deadline = Instant::now() + RESULTS_TIMEOUT;
-        let candidates = loop {
-            cancel.check()?;
-            let found = self.with_session(&session.session_id, |sess| {
-                Ok(collect_candidates(&sess.page))
-            })?;
-            if !found.is_empty() {
-                break found;
-            }
-            if Instant::now() >= deadline {
-                // 超时后仍然空：交给匹配层判成「站点未收录」，措辞与其它路径保持一致
-                break Vec::new();
-            }
-            if !cancel.sleep(POLL_INTERVAL).await {
-                return Err(cancel.check().unwrap_err());
-            }
-        };
-
-        // 第 8.3 节：分层匹配。宁可报「待确认」，也不点第一个搜索结果。
-        let target = MatchTarget {
-            title: &spec.book.title,
-            author: spec.book.author.as_deref(),
-            publisher: spec.book.publisher.as_deref(),
-            isbn: spec.book.isbn.as_deref(),
-        };
-        let (chosen, basis): (CandidateBook, MatchBasis) =
-            match select_candidate(&target, &candidates) {
-                MatchOutcome::Matched { candidate, basis } => (candidate, basis),
-                MatchOutcome::NeedsConfirm { reason } => {
-                    return Err(AutomationError::new(
-                        FailureClass::Uncertain,
-                        format!("候选无法确定唯一结果，转人工确认：{reason}"),
-                    ));
-                }
-                MatchOutcome::NotFound { reason } => {
-                    return Err(AutomationError::new(
-                        FailureClass::BookNotFound,
-                        format!("book not found: {reason}"),
-                    ));
-                }
-            };
-        let record = MatchRecord::new(spec.book.title.as_str(), candidates.len(), &chosen, basis);
-        events.log("信息", record.summary());
-
-        events.stage("下载中");
-        // 重新查一次卡片再点。DOM 可能在匹配期间刷新过：下标还在、书却换了的情况
-        // 必须被发现，否则「按 ISBN 匹配成功」的结论会被用到另一本书上。
-        let clicked_in_card = self.with_session(&session.session_id, |sess| {
-            let cards = sess.page.eles(&css(CARD_SELECTORS)).map_err(|err| {
-                AutomationError::new(
-                    FailureClass::Retryable,
-                    format!("重新读取搜索结果失败：{err}"),
-                )
-            })?;
-            let card = cards.get(chosen.index).ok_or_else(|| {
-                AutomationError::new(
-                    FailureClass::Retryable,
-                    "搜索结果在点击前发生变化，本次不下载",
-                )
-            })?;
-            let current = first_text(card, TITLE_SELECTORS);
-            if normalize_title(&current) != normalize_title(&chosen.title) {
-                return Err(AutomationError::new(
-                    FailureClass::Retryable,
-                    format!(
-                        "搜索结果在点击前发生变化（原《{}》，现《{current}》），拒绝盲点",
-                        chosen.title
-                    ),
-                ));
-            }
-            if let Some(button) = first_child_element(card, DOWNLOAD_SELECTORS) {
-                button.click().map_err(|err| {
-                    AutomationError::new(
-                        FailureClass::Retryable,
-                        format!("点击下载按钮失败：{err}"),
-                    )
-                })?;
-                return Ok(true);
-            }
-            // 卡片上没有下载控件：点开详情页再找
-            card.click().map_err(|err| {
-                AutomationError::new(
-                    FailureClass::Retryable,
-                    format!("打开图书详情页失败：{err}"),
-                )
-            })?;
-            Ok(false)
-        })?;
-
-        if !clicked_in_card {
-            let deadline = Instant::now() + RESULTS_TIMEOUT;
-            loop {
-                cancel.check()?;
-                let clicked = self.with_session(&session.session_id, |sess| {
-                    match first_page_element(&sess.page, DOWNLOAD_SELECTORS) {
-                        Some(button) => {
-                            button.click().map_err(|err| {
-                                AutomationError::new(
-                                    FailureClass::Retryable,
-                                    format!("点击下载按钮失败：{err}"),
-                                )
-                            })?;
-                            Ok(true)
-                        }
-                        None => Ok(false),
-                    }
-                })?;
-                if clicked {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    return Err(AutomationError::new(
-                        FailureClass::Uncertain,
-                        "详情页没有出现下载入口，结果待确认",
-                    ));
-                }
-                if !cancel.sleep(POLL_INTERVAL).await {
-                    return Err(cancel.check().unwrap_err());
-                }
-            }
-        }
-
-        let (staged_file, size_bytes) = wait_for_download(spec, events, cancel).await?;
-
-        events.stage("入库中");
-        // 「下完了」和「下对了」是两件事：扩展名、书名、大小、签名四项必须全过。
-        // 归因也要分开：内容不是一本书（错误页/过小）换一次会话很可能就好了，
-        // 而扩展名或书名对不上说明拿到的是**另一个东西**，重试只会得到同样的结果。
-        let evidence = verify_and_collect(
-            &staged_file,
-            &spec.book.title,
-            &format,
-            spec.minimum_size_bytes,
-        )
-        .map_err(|err| {
-            let class = match &err {
-                VerifyError::TooSmall { .. }
-                | VerifyError::BadSignature { .. }
-                | VerifyError::Unreadable { .. } => FailureClass::Retryable,
-                VerifyError::UnexpectedExtension { .. } | VerifyError::TitleMismatch { .. } => {
-                    FailureClass::Fatal
-                }
-            };
-            AutomationError::new(class, format!("下载文件未通过入库前校验：{err}"))
-        })?;
-        if evidence.size_bytes != size_bytes {
-            return Err(AutomationError::new(
-                FailureClass::Retryable,
-                format!(
-                    "文件在校验期间仍在变化（{size_bytes} → {} 字节），本次结果不采用",
-                    evidence.size_bytes
-                ),
-            ));
-        }
-
-        // 配额指示器读不到就是 `None`：绝不能因此把账号判成额度耗尽（第 10.3 节）
-        let quota_indicator = self
+        // 搜索前读配额：10/10 的账号不再浪费一次搜索。
+        let quota_before = self
             .with_session(&session.session_id, |sess| {
                 Ok(read_quota_from_page(&sess.page))
             })
             .unwrap_or(None);
-        if let Some((used, total)) = quota_indicator {
-            events.emit(crate::types::AutomationEvent::Quota { used, total });
+        if site::quota_is_exhausted(quota_before) {
+            return Err(AutomationError::new(
+                FailureClass::AccountQuotaExhausted,
+                "daily download quota exhausted",
+            ));
         }
 
-        Ok(DownloadOutcome {
-            staged_file,
-            size_bytes: evidence.size_bytes,
-            quota_indicator,
-            evidence: Some(evidence),
-            match_record: Some(record),
-        })
+        events.stage("搜索中");
+        let search_url = site::search_url(&site_base, &spec.book.title, &format);
+        self.navigate(&session.session_id, &search_url, cancel)
+            .await?;
+
+        let chosen = self
+            .wait_for_search_hit(session, spec, events, cancel)
+            .await?;
+        let record = MatchRecord::new(
+            spec.book.title.as_str(),
+            chosen.candidate_count,
+            &chosen.card.to_candidate(),
+            chosen.basis,
+        );
+        events.log("信息", record.summary());
+
+        events.stage("下载中");
+        let download_url =
+            site::absolute_download_url(&site_base, &chosen.card.download).map_err(|err| {
+                AutomationError::new(
+                    FailureClass::Retryable,
+                    format!("invalid download URL {}: {err}", chosen.card.download),
+                )
+            })?;
+
+        let mut last_http_err: Option<AutomationError> = None;
+        for token_attempt in 0..=1 {
+            cancel.check()?;
+            let (proxy_url, user_agent, cookies, referer) =
+                self.prepare_http_download(session, &site_base, token_attempt > 0, events)?;
+            let proxy_ref = proxy_url.as_deref();
+            let request = HttpDownloadRequest {
+                proxy_url: proxy_ref,
+                user_agent: &user_agent,
+                cookies: &cookies,
+                referer: &referer,
+                url: download_url.clone(),
+                staging_dir: &spec.staging_dir,
+                title: &spec.book.title,
+                task_id: &spec.task_id,
+                timeout: spec.stall_timeout,
+            };
+            let http_result = http_download::download_file(request, events, cancel);
+            match http_result {
+                Ok(HttpDownloadOutcome::File(staged_file)) => {
+                    events.stage("入库中");
+                    let evidence = verify_and_collect(
+                        &staged_file,
+                        &spec.book.title,
+                        &format,
+                        spec.minimum_size_bytes,
+                    )
+                    .map_err(|err| {
+                        let class = match &err {
+                            VerifyError::TooSmall { .. }
+                            | VerifyError::BadSignature { .. }
+                            | VerifyError::Unreadable { .. } => FailureClass::Retryable,
+                            VerifyError::UnexpectedExtension { .. }
+                            | VerifyError::TitleMismatch { .. } => FailureClass::Fatal,
+                        };
+                        AutomationError::new(class, format!("下载文件未通过入库前校验：{err}"))
+                    })?;
+                    let quota_indicator = self
+                        .with_session(&session.session_id, |sess| {
+                            Ok(read_quota_from_page(&sess.page))
+                        })
+                        .unwrap_or(None);
+                    if let Some((used, total)) = quota_indicator {
+                        events.emit(crate::types::AutomationEvent::Quota { used, total });
+                    }
+                    return Ok(DownloadOutcome {
+                        staged_file,
+                        size_bytes: evidence.size_bytes,
+                        quota_indicator,
+                        evidence: Some(evidence),
+                        match_record: Some(record),
+                    });
+                }
+                Ok(HttpDownloadOutcome::Html { snippet, .. }) => {
+                    if http_download::html_looks_like_quota(&snippet)
+                        || js_flag_session(self, session, site::QUOTA_LIMIT_PAGE_SCRIPT)
+                    {
+                        let quota = self
+                            .with_session(&session.session_id, |sess| {
+                                Ok(read_quota_from_page(&sess.page))
+                            })
+                            .unwrap_or(None);
+                        return Err(if site::quota_is_exhausted(quota) {
+                            AutomationError::new(
+                                FailureClass::AccountQuotaExhausted,
+                                "daily download quota exhausted",
+                            )
+                        } else {
+                            AutomationError::new(
+                                FailureClass::SiteRateLimited,
+                                "site shows quota page but account local usage is low",
+                            )
+                        });
+                    }
+                    last_http_err = Some(AutomationError::new(
+                        FailureClass::Retryable,
+                        "download endpoint returned HTML instead of a book file",
+                    ));
+                }
+                Err(err) => {
+                    let refresh_token = err.reason.contains("HTTP 503")
+                        || err.reason.contains("HTTP 429")
+                        || err.class == FailureClass::SiteUnavailable;
+                    last_http_err = Some(err);
+                    if refresh_token && token_attempt == 0 {
+                        events.log("警告", "下载被站点挑战拦截，正在刷新 c_token 后重试");
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+
+        Err(last_http_err.unwrap_or_else(|| {
+            AutomationError::new(FailureClass::Retryable, "HTTP 下载未得到有效文件")
+        }))
     }
 
     async fn register_account(
@@ -1026,206 +1451,87 @@ impl AutomationEngine for RealAutomationEngine {
         spec: &RegistrationSpec,
         events: &EventSink,
     ) -> Result<RegistrationOutcome, AutomationError> {
-        events.stage("注册中");
-        let site_base =
-            self.with_session(&session.session_id, |sess| Ok(sess.site_base.clone()))?;
-        let register_url = format!("{site_base}/register");
-        self.with_session(&session.session_id, |sess| {
-            sess.page.get(&register_url).map_err(|err| {
-                AutomationError::new(
-                    FailureClass::SiteUnavailable,
-                    format!("打开注册页失败：{err}"),
-                )
-            })
-        })?;
-
-        let deadline = Instant::now() + LOGIN_TIMEOUT;
-        loop {
-            let ready = self.with_session(&session.session_id, |sess| {
-                Ok(first_page_element(&sess.page, EMAIL_SELECTORS).is_some())
-            })?;
-            if ready {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err(AutomationError::new(
-                    FailureClass::SiteUnavailable,
-                    "注册页未出现邮箱输入框，站点结构可能已变化",
-                ));
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
+        if !site::password_length_ok(&spec.account.password) {
+            return Err(AutomationError::new(
+                FailureClass::Fatal,
+                format!(
+                    "password length {} out of range 9..=32, registration aborted",
+                    spec.account.password.chars().count()
+                ),
+            ));
         }
-
-        // 提交前准备邮件提取游标（记录开始时间戳）
-        let mail_cursor = if let Some(provider) = &spec.mail_provider {
-            // 人工 Provider 的有效期与 Worker 创建的人工事项保持一致（10 分钟）。
-            // 自动 Provider 会在自身更短的配置时限内结束，随后由 Router 另开完整
-            // 的人工输入窗口，不会挤占用户处理验证码的时间。
-            match provider
-                .prepare(&spec.account.email, Duration::from_secs(10 * 60))
-                .await
-            {
-                Ok(cursor) => Some(cursor),
+        let mut last_error: Option<AutomationError> = None;
+        for attempt in 1..=3 {
+            match self.register_once(session, spec, events).await {
+                Ok(outcome) => return Ok(outcome),
                 Err(err) => {
-                    events.log(
-                        "警告",
-                        format!("邮件验证码 Provider 准备失败（{err}），将尝试人工/降级路径"),
-                    );
-                    None
+                    let retryable = site::is_retryable_registration_error(&err.reason);
+                    last_error = Some(err);
+                    if !retryable {
+                        break;
+                    }
+                    events.log("警告", format!("注册第 {attempt} 次失败，正在重试"));
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
             }
-        } else {
-            None
-        };
+        }
+        Err(last_error.unwrap_or_else(|| {
+            AutomationError::new(FailureClass::Retryable, "registration failed")
+        }))
+    }
 
+    async fn submit_verification_code(
+        &self,
+        session: &SessionHandle,
+        code: &str,
+        events: &EventSink,
+        cancel: &CancelToken,
+    ) -> Result<RegistrationOutcome, AutomationError> {
+        events.stage("提交验证码中");
         self.with_session(&session.session_id, |sess| {
-            if first_page_element(&sess.page, NICKNAME_SELECTORS).is_some() {
-                fill_field(&sess.page, NICKNAME_SELECTORS, &spec.account.nickname)?;
-            }
-            fill_field(&sess.page, EMAIL_SELECTORS, &spec.account.email)?;
-            fill_field(&sess.page, PASSWORD_SELECTORS, &spec.account.password)?;
-            let submit = first_page_element(&sess.page, SUBMIT_SELECTORS).ok_or_else(|| {
-                AutomationError::new(FailureClass::SiteUnavailable, "注册页未找到提交按钮")
-            })?;
-            submit.click().map_err(|err| {
-                AutomationError::new(FailureClass::Retryable, format!("点击注册按钮失败：{err}"))
-            })
+            fill_verification_digits(&sess.page, code)
         })?;
-
-        // 判定注册结果。三种结局都必须有明确证据，看不到证据就报「无法确认」，
-        // 不能默认成功——把没注册成功的账号记成可用，会在后面每次调度时都失败一次。
-        let deadline = Instant::now() + LOGIN_TIMEOUT;
-        loop {
-            let verdict = self.with_session(&session.session_id, |sess| {
-                if let Some(message) = form_error_text(&sess.page) {
-                    return Ok(Some(Err(message)));
-                }
-                if first_page_element(&sess.page, MAIL_CODE_SELECTORS).is_some() {
-                    return Ok(Some(Ok(true)));
-                }
-                if first_page_element(&sess.page, LOGGED_IN_SELECTORS).is_some() {
-                    return Ok(Some(Ok(false)));
-                }
-                Ok(None)
-            })?;
-            match verdict {
-                Some(Ok(awaiting_verification)) => {
-                    if awaiting_verification {
-                        if !spec.needs_mail_code {
-                            events.log(
-                                "警告",
-                                "站点要求邮箱验证码，但本次注册未启用邮箱验证，注册无法自动完成",
-                            );
-                            return Ok(RegistrationOutcome {
-                                already_exists: false,
-                                awaiting_verification: true,
-                            });
-                        }
-
-                        // 如果配置了 mail_provider 且拥有 cursor，尝试自动取码并输入
-                        if let (Some(provider), Some(cursor)) = (&spec.mail_provider, &mail_cursor)
-                        {
-                            events.stage("自动提取验证码");
-                            events.log(
-                                "信息",
-                                format!(
-                                    "检测到验证码输入框，通过 Provider [{}] 自动获取验证码...",
-                                    provider.name()
-                                ),
-                            );
-                            match provider.await_code(cursor, &spec.cancel).await {
-                                Ok(res) => {
-                                    events.stage("提交验证码中");
-                                    events.log("信息", "已成功获取验证码，正在输入并提交验证...");
-                                    self.with_session(&session.session_id, |sess| {
-                                        fill_field(&sess.page, MAIL_CODE_SELECTORS, &res.code)?;
-                                        if let Some(btn) =
-                                            first_page_element(&sess.page, SUBMIT_SELECTORS)
-                                        {
-                                            let _ = btn.click();
-                                        }
-                                        Ok(())
-                                    })?;
-
-                                    // 等待登录成功或错误
-                                    let verify_deadline = Instant::now() + Duration::from_secs(15);
-                                    while Instant::now() < verify_deadline {
-                                        let logged_in =
-                                            self.with_session(&session.session_id, |sess| {
-                                                if let Some(message) = form_error_text(&sess.page) {
-                                                    return Err(AutomationError::new(
-                                                        classify_form_error(&message),
-                                                        format!("验证码提交后站点拒绝：{message}"),
-                                                    ));
-                                                }
-                                                Ok(first_page_element(
-                                                    &sess.page,
-                                                    LOGGED_IN_SELECTORS,
-                                                )
-                                                .is_some())
-                                            })?;
-                                        if logged_in {
-                                            events.stage("注册完成");
-                                            return Ok(RegistrationOutcome {
-                                                already_exists: false,
-                                                awaiting_verification: false,
-                                            });
-                                        }
-                                        tokio::time::sleep(POLL_INTERVAL).await;
-                                    }
-                                    return Err(AutomationError::new(
-                                        FailureClass::Retryable,
-                                        "验证码已提交，但站点未在时限内确认注册成功",
-                                    ));
-                                }
-                                Err(crate::mail_code::MailCodeError::ManualFallbackRequired) => {
-                                    events.log("警告", "自动提取邮件验证码已降级为人工处理");
-                                }
-                                Err(err) => {
-                                    events.log(
-                                        "警告",
-                                        format!("自动提取邮件验证码失败（{err}），转为待人工确认"),
-                                    );
-                                }
-                            }
-                        }
-
-                        return Ok(RegistrationOutcome {
-                            already_exists: false,
-                            awaiting_verification: true,
-                        });
-                    }
-
-                    return Ok(RegistrationOutcome {
-                        already_exists: false,
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            cancel.check()?;
+            let done = self.with_session(&session.session_id, |sess| {
+                if js_flag(&sess.page, site::EMAIL_EXISTS_SCRIPT) {
+                    return Ok(Some(RegistrationOutcome {
+                        already_exists: true,
                         awaiting_verification: false,
-                    });
+                    }));
                 }
-                Some(Err(message)) => {
-                    const EXISTS_MARKS: [&str; 4] = ["已存在", "已注册", "already", "exists"];
-                    let lowered = message.to_lowercase();
-                    if EXISTS_MARKS.iter().any(|mark| lowered.contains(mark)) {
-                        // 站点已有同邮箱账号：账号应被停用而不是反复重试
-                        return Ok(RegistrationOutcome {
-                            already_exists: true,
-                            awaiting_verification: false,
-                        });
-                    }
+                if let Some(message) = first_page_element(&sess.page, REG_ERROR)
+                    .and_then(|el| el.text().ok())
+                    .map(|text| text.trim().to_string())
+                    .filter(|text| !text.is_empty())
+                {
                     return Err(AutomationError::new(
                         classify_form_error(&message),
-                        format!("站点拒绝注册：{message}"),
+                        format!("验证码提交后站点拒绝：{message}"),
                     ));
                 }
-                None => {}
-            }
-            if Instant::now() >= deadline {
-                return Err(AutomationError::new(
-                    FailureClass::Retryable,
-                    "注册结果无法确认：既没有错误提示，也没有验证码输入框或已登录标识",
-                ));
+                let input_visible = first_page_element(&sess.page, VERIFY_INPUT)
+                    .and_then(|input| input.is_displayed().ok())
+                    .unwrap_or(false);
+                Ok(if input_visible {
+                    None
+                } else {
+                    Some(RegistrationOutcome {
+                        already_exists: false,
+                        awaiting_verification: false,
+                    })
+                })
+            })?;
+            if let Some(outcome) = done {
+                return Ok(outcome);
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
+        Err(AutomationError::new(
+            FailureClass::Retryable,
+            "verification code rejected, code input still visible",
+        ))
     }
 
     // <<<REAL_RS_IMPL>>>
@@ -1289,11 +1595,11 @@ mod tests {
     #[test]
     fn search_term_is_percent_encoded() {
         assert_eq!(
-            urlencoding_simple("算法导论"),
+            site::percent_encode("算法导论"),
             "%E7%AE%97%E6%B3%95%E5%AF%BC%E8%AE%BA"
         );
-        assert_eq!(urlencoding_simple("C++ Primer"), "C%2B%2B%20Primer");
-        assert_eq!(urlencoding_simple("a-b_c.d~e"), "a-b_c.d~e");
+        assert_eq!(site::percent_encode("C++ Primer"), "C%2B%2B%20Primer");
+        assert_eq!(site::percent_encode("a-b_c.d~e"), "a-b_c.d~e");
     }
 
     #[test]
@@ -1357,6 +1663,20 @@ mod tests {
         let (path, size) = snapshot.candidate.unwrap();
         assert_eq!(path.file_name().unwrap(), "算法导论.pdf");
         assert_eq!(size, 10);
+    }
+
+    #[tokio::test]
+    async fn appledouble_companion_files_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let task_dir = dir.path().join("task-任务1");
+        write_bytes(&task_dir.join("._算法导论.pdf"), 4096).await;
+        write_bytes(&task_dir.join(".DS_Store"), 100).await;
+        write_bytes(&task_dir.join("算法导论.pdf"), 2048).await;
+
+        let snapshot = scan_task_dir(&task_dir).await.unwrap();
+        let (path, size) = snapshot.candidate.unwrap();
+        assert_eq!(path.file_name().unwrap(), "算法导论.pdf");
+        assert_eq!(size, 2048);
     }
 
     #[tokio::test]

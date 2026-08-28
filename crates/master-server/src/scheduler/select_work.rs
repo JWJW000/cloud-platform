@@ -105,17 +105,13 @@ pub async fn trigger_scheduler_sweep(state: &AppState) -> AppResult<()> {
             continue;
         }
 
-        // 默认该节点支持所有任务类型
-        let default_supported = vec![
-            "图书下载".to_string(),
-            "账号注册".to_string(),
-            "NAS核验".to_string(),
-            "代理检测".to_string(),
-        ];
+        // 必须与 Worker 心跳里申报的能力一致。Worker 当前只实现「图书下载 / 账号注册」；
+        // 若在这里填「代理检测」，Master 会每轮给空闲槽开会话，Worker 立刻以
+        // 「不支持的任务类型」失败，看起来像浏览器在不停重启。
+        let supported = vec!["图书下载".to_string(), "账号注册".to_string()];
 
         for slot_index in idle_slots {
-            let _ =
-                handle_work_request(state, node_id, slot_index, &default_supported, &sender).await;
+            let _ = handle_work_request(state, node_id, slot_index, &supported, &sender).await;
         }
     }
     Ok(())
