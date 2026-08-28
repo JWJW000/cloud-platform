@@ -149,14 +149,19 @@ async fn select_best_task_type(
         .fetch_optional(&state.pool)
         .await?;
 
-        if let Some((count, max_priority)) = book_stat {
-            if count > 0 {
-                // 图书下载基础权重 + 批次优先级
-                candidates.push(QueueCandidate {
-                    task_type: TaskType::BookDownload,
-                    effective_priority: (max_priority as i64) * 10 + 5,
-                });
-            }
+        let (count, existing_priority) = book_stat.unwrap_or((0, 0));
+        let catalog_priority = if count == 0 {
+            super::catalog_bridge::next_target_priority(&state.pool).await?
+        } else {
+            None
+        };
+        if count > 0 || catalog_priority.is_some() {
+            // 尚未物化的总库目标也必须让统一调度选择图书下载；真正领取时再原子物化。
+            let max_priority = existing_priority.max(catalog_priority.unwrap_or(0));
+            candidates.push(QueueCandidate {
+                task_type: TaskType::BookDownload,
+                effective_priority: (max_priority as i64) * 10 + 5,
+            });
         }
     }
 

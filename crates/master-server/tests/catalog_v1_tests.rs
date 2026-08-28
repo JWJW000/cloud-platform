@@ -13,7 +13,9 @@ use master_server::catalog::search::{
     get_catalog_edition_detail, search_catalog, CatalogSearchParams,
 };
 use master_server::catalog::storage::{commit_library_file, CommitLibraryFileRequest};
-use master_server::scheduler::catalog_bridge::{materialize_next_target, success_in_tx};
+use master_server::scheduler::catalog_bridge::{
+    materialize_next_target, next_target_priority, success_in_tx,
+};
 use master_server::scheduler::FileEvidence;
 use master_server::store::catalog_v1::{get_catalog_stats, list_quarantined_records};
 use uuid::Uuid;
@@ -259,6 +261,12 @@ async fn 总库目标_可物化为现有worker任务并双向同步状态() {
     )
     .await
     .unwrap();
+
+    assert_eq!(
+        next_target_priority(&db.pool).await.unwrap(),
+        Some(0),
+        "未物化的总库目标必须对统一工作选择器可见"
+    );
 
     let mut tx = db.pool.begin().await.unwrap();
     assert!(materialize_next_target(&mut tx).await.unwrap());

@@ -4,7 +4,7 @@
 //! acquisition_targets 与旧下载状态机之间的映射、执行审计和馆藏证据闭环。
 
 use platform_domain::ExecutionResult;
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -24,6 +24,24 @@ struct CatalogCandidate {
     format: String,
     source_asset_id: Option<Uuid>,
     max_attempts: i32,
+}
+
+/// 返回下一条可物化总库目标的优先级，让统一工作选择器能看见尚未生成镜像任务的工作。
+///
+/// 这里只做有界的 `LIMIT 1` 探测；真正领取仍由 [`materialize_next_target`] 在事务内
+/// 使用 `FOR UPDATE SKIP LOCKED` 裁决，探测结果不授予任何租约。
+pub async fn next_target_priority(pool: &PgPool) -> AppResult<Option<i32>> {
+    let priority = sqlx::query_scalar(
+        "SELECT at.priority FROM acquisition_targets at \
+         WHERE at.status IN ('待下载', '排队中', '暂时失败') \
+           AND at.next_attempt_at <= now() \
+           AND (at.lease_expires_at IS NULL OR at.lease_expires_at < now()) \
+           AND NOT EXISTS (SELECT 1 FROM book_tasks bt WHERE bt.id = at.id) \
+         ORDER BY at.priority DESC, at.next_attempt_at, at.created_at LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(priority)
 }
 
 /// 按优先级物化至多一个总库目标，使现有领取事务可以直接分配给 Worker。
