@@ -184,6 +184,23 @@ impl RealAutomationEngine {
             if !cancel.sleep(Duration::from_millis(1500)).await {
                 return Err(cancel.check().unwrap_err());
             }
+
+            // 若处于反爬 JS 挑战首屏，等待计算完成
+            let challenge_deadline = Instant::now() + Duration::from_secs(12);
+            while Instant::now() < challenge_deadline {
+                let in_challenge = self
+                    .with_session(session_id, |sess| {
+                        Ok(js_flag(&sess.page, site::CHALLENGE_PAGE_SCRIPT))
+                    })
+                    .unwrap_or(false);
+                if !in_challenge {
+                    break;
+                }
+                if !cancel.sleep(Duration::from_millis(500)).await {
+                    return Err(cancel.check().unwrap_err());
+                }
+            }
+
             let blocked = self.with_session(session_id, |sess| {
                 if let Some(reason) = site_unavailable_reason(&sess.page) {
                     return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
@@ -1015,6 +1032,24 @@ async fn login_attempt(
         )
     })?;
     tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // 若处于反爬 JS 挑战首屏 (Checking your browser ...)，等待页面 JS 计算 c_token 并自动刷新
+    let challenge_deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < challenge_deadline {
+        if !js_flag(page, site::CHALLENGE_PAGE_SCRIPT) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // Connection Problem 拦截页等待最多 6 秒（可能由挑战刷新过渡）
+    let problem_deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < problem_deadline {
+        if !js_flag(page, site::CONNECTION_PROBLEM_SCRIPT) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
 
     if js_flag(page, site::CONNECTION_PROBLEM_SCRIPT) {
         return Err(AutomationError::new(
