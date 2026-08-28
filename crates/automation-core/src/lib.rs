@@ -10,6 +10,7 @@
 //! - [`RealAutomationEngine`]：接入 `rust_drission`，启动 Chromium 执行真实站点自动化流程。
 
 pub mod browser;
+pub mod browser_executor;
 pub mod cancel;
 pub mod engine;
 pub mod http_download;
@@ -21,6 +22,9 @@ pub mod site;
 pub mod types;
 pub mod verify;
 
+pub use browser_executor::{
+    BrowserCommand, BrowserExecutor, BrowserResult, MockBrowserExecutor, ThreadBrowserExecutor,
+};
 pub use cancel::CancelToken;
 pub use engine::{AutomationEngine, EventSink};
 pub use mail_code::{MailCodeCursor, MailCodeError, MailCodeProvider, MailCodeResult};

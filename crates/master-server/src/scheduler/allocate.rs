@@ -423,7 +423,10 @@ async fn claim_proxy(
         }
         _ => {
             "SELECT id, label, scheme, host, port, username, password_cipher FROM proxies \
-             WHERE status = $1 AND lease_session_id IS NULL \
+             WHERE status = $1 \
+               AND last_checked_at >= now() - interval '10 minutes' \
+               AND exit_ip IS NOT NULL \
+               AND lease_session_id IS NULL \
                AND (cooldown_until IS NULL OR cooldown_until <= now()) \
                AND $2 = $2 \
              ORDER BY failure_count, latency_ms ASC NULLS LAST \

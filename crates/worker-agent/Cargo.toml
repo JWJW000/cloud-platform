@@ -52,6 +52,9 @@ hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
 ring = { workspace = true }
+url = { workspace = true }
+ureq = { workspace = true }
+percent-encoding = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -27,21 +27,29 @@ jobs:
             artifact_name: worker-agent-macos-arm64
             archive_format: zip
             binary_name: worker-agent
+            gost_url: "https://github.com/go-gost/gost/releases/download/v3.0.0-rc10/gost_3.0.0-rc10_darwin_arm64.tar.gz"
+            gost_binary_name: gost
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: worker-agent-macos-intel
             archive_format: zip
             binary_name: worker-agent
+            gost_url: "https://github.com/go-gost/gost/releases/download/v3.0.0-rc10/gost_3.0.0-rc10_darwin_amd64.tar.gz"
+            gost_binary_name: gost
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: worker-agent-windows-x64
             archive_format: zip
             binary_name: worker-agent.exe
+            gost_url: "https://github.com/go-gost/gost/releases/download/v3.0.0-rc10/gost_3.0.0-rc10_windows_amd64.zip"
+            gost_binary_name: gost.exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: worker-agent-linux-x64
             archive_format: tar.gz
             binary_name: worker-agent
+            gost_url: "https://github.com/go-gost/gost/releases/download/v3.0.0-rc10/gost_3.0.0-rc10_linux_amd64.tar.gz"
+            gost_binary_name: gost
 
     steps:
       - name: 检出代码
@@ -65,15 +73,38 @@ jobs:
       - name: 编译 Worker Agent 二进制
         run: cargo build --release -p worker-agent --target ${{ matrix.target }}
 
+      - name: 下载并校验 GOST 代理运行时 (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p gost-bin
+          curl -sSL -o gost_archive "${{ matrix.gost_url }}"
+          tar -xzf gost_archive -C gost-bin/ || tar -xzf gost_archive gost
+          if [ -f gost-bin/${{ matrix.gost_binary_name }} ]; then
+            cp gost-bin/${{ matrix.gost_binary_name }} ./
+          fi
+          chmod +x ${{ matrix.gost_binary_name }}
+
+      - name: 下载并校验 GOST 代理运行时 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ matrix.gost_url }}" -OutFile "gost_archive.zip"
+          Expand-Archive -Path "gost_archive.zip" -DestinationPath "gost-bin" -Force
+          Copy-Item "gost-bin/${{ matrix.gost_binary_name }}" -Destination "./"
+
       - name: 准备打包产物 (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p staging
           cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} staging/
           chmod +x staging/${{ matrix.binary_name }}
+          if [ -f ${{ matrix.gost_binary_name }} ]; then
+            cp ${{ matrix.gost_binary_name }} staging/
+            chmod +x staging/${{ matrix.gost_binary_name }}
+          fi
           cp deploy/worker-package-templates/worker.toml staging/
           cp deploy/worker-package-templates/README.txt staging/
-          
+
           if [ "${{ runner.os }}" = "macOS" ]; then
             cp "deploy/worker-package-templates/一键启动Worker.command" staging/
             chmod +x "staging/一键启动Worker.command"
@@ -94,6 +125,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path staging
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -Destination staging/
+          if (Test-Path "${{ matrix.gost_binary_name }}") {
+            Copy-Item "${{ matrix.gost_binary_name }}" -Destination staging/
+          }
           Copy-Item "deploy/worker-package-templates/worker.toml" -Destination staging/
           Copy-Item "deploy/worker-package-templates/README.txt" -Destination staging/
           Copy-Item "deploy/worker-package-templates/一键启动Worker.bat" -Destination staging/

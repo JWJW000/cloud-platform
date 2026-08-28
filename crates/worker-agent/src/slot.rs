@@ -22,8 +22,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use automation_core::{
-    AccountCredential, AutomationEngine, AutomationEvent, BookTarget, CancelToken, DownloadSpec,
-    RealAutomationEngine, SessionHandle, SessionSpec, SimulatedEngine,
+    AccountCredential, AutomationEngine, AutomationEvent, BookTarget, BrowserCommand,
+    BrowserExecutor, BrowserResult, CancelToken, DownloadSpec, RealAutomationEngine, SessionHandle,
+    SessionSpec, SimulatedEngine, ThreadBrowserExecutor,
 };
 use platform_domain::{ExecutionResult, SessionStatus, SlotStatus};
 use platform_proto::v1 as pb;
@@ -32,7 +33,9 @@ use tokio::sync::{mpsc, RwLock};
 use crate::bus::{volatile_id, OutboundEventBus};
 use crate::dynamic::{ConfigState, DynamicConfig};
 use crate::outbox::{ExecutionState, LocalStore};
-use crate::proxy_forward::LocalProxyServer;
+use crate::proxy_runtime::{
+    FakeProxyRuntime, GostProxyRuntime, ProxyRuntime, ProxySessionHandle, SessionProxySpec,
+};
 use crate::storage;
 use platform_proto::v1::ExecutionStage;
 use uuid::Uuid;
@@ -262,6 +265,10 @@ impl SlotManager {
             let store = outbox.clone();
             let bus = bus.clone();
             tokio::spawn(async move {
+                // 槽位启动错峰（每槽间隔 2 秒），避免同时拉起多个浏览器导致系统资源瞬时争抢
+                if index > 0 {
+                    tokio::time::sleep(Duration::from_secs(index as u64 * 2)).await;
+                }
                 run_slot_worker(shared, rx, cfg, state, store, bus).await;
             });
 
@@ -749,10 +756,101 @@ async fn execute_session_loop(
             execute_registration_session(shared, session, rx, config, config_state, outbox, bus)
                 .await
         }
+        "代理检测" => {
+            execute_proxy_check_session(shared, session, rx, config, config_state, outbox, bus)
+                .await
+        }
         other => {
             anyhow::bail!("不支持的任务类型：{other}");
         }
     }
+}
+
+/// 代理检测会话生命周期（方案第 6.2 节）：启动本槽 GOST → 连通性/出口IP/目标站点探测 → 上报 ProxyCheckResult → 释放 GOST。
+async fn execute_proxy_check_session(
+    shared: &SlotShared,
+    session: pb::CreateSession,
+    _rx: &mut mpsc::Receiver<SlotCommand>,
+    config: &crate::config::WorkerConfig,
+    config_state: &Arc<ConfigState>,
+    _outbox: &LocalStore,
+    bus: &OutboundEventBus,
+) -> Result<u32> {
+    let session_id = session.session_id.clone();
+    let _snapshot_cfg = config_state.snapshot();
+
+    let local_port = if session.local_forward_port > 0 {
+        session.local_forward_port as u16
+    } else {
+        19001 + shared.index as u16
+    };
+
+    let proxy_cred = session
+        .proxy
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("代理检测会话缺少代理凭据"))?;
+    let proxy_id = proxy_cred.proxy_id.clone();
+
+    let proxy_runtime: Arc<dyn ProxyRuntime> = if config.execution.simulated {
+        Arc::new(FakeProxyRuntime::new())
+    } else {
+        Arc::new(GostProxyRuntime::new(config.storage.data_dir.clone()))
+    };
+
+    let proxy_spec = SessionProxySpec {
+        session_id: Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::new_v4()),
+        slot_index: shared.index,
+        local_port,
+        upstream: proxy_cred,
+    };
+
+    {
+        let mut snap = shared.snapshot.write().await;
+        snap.status = SlotStatus::Starting;
+        snap.detail = "正在启动 GOST 代理并检测连通性".to_string();
+    }
+
+    let check_res = proxy_runtime.check_proxy(proxy_spec).await;
+    let (reachable, latency_ms, exit_ip, status_str, detail) = match check_res {
+        Ok(verified) => {
+            let latency = verified.latency.as_millis() as u64;
+            let ip_str = verified
+                .exit_ip
+                .map(|ip| ip.to_string())
+                .unwrap_or_default();
+            (
+                true,
+                latency,
+                ip_str,
+                "可用".to_string(),
+                format!("代理检测成功，出口 IP: {:?}，延迟: {}ms", verified.exit_ip, latency),
+            )
+        }
+        Err(err) => (
+            false,
+            0u64,
+            String::new(),
+            "异常".to_string(),
+            format!("代理检测失败: {err}"),
+        ),
+    };
+
+    // 上报 ProxyCheckResult
+    bus.send_reliable(
+        &format!("evt-proxy-check-{session_id}"),
+        pb::worker_message::Payload::ProxyCheckResult(pb::ProxyCheckResult {
+            node_id: shared.node_id.clone(),
+            proxy_id,
+            reachable,
+            latency_ms,
+            exit_ip,
+            proxy_status: status_str,
+            detail,
+        }),
+    )
+    .await;
+
+    Ok(1)
 }
 
 /// 图书下载会话：建立会话（登录） → 连续领书 → 入库 → 收尾。
@@ -776,17 +874,38 @@ async fn execute_download_session(
     let local_port = if session.local_forward_port > 0 {
         session.local_forward_port as u16
     } else {
-        18000 + shared.index as u16
+        19001 + shared.index as u16
     };
 
-    // 1. 固定代理转发：整个会话共用一个出口 IP（第 6.1 节）
-    let mut proxy_server = match session.proxy {
-        Some(proxy) => Some(LocalProxyServer::spawn(local_port, proxy).await?),
+    // 1. 固定代理运行时：启动本槽 GOST 进程承担 HTTP/CONNECT 转发并实测出口 IP
+    let proxy_runtime: Arc<dyn ProxyRuntime> = if config.execution.simulated {
+        Arc::new(FakeProxyRuntime::new())
+    } else {
+        Arc::new(GostProxyRuntime::new(config.storage.data_dir.clone()))
+    };
+
+    let proxy_spec = match session.proxy.clone() {
+        Some(proxy) => Some(SessionProxySpec {
+            session_id: Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::new_v4()),
+            slot_index: shared.index,
+            local_port,
+            upstream: proxy,
+        }),
         None => None,
     };
-    let proxy_endpoint = proxy_server
-        .as_ref()
-        .map(|server| format!("127.0.0.1:{}", server.port()));
+
+    let mut proxy_handle: Option<ProxySessionHandle> = match proxy_spec {
+        Some(spec) => Some(proxy_runtime.start_verified(spec).await?),
+        None => None,
+    };
+
+    let (proxy_endpoint, verified_exit_ip) = match &proxy_handle {
+        Some(h) => (
+            Some(format!("127.0.0.1:{}", h.local_port())),
+            h.exit_ip().map(|ip| ip.to_string()).unwrap_or_default(),
+        ),
+        None => (None, String::new()),
+    };
 
     let account = session
         .account
@@ -822,26 +941,28 @@ async fn execute_download_session(
         ),
     };
 
-    // 2. 引擎：模拟引擎只用于验证平台自身，真实验收必须走真实引擎（第 18 节）
-    let engine: Arc<dyn AutomationEngine> = if config.execution.simulated {
+    // 2. 独立 OS 线程 BrowserExecutor：彻底解耦 Tokio 异步运行时与同步 Chromium 调用
+    let executor: Arc<dyn BrowserExecutor> = if config.execution.simulated {
         tracing::warn!(session_id = %session_id, "本会话使用模拟引擎，结果不可用于生产验收");
-        Arc::new(SimulatedEngine::with_defaults())
+        Arc::new(automation_core::MockBrowserExecutor::new())
     } else {
-        Arc::new(RealAutomationEngine::new())
+        Arc::new(ThreadBrowserExecutor::spawn(shared.index))
     };
 
-    let session_handle = engine
-        .open_session(&spec)
-        .await
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let max_duration = spec.max_duration;
+    let open_res = executor.execute(BrowserCommand::OpenSession { spec }).await?;
+    let session_handle = match open_res {
+        BrowserResult::SessionOpened(handle) => handle,
+        _ => anyhow::bail!("打开浏览器会话返回了非预期的结果类型"),
+    };
 
-    // 3. SessionReady：Master 收到才把会话置为运行中
+    // 3. SessionReady：Master 收到才把会话置为运行中，并上报实测出口 IP
     bus.send_volatile(
         volatile_id("ready"),
         pb::worker_message::Payload::SessionReady(pb::SessionReady {
             session_id: session_id.clone(),
             slot_index: shared.index,
-            exit_ip: String::new(),
+            exit_ip: verified_exit_ip,
         }),
     );
     {
@@ -850,7 +971,7 @@ async fn execute_download_session(
         snap.detail = "会话就绪，正在申请任务".to_string();
     }
 
-    let deadline = Instant::now() + spec.max_duration;
+    let deadline = Instant::now() + max_duration;
     let mut completed = 0u32;
     let max_downloads = session.max_downloads.max(1);
 
@@ -898,7 +1019,7 @@ async fn execute_download_session(
             shared,
             &assign,
             &session_handle,
-            engine.clone(),
+            executor.clone(),
             config,
             &snapshot_cfg,
             outbox,
@@ -911,10 +1032,10 @@ async fn execute_download_session(
         }
     }
 
-    // 5. 收尾：先停代理再关浏览器会与「浏览器还在用代理」竞争，顺序反过来
-    let _ = engine.close_session(&session_handle).await;
-    if let Some(mut server) = proxy_server.take() {
-        server.stop();
+    // 5. 收尾：先关闭浏览器会话，再终止 GOST 代理进程
+    let _ = executor.execute(BrowserCommand::CloseSession { handle: session_handle }).await;
+    if let Some(mut proxy) = proxy_handle.take() {
+        proxy.shutdown().await;
     }
 
     Ok(completed)
@@ -926,7 +1047,7 @@ async fn execute_assigned_task(
     shared: &SlotShared,
     assign: &pb::AssignTask,
     session_handle: &SessionHandle,
-    engine: Arc<dyn AutomationEngine>,
+    executor: Arc<dyn BrowserExecutor>,
     config: &crate::config::WorkerConfig,
     dynamic: &DynamicConfig,
     outbox: &LocalStore,
@@ -1061,21 +1182,25 @@ async fn execute_assigned_task(
         },
     ));
 
-    // 第 8.2 节：先把浏览器下载目录切到本任务独占目录，再点下载。
-    // 目录由 Worker 建：引擎只负责「切过去」，建目录失败必须在下载前暴露，
-    // 否则文件会落回公共 staging 根目录，多槽位并发时归属再也分不清。
+    // 第 8.2 节：创建任务独占目录后，通过 BrowserExecutor OS 线程串行执行下载
     let download_res = match tokio::fs::create_dir_all(&staging_dir).await {
-        Ok(()) => match engine
-            .set_task_download_dir(session_handle, &staging_dir)
-            .await
-        {
-            Ok(()) => {
-                engine
-                    .download_book(session_handle, &download_spec, &event_sink, &cancel)
-                    .await
-            }
-            Err(err) => Err(err),
-        },
+        Ok(()) => {
+            executor
+                .execute(BrowserCommand::DownloadBook {
+                    handle: session_handle.clone(),
+                    spec: download_spec,
+                    sink: event_sink.clone(),
+                    cancel: cancel.clone(),
+                })
+                .await
+                .and_then(|res| match res {
+                    BrowserResult::DownloadDone(outcome) => Ok(outcome),
+                    _ => Err(automation_core::AutomationError::new(
+                        platform_domain::FailureClass::Fatal,
+                        "下载任务返回了非预期的结果类型",
+                    )),
+                })
+        }
         Err(err) => Err(automation_core::AutomationError::new(
             platform_domain::FailureClass::Fatal,
             format!("创建任务暂存目录失败：{}：{err}", staging_dir.display()),
@@ -1088,15 +1213,8 @@ async fn execute_assigned_task(
     let outcome = match download_res {
         Ok(outcome) => outcome,
         Err(err) => {
-            // 失败时补读一次站点配额指示器：只有「已用 >= 总额」才允许把责任归到账号上，
-            // 读不到就报 0，Master 会因此把限流归给出口 IP 而不是账号（第 10.3 节）。
-            let quota = engine
-                .read_quota_indicator(session_handle)
-                .await
-                .ok()
-                .flatten();
             let (result, task_status) = classify(&err.class);
-            report_result(bus, assign, result, &task_status, &err.reason, quota, None).await;
+            report_result(bus, assign, result, &task_status, &err.reason, None, None).await;
             finish_task(shared, outbox, &execution_id, state.stage).await;
             return false;
         }
@@ -1277,16 +1395,37 @@ async fn execute_registration_session(
     let local_port = if session.local_forward_port > 0 {
         session.local_forward_port as u16
     } else {
-        18000 + shared.index as u16
+        19001 + shared.index as u16
     };
 
-    let proxy_server = match session.proxy {
-        Some(proxy) => Some(LocalProxyServer::spawn(local_port, proxy).await?),
+    let proxy_runtime: Arc<dyn ProxyRuntime> = if config.execution.simulated {
+        Arc::new(FakeProxyRuntime::new())
+    } else {
+        Arc::new(GostProxyRuntime::new(config.storage.data_dir.clone()))
+    };
+
+    let proxy_spec = match session.proxy.clone() {
+        Some(proxy) => Some(SessionProxySpec {
+            session_id: Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::new_v4()),
+            slot_index: shared.index,
+            local_port,
+            upstream: proxy,
+        }),
         None => None,
     };
-    let proxy_endpoint = proxy_server
-        .as_ref()
-        .map(|server| format!("127.0.0.1:{}", server.port()));
+
+    let mut proxy_handle: Option<ProxySessionHandle> = match proxy_spec {
+        Some(spec) => Some(proxy_runtime.start_verified(spec).await?),
+        None => None,
+    };
+
+    let (proxy_endpoint, verified_exit_ip) = match &proxy_handle {
+        Some(h) => (
+            Some(format!("127.0.0.1:{}", h.local_port())),
+            h.exit_ip().map(|ip| ip.to_string()).unwrap_or_default(),
+        ),
+        None => (None, String::new()),
+    };
 
     let account = session
         .account
@@ -1340,7 +1479,7 @@ async fn execute_registration_session(
         pb::worker_message::Payload::SessionReady(pb::SessionReady {
             session_id: session_id.clone(),
             slot_index: shared.index,
-            exit_ip: String::new(),
+            exit_ip: verified_exit_ip,
         }),
     );
 
@@ -1739,8 +1878,8 @@ async fn execute_registration_session(
     *lock(&shared.current) = None;
 
     let _ = engine.close_session(&session_handle).await;
-    if let Some(mut proxy) = proxy_server {
-        proxy.stop();
+    if let Some(mut proxy) = proxy_handle.take() {
+        proxy.shutdown().await;
     }
 
     let success =

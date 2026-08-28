@@ -280,7 +280,7 @@ pub async fn upsert_proxy(
     .bind(port)
     .bind(username)
     .bind(password_cipher)
-    .bind(ProxyStatus::Available.as_str())
+    .bind(ProxyStatus::Error.as_str())
     .fetch_one(executor)
     .await?;
     Ok(proxy)
@@ -522,10 +522,11 @@ pub async fn sync_webshare_snapshot(
         if item.valid {
             // 带 external_id 的按身份 upsert（同 external_id 地址变化 → 更新，不生成重复记录）；
             // 无 external_id 的回退到 (provider, host, port, username) 兼容键。
+            // 新同步的代理初始状态设为「异常」，待 Worker 实测（ProxyCheck）通过后方可转为「可用」
             if let Some(ext_id) = &item.external_id {
                 sqlx::query(
                     "INSERT INTO proxies (id, provider, external_id, label, scheme, host, port, username, password_cipher, status, provider_valid, sync_generation, last_seen_at) \
-                     VALUES ($1, 'Webshare', $2, $3, 'http', $4, $5, $6, $7, '可用', TRUE, $8, now()) \
+                     VALUES ($1, 'Webshare', $2, $3, 'http', $4, $5, $6, $7, '异常', TRUE, $8, now()) \
                      ON CONFLICT (provider, external_id) WHERE external_id IS NOT NULL DO UPDATE SET \
                          label = EXCLUDED.label, \
                          host = EXCLUDED.host, \
@@ -535,7 +536,6 @@ pub async fn sync_webshare_snapshot(
                          provider_valid = TRUE, \
                          sync_generation = EXCLUDED.sync_generation, \
                          last_seen_at = now(), \
-                         status = CASE WHEN proxies.status = '异常' THEN '可用' ELSE proxies.status END, \
                          updated_at = now()",
                 )
                 .bind(Uuid::new_v4())
@@ -551,7 +551,7 @@ pub async fn sync_webshare_snapshot(
             } else {
                 sqlx::query(
                     "INSERT INTO proxies (id, provider, external_id, label, scheme, host, port, username, password_cipher, status, provider_valid, sync_generation, last_seen_at) \
-                     VALUES ($1, 'Webshare', NULL, $2, 'http', $3, $4, $5, $6, '可用', TRUE, $7, now()) \
+                     VALUES ($1, 'Webshare', NULL, $2, 'http', $3, $4, $5, $6, '异常', TRUE, $7, now()) \
                      ON CONFLICT (provider, host, port, username) DO UPDATE SET \
                          external_id = EXCLUDED.external_id, \
                          label = EXCLUDED.label, \
@@ -559,7 +559,6 @@ pub async fn sync_webshare_snapshot(
                          provider_valid = TRUE, \
                          sync_generation = EXCLUDED.sync_generation, \
                          last_seen_at = now(), \
-                         status = CASE WHEN proxies.status = '异常' THEN '可用' ELSE proxies.status END, \
                          updated_at = now()",
                 )
                 .bind(Uuid::new_v4())

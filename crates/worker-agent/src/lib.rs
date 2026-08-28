@@ -9,7 +9,7 @@ pub mod inventory;
 pub mod mail;
 pub mod master_port;
 pub mod outbox;
-pub mod proxy_forward;
+pub mod proxy_runtime;
 pub mod registration;
 pub mod runtime;
 pub mod slot;
