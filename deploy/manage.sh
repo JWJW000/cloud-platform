@@ -47,9 +47,12 @@ case "$1" in
 
   update)
     ensure_env
-    echo "==> 1. 备份数据库..."
+    echo "==> 1. 备份数据库（流式 gzip 压缩）..."
     mkdir -p "${ROOT_DIR}/backups"
-    docker exec drission-postgres pg_dump -U postgres drission_book > "${ROOT_DIR}/backups/backup_$(date +%Y%m%d_%H%M%S).sql" || true
+    BACKUP_FILE="${ROOT_DIR}/backups/drission_book_$(date +%Y%m%d_%H%M%S).sql.gz"
+    docker exec drission-postgres pg_dump -U postgres drission_book | gzip > "${BACKUP_FILE}" || true
+    echo "==> 自动清理旧备份，仅保留最近 5 份..."
+    ls -t "${ROOT_DIR}/backups"/drission_book_*.sql.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
 
     echo "==> 2. 拉取最新 Master 镜像..."
     docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" pull master
@@ -64,10 +67,12 @@ case "$1" in
 
   backup)
     mkdir -p "${ROOT_DIR}/backups"
-    BACKUP_FILE="${ROOT_DIR}/backups/drission_book_$(date +%Y%m%d_%H%M%S).sql"
-    echo "==> 正在备份数据库至 ${BACKUP_FILE} ..."
-    docker exec drission-postgres pg_dump -U postgres drission_book > "${BACKUP_FILE}"
+    BACKUP_FILE="${ROOT_DIR}/backups/drission_book_$(date +%Y%m%d_%H%M%S).sql.gz"
+    echo "==> 正在流式压缩备份数据库至 ${BACKUP_FILE} ..."
+    docker exec drission-postgres pg_dump -U postgres drission_book | gzip > "${BACKUP_FILE}"
     echo "==> 备份完成！大小: $(du -sh "${BACKUP_FILE}" | cut -f1)"
+    echo "==> 自动清理旧备份，仅保留最近 5 份..."
+    ls -t "${ROOT_DIR}/backups"/drission_book_*.sql.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
     ;;
 
   create-admin)
