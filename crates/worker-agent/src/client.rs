@@ -511,7 +511,11 @@ impl Connection<'_> {
             let work_req = pb::WorkRequest {
                 node_id: self.node_id.to_string(),
                 slot_index,
-                supported_task_types: vec!["图书下载".to_string(), "账号注册".to_string()],
+                supported_task_types: vec![
+                    "图书下载".to_string(),
+                    "账号注册".to_string(),
+                    "代理检测".to_string(),
+                ],
                 request_id: uuid::Uuid::new_v4().to_string(),
             };
             if stream_tx

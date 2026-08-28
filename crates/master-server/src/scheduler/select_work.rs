@@ -105,10 +105,12 @@ pub async fn trigger_scheduler_sweep(state: &AppState) -> AppResult<()> {
             continue;
         }
 
-        // 必须与 Worker 心跳里申报的能力一致。Worker 当前只实现「图书下载 / 账号注册」；
-        // 若在这里填「代理检测」，Master 会每轮给空闲槽开会话，Worker 立刻以
-        // 「不支持的任务类型」失败，看起来像浏览器在不停重启。
-        let supported = vec!["图书下载".to_string(), "账号注册".to_string()];
+        // 与 Worker 申报能力一致（已完整支持「图书下载 / 账号注册 / 代理检测」）。
+        let supported = vec![
+            "图书下载".to_string(),
+            "账号注册".to_string(),
+            "代理检测".to_string(),
+        ];
 
         for slot_index in idle_slots {
             let _ = handle_work_request(state, node_id, slot_index, &supported, &sender).await;
@@ -201,15 +203,32 @@ async fn select_best_task_type(
         let proxy_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxies \
              WHERE status IN ('可用', '异常') AND lease_session_id IS NULL \
-               AND (last_checked_at IS NULL OR last_checked_at < now() - interval '1 hour')",
+               AND (last_checked_at IS NULL OR last_checked_at < now() - interval '10 minutes')",
         )
         .fetch_one(&state.pool)
         .await?;
 
         if proxy_count > 0 {
+            // 当可用且新鲜（10分钟内）的已验证代理不足时，提升代理检测优先级，确保下载任务随时有代理可用
+            let fresh_available_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM proxies \
+                 WHERE status = '可用' AND lease_session_id IS NULL \
+                   AND exit_ip IS NOT NULL \
+                   AND last_checked_at >= now() - interval '10 minutes' \
+                   AND (cooldown_until IS NULL OR cooldown_until <= now())",
+            )
+            .fetch_one(&state.pool)
+            .await?;
+
+            let priority = if fresh_available_count < 5 {
+                100 // 优先检测以补充可用代理池
+            } else {
+                1 // 较低优先级背景复检
+            };
+
             candidates.push(QueueCandidate {
                 task_type: TaskType::ProxyCheck,
-                effective_priority: 1, // 较低优先级背景检测
+                effective_priority: priority,
             });
         }
     }
