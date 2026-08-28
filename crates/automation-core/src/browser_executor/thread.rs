@@ -50,10 +50,22 @@ impl ThreadBrowserExecutor {
                                 spec,
                                 sink,
                                 cancel,
-                            } => engine
-                                .download_book(&handle, &spec, &sink, &cancel)
-                                .await
-                                .map(|outcome| BrowserResult::DownloadDone(Box::new(outcome))),
+                            } => {
+                                // 第 8.2 节：点击下载前，先将浏览器下载路径切到本任务独占目录
+                                if let Err(err) = engine
+                                    .set_task_download_dir(&handle, &spec.staging_dir)
+                                    .await
+                                {
+                                    Err(err)
+                                } else {
+                                    engine
+                                        .download_book(&handle, &spec, &sink, &cancel)
+                                        .await
+                                        .map(|outcome| {
+                                            BrowserResult::DownloadDone(Box::new(outcome))
+                                        })
+                                }
+                            }
                             BrowserCommand::RegisterAccount {
                                 handle, spec, sink, ..
                             } => engine

@@ -64,39 +64,35 @@ impl GostProxyRuntime {
 
         // 构造 GOST v2 / v3 兼容 YAML 配置
         let upstream = &spec.upstream;
-        let scheme = if upstream.scheme.trim().is_empty() {
+        let connector_type = if upstream.scheme.trim().is_empty() {
             "http"
         } else {
-            &upstream.scheme
+            upstream.scheme.trim()
         };
 
         let u_str = upstream.username.trim();
         let p_str = upstream.password.trim();
 
-        let auth_str = if !u_str.is_empty() && !p_str.is_empty() {
+        let auth_section = if !u_str.is_empty() && !p_str.is_empty() {
             format!(
-                "{}:{}@",
-                percent_encoding::utf8_percent_encode(u_str, percent_encoding::NON_ALPHANUMERIC),
-                percent_encoding::utf8_percent_encode(p_str, percent_encoding::NON_ALPHANUMERIC)
-            )
-        } else if !u_str.is_empty() {
-            format!(
-                "{}@",
-                percent_encoding::utf8_percent_encode(u_str, percent_encoding::NON_ALPHANUMERIC)
+                "        auth:\n          username: \"{}\"\n          password: \"{}\"\n",
+                u_str.replace('"', "\\\""),
+                p_str.replace('"', "\\\"")
             )
         } else {
             String::new()
         };
 
-        let forward_node = format!(
-            "{}://{}{}:{}",
-            scheme, auth_str, upstream.host, upstream.port
-        );
         let local_addr = format!("127.0.0.1:{}", spec.local_port);
+        let upstream_addr = format!("{}:{}", upstream.host.trim(), upstream.port);
 
         let yaml_content = format!(
-            "services:\n  - name: slot-{}\n    addr: {}\n    handler:\n      type: http\n    listener:\n      type: tcp\n    forwarder:\n      nodes:\n        - name: upstream\n          addr: {}\n",
-            spec.slot_index, local_addr, forward_node
+            "services:\n- name: slot-{slot}\n  addr: \"{local_addr}\"\n  handler:\n    type: http\n    chain: chain-{slot}\n  listener:\n    type: tcp\nchains:\n- name: chain-{slot}\n  hops:\n  - name: hop-{slot}\n    nodes:\n    - name: node-{slot}\n      addr: \"{upstream_addr}\"\n      connector:\n        type: {connector_type}\n{auth_section}",
+            slot = spec.slot_index,
+            local_addr = local_addr,
+            upstream_addr = upstream_addr,
+            connector_type = connector_type,
+            auth_section = auth_section,
         );
 
         #[cfg(unix)]
