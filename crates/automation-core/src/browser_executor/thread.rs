@@ -53,7 +53,7 @@ impl ThreadBrowserExecutor {
                             } => engine
                                 .download_book(&handle, &spec, &sink, &cancel)
                                 .await
-                                .map(BrowserResult::DownloadDone),
+                                .map(|outcome| BrowserResult::DownloadDone(Box::new(outcome))),
                             BrowserCommand::RegisterAccount {
                                 handle, spec, sink, ..
                             } => engine

@@ -198,7 +198,7 @@ impl ProxyRuntime for GostProxyRuntime {
         &self,
         spec: SessionProxySpec,
     ) -> Result<ProxySessionHandle, ProxyRuntimeError> {
-        if spec.upstream.host.trim().is_empty() || spec.upstream.port <= 0 {
+        if spec.upstream.host.trim().is_empty() || spec.upstream.port == 0 {
             return Err(ProxyRuntimeError::InvalidUpstream(format!(
                 "主机或端口非法: {}:{}",
                 spec.upstream.host, spec.upstream.port

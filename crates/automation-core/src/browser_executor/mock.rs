@@ -6,14 +6,9 @@ use platform_domain::FailureClass;
 use super::{BrowserCommand, BrowserExecutor, BrowserResult};
 use crate::types::{AutomationError, DownloadOutcome, SessionHandle};
 
+#[derive(Default)]
 pub struct MockBrowserExecutor {
     pub should_fail: bool,
-}
-
-impl Default for MockBrowserExecutor {
-    fn default() -> Self {
-        Self { should_fail: false }
-    }
 }
 
 impl MockBrowserExecutor {
@@ -45,13 +40,13 @@ impl BrowserExecutor for MockBrowserExecutor {
                 }))
             }
             BrowserCommand::DownloadBook { spec, .. } => {
-                Ok(BrowserResult::DownloadDone(DownloadOutcome {
+                Ok(BrowserResult::DownloadDone(Box::new(DownloadOutcome {
                     staged_file: spec.staging_dir.join("book.pdf"),
                     size_bytes: 1024,
                     quota_indicator: Some((1, 10)),
                     evidence: None,
                     match_record: None,
-                }))
+                })))
             }
             BrowserCommand::RegisterAccount { .. } => Ok(BrowserResult::RegistrationDone(
                 crate::types::RegistrationOutcome {

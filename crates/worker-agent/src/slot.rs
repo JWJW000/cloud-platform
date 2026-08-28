@@ -887,15 +887,12 @@ async fn execute_download_session(
         Arc::new(GostProxyRuntime::new(config.storage.data_dir.clone()))
     };
 
-    let proxy_spec = match session.proxy.clone() {
-        Some(proxy) => Some(SessionProxySpec {
-            session_id: Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::new_v4()),
-            slot_index: shared.index,
-            local_port,
-            upstream: proxy,
-        }),
-        None => None,
-    };
+    let proxy_spec = session.proxy.clone().map(|proxy| SessionProxySpec {
+        session_id: Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::new_v4()),
+        slot_index: shared.index,
+        local_port,
+        upstream: proxy,
+    });
 
     let mut proxy_handle: Option<ProxySessionHandle> = match proxy_spec {
         Some(spec) => Some(proxy_runtime.start_verified(spec).await?),
@@ -1202,7 +1199,7 @@ async fn execute_assigned_task(
             })
             .await
             .and_then(|res| match res {
-                BrowserResult::DownloadDone(outcome) => Ok(outcome),
+                BrowserResult::DownloadDone(outcome) => Ok(*outcome),
                 _ => Err(automation_core::AutomationError::new(
                     platform_domain::FailureClass::Fatal,
                     "下载任务返回了非预期的结果类型",
@@ -1411,15 +1408,12 @@ async fn execute_registration_session(
         Arc::new(GostProxyRuntime::new(config.storage.data_dir.clone()))
     };
 
-    let proxy_spec = match session.proxy.clone() {
-        Some(proxy) => Some(SessionProxySpec {
-            session_id: Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::new_v4()),
-            slot_index: shared.index,
-            local_port,
-            upstream: proxy,
-        }),
-        None => None,
-    };
+    let proxy_spec = session.proxy.clone().map(|proxy| SessionProxySpec {
+        session_id: Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::new_v4()),
+        slot_index: shared.index,
+        local_port,
+        upstream: proxy,
+    });
 
     let mut proxy_handle: Option<ProxySessionHandle> = match proxy_spec {
         Some(spec) => Some(proxy_runtime.start_verified(spec).await?),

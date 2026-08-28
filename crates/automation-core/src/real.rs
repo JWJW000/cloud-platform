@@ -1161,9 +1161,7 @@ impl AutomationEngine for RealAutomationEngine {
         let owned = OwnedPage::new(launched);
 
         if spec.auto_login {
-            if let Err(err) = login_site(owned.page(), &site_base, &spec.account).await {
-                return Err(err);
-            }
+            login_site(owned.page(), &site_base, &spec.account).await?;
         }
 
         let page = owned.into_inner();

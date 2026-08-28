@@ -49,7 +49,7 @@ pub enum BrowserCommand {
 /// 浏览器执行结果。
 pub enum BrowserResult {
     SessionOpened(SessionHandle),
-    DownloadDone(DownloadOutcome),
+    DownloadDone(Box<DownloadOutcome>),
     RegistrationDone(RegistrationOutcome),
     Cookies(Vec<Cookie>),
     Closed,
