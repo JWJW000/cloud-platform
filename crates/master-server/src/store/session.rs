@@ -48,6 +48,17 @@ pub async fn create_session(
     tx: &mut sqlx::PgConnection,
     new: &NewSession,
 ) -> AppResult<ExecutionSession> {
+    // 创建新会话前，先安全关闭同一节点槽位上历史残留的未结束会话，防止唯一约束冲突
+    sqlx::query(
+        "UPDATE execution_sessions \
+         SET ended_at = now(), status = '已结束', end_reason = '创建新会话替换旧会话' \
+         WHERE node_id = $1 AND slot_index = $2 AND ended_at IS NULL",
+    )
+    .bind(new.node_id)
+    .bind(new.slot_index)
+    .execute(&mut *tx)
+    .await?;
+
     let session = sqlx::query_as::<_, ExecutionSession>(&format!(
         "INSERT INTO execution_sessions \
              (id, node_id, slot_index, account_id, proxy_id, task_type, status, \
