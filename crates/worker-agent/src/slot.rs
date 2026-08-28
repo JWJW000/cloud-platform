@@ -823,7 +823,10 @@ async fn execute_proxy_check_session(
                 latency,
                 ip_str,
                 "可用".to_string(),
-                format!("代理检测成功，出口 IP: {:?}，延迟: {}ms", verified.exit_ip, latency),
+                format!(
+                    "代理检测成功，出口 IP: {:?}，延迟: {}ms",
+                    verified.exit_ip, latency
+                ),
             )
         }
         Err(err) => (
@@ -950,7 +953,9 @@ async fn execute_download_session(
     };
 
     let max_duration = spec.max_duration;
-    let open_res = executor.execute(BrowserCommand::OpenSession { spec }).await?;
+    let open_res = executor
+        .execute(BrowserCommand::OpenSession { spec })
+        .await?;
     let session_handle = match open_res {
         BrowserResult::SessionOpened(handle) => handle,
         _ => anyhow::bail!("打开浏览器会话返回了非预期的结果类型"),
@@ -1033,7 +1038,11 @@ async fn execute_download_session(
     }
 
     // 5. 收尾：先关闭浏览器会话，再终止 GOST 代理进程
-    let _ = executor.execute(BrowserCommand::CloseSession { handle: session_handle }).await;
+    let _ = executor
+        .execute(BrowserCommand::CloseSession {
+            handle: session_handle,
+        })
+        .await;
     if let Some(mut proxy) = proxy_handle.take() {
         proxy.shutdown().await;
     }
@@ -1184,23 +1193,21 @@ async fn execute_assigned_task(
 
     // 第 8.2 节：创建任务独占目录后，通过 BrowserExecutor OS 线程串行执行下载
     let download_res = match tokio::fs::create_dir_all(&staging_dir).await {
-        Ok(()) => {
-            executor
-                .execute(BrowserCommand::DownloadBook {
-                    handle: session_handle.clone(),
-                    spec: download_spec,
-                    sink: event_sink.clone(),
-                    cancel: cancel.clone(),
-                })
-                .await
-                .and_then(|res| match res {
-                    BrowserResult::DownloadDone(outcome) => Ok(outcome),
-                    _ => Err(automation_core::AutomationError::new(
-                        platform_domain::FailureClass::Fatal,
-                        "下载任务返回了非预期的结果类型",
-                    )),
-                })
-        }
+        Ok(()) => executor
+            .execute(BrowserCommand::DownloadBook {
+                handle: session_handle.clone(),
+                spec: download_spec,
+                sink: event_sink.clone(),
+                cancel: cancel.clone(),
+            })
+            .await
+            .and_then(|res| match res {
+                BrowserResult::DownloadDone(outcome) => Ok(outcome),
+                _ => Err(automation_core::AutomationError::new(
+                    platform_domain::FailureClass::Fatal,
+                    "下载任务返回了非预期的结果类型",
+                )),
+            }),
         Err(err) => Err(automation_core::AutomationError::new(
             platform_domain::FailureClass::Fatal,
             format!("创建任务暂存目录失败：{}：{err}", staging_dir.display()),

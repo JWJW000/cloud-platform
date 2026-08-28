@@ -55,10 +55,7 @@ impl GostProxyRuntime {
     }
 
     /// 写入私有配置文件，严格限制权限（Unix 0600）。
-    fn write_private_config(
-        &self,
-        spec: &SessionProxySpec,
-    ) -> Result<PathBuf, ProxyRuntimeError> {
+    fn write_private_config(&self, spec: &SessionProxySpec) -> Result<PathBuf, ProxyRuntimeError> {
         let configs_dir = self.work_dir.join("proxy_configs");
         std::fs::create_dir_all(&configs_dir)?;
 
@@ -77,14 +74,24 @@ impl GostProxyRuntime {
         let p_str = upstream.password.trim();
 
         let auth_str = if !u_str.is_empty() && !p_str.is_empty() {
-            format!("{}:{}@", percent_encoding::utf8_percent_encode(u_str, percent_encoding::NON_ALPHANUMERIC), percent_encoding::utf8_percent_encode(p_str, percent_encoding::NON_ALPHANUMERIC))
+            format!(
+                "{}:{}@",
+                percent_encoding::utf8_percent_encode(u_str, percent_encoding::NON_ALPHANUMERIC),
+                percent_encoding::utf8_percent_encode(p_str, percent_encoding::NON_ALPHANUMERIC)
+            )
         } else if !u_str.is_empty() {
-            format!("{}@", percent_encoding::utf8_percent_encode(u_str, percent_encoding::NON_ALPHANUMERIC))
+            format!(
+                "{}@",
+                percent_encoding::utf8_percent_encode(u_str, percent_encoding::NON_ALPHANUMERIC)
+            )
         } else {
             String::new()
         };
 
-        let forward_node = format!("{}://{}{}:{}", scheme, auth_str, upstream.host, upstream.port);
+        let forward_node = format!(
+            "{}://{}{}:{}",
+            scheme, auth_str, upstream.host, upstream.port
+        );
         let local_addr = format!("127.0.0.1:{}", spec.local_port);
 
         let yaml_content = format!(
@@ -120,7 +127,11 @@ impl GostProxyRuntime {
     }
 
     /// 探测本地 listener 是否已绑定并准备就绪。
-    async fn wait_listener_ready(&self, port: u16, timeout: Duration) -> Result<(), ProxyRuntimeError> {
+    async fn wait_listener_ready(
+        &self,
+        port: u16,
+        timeout: Duration,
+    ) -> Result<(), ProxyRuntimeError> {
         let deadline = Instant::now() + timeout;
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
@@ -137,7 +148,11 @@ impl GostProxyRuntime {
     }
 
     /// 通过本地代理测试公网连通性并获取出口 IP。
-    async fn probe_exit_ip(&self, local_port: u16, timeout: Duration) -> Result<(Option<IpAddr>, Duration), ProxyRuntimeError> {
+    async fn probe_exit_ip(
+        &self,
+        local_port: u16,
+        timeout: Duration,
+    ) -> Result<(Option<IpAddr>, Duration), ProxyRuntimeError> {
         let proxy_url = format!("http://127.0.0.1:{}", local_port);
         let proxy = ureq::Proxy::new(&proxy_url)
             .map_err(|e| ProxyRuntimeError::ProbeFailed(format!("无效的代理地址: {e}")))?;
@@ -168,7 +183,9 @@ impl GostProxyRuntime {
 
         // 如果白名单端点均未能成功获取 IP，但连接通畅，回退记录耗时
         if !last_err.is_empty() {
-            Err(ProxyRuntimeError::ProbeFailed(format!("出口 IP 探测失败: {last_err}")))
+            Err(ProxyRuntimeError::ProbeFailed(format!(
+                "出口 IP 探测失败: {last_err}"
+            )))
         } else {
             Ok((None, start.elapsed()))
         }
@@ -198,9 +215,12 @@ impl ProxyRuntime for GostProxyRuntime {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ProxyRuntimeError::ProcessSpawnFailed(format!("无法执行 GOST ({}): {e}", self.gost_bin.display())))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            ProxyRuntimeError::ProcessSpawnFailed(format!(
+                "无法执行 GOST ({}): {e}",
+                self.gost_bin.display()
+            ))
+        })?;
 
         // 检查进程启动后是否立即退出
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -210,14 +230,20 @@ impl ProxyRuntime for GostProxyRuntime {
         }
 
         // 等待本地 listener 就绪
-        if let Err(e) = self.wait_listener_ready(spec.local_port, Duration::from_secs(3)).await {
+        if let Err(e) = self
+            .wait_listener_ready(spec.local_port, Duration::from_secs(3))
+            .await
+        {
             let _ = child.kill().await;
             let _ = std::fs::remove_file(&config_path);
             return Err(e);
         }
 
         // 探测出口 IP 与延迟
-        let (exit_ip, latency) = match self.probe_exit_ip(spec.local_port, Duration::from_secs(8)).await {
+        let (exit_ip, latency) = match self
+            .probe_exit_ip(spec.local_port, Duration::from_secs(8))
+            .await
+        {
             Ok(res) => res,
             Err(e) => {
                 let _ = child.kill().await;

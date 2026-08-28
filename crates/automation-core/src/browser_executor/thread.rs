@@ -41,34 +41,25 @@ impl ThreadBrowserExecutor {
                 runtime.block_on(async move {
                     while let Some((cmd, reply_tx)) = cmd_rx.recv().await {
                         let res = match cmd {
-                            BrowserCommand::OpenSession { spec } => {
-                                engine
-                                    .open_session(&spec)
-                                    .await
-                                    .map(BrowserResult::SessionOpened)
-                            }
+                            BrowserCommand::OpenSession { spec } => engine
+                                .open_session(&spec)
+                                .await
+                                .map(BrowserResult::SessionOpened),
                             BrowserCommand::DownloadBook {
                                 handle,
                                 spec,
                                 sink,
                                 cancel,
-                            } => {
-                                engine
-                                    .download_book(&handle, &spec, &sink, &cancel)
-                                    .await
-                                    .map(BrowserResult::DownloadDone)
-                            }
+                            } => engine
+                                .download_book(&handle, &spec, &sink, &cancel)
+                                .await
+                                .map(BrowserResult::DownloadDone),
                             BrowserCommand::RegisterAccount {
-                                handle,
-                                spec,
-                                sink,
-                                ..
-                            } => {
-                                engine
-                                    .register_account(&handle, &spec, &sink)
-                                    .await
-                                    .map(BrowserResult::RegistrationDone)
-                            }
+                                handle, spec, sink, ..
+                            } => engine
+                                .register_account(&handle, &spec, &sink)
+                                .await
+                                .map(BrowserResult::RegistrationDone),
                             BrowserCommand::ExportCookies => {
                                 // 基础支持
                                 Ok(BrowserResult::Cookies(Vec::new()))
@@ -93,21 +84,21 @@ impl ThreadBrowserExecutor {
 impl BrowserExecutor for ThreadBrowserExecutor {
     async fn execute(&self, command: BrowserCommand) -> Result<BrowserResult, AutomationError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.cmd_tx
-            .send((command, reply_tx))
-            .await
-            .map_err(|_| {
-                AutomationError::new(
-                    FailureClass::Fatal,
-                    format!("槽位 {} 的浏览器 OS 线程已停止", self.slot_index),
-                )
-            })?;
+        self.cmd_tx.send((command, reply_tx)).await.map_err(|_| {
+            AutomationError::new(
+                FailureClass::Fatal,
+                format!("槽位 {} 的浏览器 OS 线程已停止", self.slot_index),
+            )
+        })?;
 
         match reply_rx.await {
             Ok(result) => result,
             Err(_) => Err(AutomationError::new(
                 FailureClass::Fatal,
-                format!("槽位 {} 浏览器线程在执行过程中异常退出或 Panic", self.slot_index),
+                format!(
+                    "槽位 {} 浏览器线程在执行过程中异常退出或 Panic",
+                    self.slot_index
+                ),
             )),
         }
     }

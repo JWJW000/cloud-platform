@@ -37,11 +37,13 @@ impl BrowserExecutor for MockBrowserExecutor {
         }
 
         match command {
-            BrowserCommand::OpenSession { spec } => Ok(BrowserResult::SessionOpened(SessionHandle {
-                session_id: spec.session_id,
-                browser_path: spec.browser_path.unwrap_or_default(),
-                profile_dir: spec.profile_dir,
-            })),
+            BrowserCommand::OpenSession { spec } => {
+                Ok(BrowserResult::SessionOpened(SessionHandle {
+                    session_id: spec.session_id,
+                    browser_path: spec.browser_path.unwrap_or_default(),
+                    profile_dir: spec.profile_dir,
+                }))
+            }
             BrowserCommand::DownloadBook { spec, .. } => {
                 Ok(BrowserResult::DownloadDone(DownloadOutcome {
                     staged_file: spec.staging_dir.join("book.pdf"),

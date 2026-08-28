@@ -25,9 +25,7 @@ pub use thread::ThreadBrowserExecutor;
 /// 浏览器执行命令。
 pub enum BrowserCommand {
     /// 打开并初始化浏览器会话。
-    OpenSession {
-        spec: SessionSpec,
-    },
+    OpenSession { spec: SessionSpec },
     /// 在已打开会话中执行一本书的下载。
     DownloadBook {
         handle: SessionHandle,
@@ -45,9 +43,7 @@ pub enum BrowserCommand {
     /// 导出当前 Cookie。
     ExportCookies,
     /// 关闭指定会话并退出浏览器。
-    CloseSession {
-        handle: SessionHandle,
-    },
+    CloseSession { handle: SessionHandle },
 }
 
 /// 浏览器执行结果。
