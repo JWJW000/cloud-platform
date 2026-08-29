@@ -1218,7 +1218,16 @@ async fn execute_assigned_task(
         Ok(outcome) => outcome,
         Err(err) => {
             let (result, task_status) = classify(&err.class);
-            report_result(bus, assign, result, &task_status, &err.reason, None, None).await;
+            report_result(
+                bus,
+                assign,
+                result,
+                &task_status,
+                &err.reason,
+                err.quota_indicator,
+                None,
+            )
+            .await;
             finish_task(shared, outbox, &execution_id, state.stage).await;
             return false;
         }

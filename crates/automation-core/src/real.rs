@@ -249,14 +249,16 @@ impl RealAutomationEngine {
                 if js_flag(&sess.page, site::QUOTA_LIMIT_PAGE_SCRIPT) {
                     let quota = read_quota_from_page(&sess.page);
                     return Err(if site::quota_is_exhausted(quota) {
-                        AutomationError::new(
+                        AutomationError::with_quota(
                             FailureClass::AccountQuotaExhausted,
                             "daily download quota exhausted",
+                            quota,
                         )
                     } else {
-                        AutomationError::new(
+                        AutomationError::with_quota(
                             FailureClass::SiteRateLimited,
                             "site shows quota page but account local usage is low",
+                            quota,
                         )
                     });
                 }
@@ -1349,9 +1351,10 @@ impl AutomationEngine for RealAutomationEngine {
             })
             .unwrap_or(None);
         if site::quota_is_exhausted(quota_before) {
-            return Err(AutomationError::new(
+            return Err(AutomationError::with_quota(
                 FailureClass::AccountQuotaExhausted,
                 "daily download quota exhausted",
+                quota_before,
             ));
         }
 
@@ -1443,14 +1446,16 @@ impl AutomationEngine for RealAutomationEngine {
                             })
                             .unwrap_or(None);
                         return Err(if site::quota_is_exhausted(quota) {
-                            AutomationError::new(
+                            AutomationError::with_quota(
                                 FailureClass::AccountQuotaExhausted,
                                 "daily download quota exhausted",
+                                quota,
                             )
                         } else {
-                            AutomationError::new(
+                            AutomationError::with_quota(
                                 FailureClass::SiteRateLimited,
                                 "site shows quota page but account local usage is low",
+                                quota,
                             )
                         });
                     }

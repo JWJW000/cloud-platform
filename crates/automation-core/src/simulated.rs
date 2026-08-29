@@ -213,9 +213,10 @@ impl AutomationEngine for SimulatedEngine {
         let (used, limit) = self.quota(&session.session_id);
         events.emit(crate::types::AutomationEvent::Quota { used, total: limit });
         if used >= limit {
-            return Err(AutomationError::new(
+            return Err(AutomationError::with_quota(
                 FailureClass::AccountQuotaExhausted,
                 format!("daily download quota exhausted: {used}/{limit}"),
+                Some((used, limit)),
             ));
         }
 
@@ -586,6 +587,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.class, FailureClass::AccountQuotaExhausted);
+        assert_eq!(err.quota_indicator, Some((2, 2)));
     }
 
     #[tokio::test]

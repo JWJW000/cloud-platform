@@ -201,6 +201,11 @@ pub struct AutomationError {
     pub class: FailureClass,
     /// 人类可读原因（会出现在执行记录与告警中）。
     pub reason: String,
+    /// 失败发生时读到的站点配额 `(已用, 总额)`。
+    ///
+    /// Master 会独立重做失败归因；因此额度耗尽不能只依赖错误类别或文本，
+    /// 必须把站点读数作为结构化证据随失败结果一起上报。
+    pub quota_indicator: Option<(u32, u32)>,
 }
 
 impl AutomationError {
@@ -209,6 +214,20 @@ impl AutomationError {
         Self {
             class,
             reason: reason.into(),
+            quota_indicator: None,
+        }
+    }
+
+    /// 构造一个携带站点配额证据的失败。
+    pub fn with_quota(
+        class: FailureClass,
+        reason: impl Into<String>,
+        quota_indicator: Option<(u32, u32)>,
+    ) -> Self {
+        Self {
+            class,
+            reason: reason.into(),
+            quota_indicator,
         }
     }
 
@@ -216,6 +235,10 @@ impl AutomationError {
     pub fn from_reason(reason: impl Into<String>, quota_indicator: Option<(u32, u32)>) -> Self {
         let reason = reason.into();
         let class = platform_domain::classify_failure(&reason, quota_indicator);
-        Self { class, reason }
+        Self {
+            class,
+            reason,
+            quota_indicator,
+        }
     }
 }
