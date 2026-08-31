@@ -70,13 +70,11 @@ fn candidates() -> Vec<String> {
 /// `proxy_endpoint` 是本机固定转发端口（如 `127.0.0.1:19001`）；
 /// 会话期间该端口固定指向同一个上游代理，因此不需要任何按连接轮换的逻辑。
 pub fn launch_args(
-    profile_dir: &std::path::Path,
     download_dir: &std::path::Path,
     proxy_endpoint: Option<&str>,
     headless: bool,
 ) -> Vec<String> {
     let mut args = vec![
-        format!("--user-data-dir={}", profile_dir.display()),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-background-networking".to_string(),
@@ -104,16 +102,13 @@ mod tests {
     }
 
     #[test]
-    fn launch_args_pin_profile_and_proxy() {
+    fn launch_args_pin_proxy_without_overriding_formal_profile_config() {
         let args = launch_args(
-            Path::new("/tmp/profiles/session-1"),
             Path::new("/tmp/staging/task-1"),
             Some("127.0.0.1:19001"),
             true,
         );
-        assert!(args
-            .iter()
-            .any(|a| a == "--user-data-dir=/tmp/profiles/session-1"));
+        assert!(!args.iter().any(|a| a.starts_with("--user-data-dir=")));
         assert!(args
             .iter()
             .any(|a| a == "--proxy-server=http://127.0.0.1:19001"));
@@ -123,7 +118,7 @@ mod tests {
 
     #[test]
     fn launch_args_without_proxy_have_no_proxy_flag() {
-        let args = launch_args(Path::new("/tmp/p"), Path::new("/tmp/d"), None, false);
+        let args = launch_args(Path::new("/tmp/d"), None, false);
         assert!(!args.iter().any(|a| a.starts_with("--proxy-server")));
         assert!(!args.iter().any(|a| a == "--headless=new"));
     }

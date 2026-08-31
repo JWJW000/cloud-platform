@@ -384,6 +384,7 @@ mod tests {
             site_base: "https://example.invalid".to_string(),
             browser_path: None,
             headless: true,
+            browser_debug_port: 19220,
             profile_dir: root.join("profiles/session-会话1"),
             staging_root: root.join("staging"),
             proxy_endpoint: Some("127.0.0.1:19001".to_string()),

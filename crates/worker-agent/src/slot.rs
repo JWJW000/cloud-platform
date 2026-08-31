@@ -40,6 +40,17 @@ use crate::storage;
 use platform_proto::v1::ExecutionStage;
 use uuid::Uuid;
 
+/// 每个槽位独占一个 Chrome DevTools 调试端口，和 GOST 的 19001+ 端口段分离。
+const BROWSER_DEBUG_PORT_BASE: u16 = 19220;
+
+fn browser_debug_port(slot_index: u32) -> Result<u16> {
+    let offset = u16::try_from(slot_index)
+        .map_err(|_| anyhow::anyhow!("槽位序号 {slot_index} 超出浏览器调试端口范围"))?;
+    BROWSER_DEBUG_PORT_BASE
+        .checked_add(offset)
+        .ok_or_else(|| anyhow::anyhow!("槽位序号 {slot_index} 无法映射浏览器调试端口"))
+}
+
 /// 执行阶段技术枚举常量（V4 方案第 10.1 节）。
 ///
 /// 裁决与现场记录一律使用该枚举，禁止自由字符串跨组件比较；
@@ -917,6 +928,7 @@ async fn execute_download_session(
         site_base: site_base.clone(),
         browser_path: None,
         headless: config.execution.headless,
+        browser_debug_port: browser_debug_port(shared.index)?,
         profile_dir: config
             .storage
             .data_dir
@@ -1447,6 +1459,7 @@ async fn execute_registration_session(
         site_base: site_base.clone(),
         browser_path: None,
         headless: config.execution.headless,
+        browser_debug_port: browser_debug_port(shared.index)?,
         profile_dir: config
             .storage
             .data_dir
@@ -2526,5 +2539,22 @@ mod tests {
                 None => assert_eq!(status, platform_domain::TaskStatus::Pending.as_str()),
             }
         }
+    }
+
+    #[test]
+    fn browser_debug_ports_are_unique_per_slot_and_separate_from_gost() {
+        let ports: Vec<u16> = (0..5)
+            .map(|slot| browser_debug_port(slot).unwrap())
+            .collect();
+        assert_eq!(ports, vec![19220, 19221, 19222, 19223, 19224]);
+        assert_eq!(
+            ports
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            5
+        );
+        assert!(ports.iter().all(|port| !(19001..=19064).contains(port)));
     }
 }

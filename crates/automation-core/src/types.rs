@@ -34,6 +34,11 @@ pub struct SessionSpec {
     pub browser_path: Option<PathBuf>,
     /// 是否无头运行。
     pub headless: bool,
+    /// 会话独占的 Chrome DevTools 调试端口。
+    ///
+    /// 多槽位不得共享该端口；否则浏览器库会连接到其他槽位已经启动的 Chrome，
+    /// 造成账号 Cookie、Profile 与代理全部串用。
+    pub browser_debug_port: u16,
     /// 会话专属 Profile 目录 `profiles/session-{会话编号}`。
     pub profile_dir: PathBuf,
     /// 本机下载暂存目录 `staging/task-{任务编号}` 的父目录。

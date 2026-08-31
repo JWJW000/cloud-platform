@@ -20,6 +20,7 @@
 //! `cancel.sleep(..)`。因此 `MutexGuard` 从不跨越 `await`，
 //! 取消延迟也不取决于某一觉睡多久。
 
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -653,6 +654,37 @@ fn normalize_format(raw: &str) -> Result<String, AutomationError> {
     }
 }
 
+/// 调试端口必须由当前会话独占。
+///
+/// `rust_drission` 在端口已有响应时会连到该 Chrome；对多账号 Worker 来说，
+/// 连接一个未知浏览器比本次会话失败更危险，因此这里采用 fail-closed。
+fn ensure_browser_debug_port_available(port: u16) -> Result<(), AutomationError> {
+    ensure_browser_debug_port_available_with(port, |port| {
+        let listener = TcpListener::bind(("127.0.0.1", port))?;
+        drop(listener);
+        Ok(())
+    })
+}
+
+fn ensure_browser_debug_port_available_with(
+    port: u16,
+    probe: impl FnOnce(u16) -> std::io::Result<()>,
+) -> Result<(), AutomationError> {
+    if port == 0 {
+        return Err(AutomationError::new(
+            FailureClass::Fatal,
+            "浏览器调试端口不能为 0",
+        ));
+    }
+    probe(port).map_err(|err| {
+        AutomationError::new(
+            FailureClass::Retryable,
+            format!("浏览器调试端口 {port} 已被占用，拒绝连接可能属于其他账号的 Chrome：{err}"),
+        )
+    })?;
+    Ok(())
+}
+
 /// 把选择器显式标成 `css:`。
 ///
 /// `rust_drission` 的定位器会先按第一个冒号切前缀，因此 `button:not(.x)`
@@ -1063,12 +1095,31 @@ async fn login_attempt(
         return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
     }
 
-    // 已登录：没有登录入口
+    // 新会话即使遇到已有 Cookie，也必须退出后按 Master 下发的账号重新登录。
+    // 直接复用“已登录”状态无法证明当前页面属于本会话账号，会造成跨槽位串号。
     if first_page_element(page, LOGIN_LINK).is_none()
         && first_page_element(page, LOGIN_FORM).is_none()
     {
-        close_bonus_popup(page);
-        return Ok(());
+        let logout = first_page_element(page, LOGOUT_SELECTORS).ok_or_else(|| {
+            AutomationError::new(
+                FailureClass::AuthFailed,
+                "页面显示为已登录，但无法找到退出入口核验当前账号，已拒绝复用该登录态",
+            )
+        })?;
+        logout.click().map_err(|err| {
+            AutomationError::new(
+                FailureClass::Retryable,
+                format!("清理既有登录态失败：{err}"),
+            )
+        })?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        page.get(&root).map_err(|err| {
+            AutomationError::new(
+                FailureClass::SiteUnavailable,
+                format!("退出既有账号后重新打开首页失败：{err}"),
+            )
+        })?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
     let deadline = Instant::now() + LOGIN_TIMEOUT;
@@ -1160,6 +1211,8 @@ impl AutomationEngine for RealAutomationEngine {
         )
         .map_err(|err| AutomationError::new(FailureClass::Fatal, err.to_string()))?;
 
+        ensure_browser_debug_port_available(spec.browser_debug_port)?;
+
         tokio::fs::create_dir_all(&spec.profile_dir)
             .await
             .map_err(|err| {
@@ -1182,9 +1235,10 @@ impl AutomationEngine for RealAutomationEngine {
 
         let mut config = BrowserConfig::new()
             .chrome_path(browser_path.display().to_string())
+            .set_local_port(spec.browser_debug_port)
+            .user_data_dir(spec.profile_dir.display().to_string())
             .headless(spec.headless);
         for arg in launch_args(
-            &spec.profile_dir,
             &spec.staging_root,
             spec.proxy_endpoint.as_deref(),
             spec.headless,
@@ -1723,6 +1777,21 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.class, FailureClass::Retryable);
+    }
+
+    #[test]
+    fn occupied_browser_debug_port_is_rejected_instead_of_reused() {
+        let err = ensure_browser_debug_port_available_with(19220, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "test port occupied",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(err.class, FailureClass::Retryable);
+        assert!(err.reason.contains("拒绝连接可能属于其他账号的 Chrome"));
+
+        ensure_browser_debug_port_available_with(19220, |_| Ok(())).unwrap();
     }
 
     /// 只有「没有临时文件 + 大小连续不变」才算下载完成。
