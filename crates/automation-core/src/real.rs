@@ -20,15 +20,18 @@
 //! `cancel.sleep(..)`。因此 `MutexGuard` 从不跨越 `await`，
 //! 取消延迟也不取决于某一觉睡多久。
 
+use std::ffi::OsString;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use platform_domain::FailureClass;
-use rust_drission::{BrowserConfig, ChromiumPage};
+use rust_drission::ChromiumPage;
 use serde_json::json;
+use sysinfo::{Pid, Signal, System};
 
 use crate::browser::{detect_browser, launch_args};
 use crate::cancel::CancelToken;
@@ -48,6 +51,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const RESULTS_TIMEOUT: Duration = Duration::from_secs(20);
 /// 等待登录结果的上限。
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
+/// Windows 并发启动多个 Chrome 时 5 秒远远不够；启动必须有明确但宽裕的上限。
+const BROWSER_START_TIMEOUT: Duration = Duration::from_secs(30);
+/// CDP 本机探测必须短超时，避免一个半开的端口把 30 秒总上限拖成数分钟。
+const CDP_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+const CDP_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// 扫描暂存目录的间隔。
 #[cfg(test)]
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
@@ -80,11 +88,15 @@ const LOGOUT_SELECTORS: &str =
 /// 5 个槽位限制挡不住窗口堆积。
 struct OwnedPage {
     page: Option<ChromiumPage>,
+    process: Option<BrowserProcessGuard>,
 }
 
 impl OwnedPage {
-    fn new(page: ChromiumPage) -> Self {
-        Self { page: Some(page) }
+    fn new(page: ChromiumPage, process: BrowserProcessGuard) -> Self {
+        Self {
+            page: Some(page),
+            process: Some(process),
+        }
     }
 
     fn page(&self) -> &ChromiumPage {
@@ -93,10 +105,16 @@ impl OwnedPage {
             .expect("OwnedPage 在 into_inner 之后不可再用")
     }
 
-    fn into_inner(mut self) -> ChromiumPage {
-        self.page
+    fn into_parts(mut self) -> (ChromiumPage, BrowserProcessGuard) {
+        let page = self
+            .page
             .take()
-            .expect("OwnedPage 在 into_inner 之后不可再用")
+            .expect("OwnedPage 在 into_parts 之后不可再用");
+        let process = self
+            .process
+            .take()
+            .expect("OwnedPage 在 into_parts 之后不可再用");
+        (page, process)
     }
 }
 
@@ -105,12 +123,54 @@ impl Drop for OwnedPage {
         if let Some(mut page) = self.page.take() {
             page.close_browser();
         }
+        if let Some(mut process) = self.process.take() {
+            process.shutdown();
+        }
+    }
+}
+
+/// 当前会话启动的 Chrome 进程所有权。
+///
+/// Chrome 在 Windows 上可能让最初的 launcher 进程退出、把真正的浏览器留给其他
+/// 进程。因此不能只 `Child::kill()`；清理时还要按本会话独占的 Profile 与调试端口
+/// 找到根进程及其全部后代。
+struct BrowserProcessGuard {
+    child: Option<Child>,
+    profile_dir: PathBuf,
+    debug_port: u16,
+}
+
+impl BrowserProcessGuard {
+    fn new(child: Child, profile_dir: PathBuf, debug_port: u16) -> Self {
+        Self {
+            child: Some(child),
+            profile_dir,
+            debug_port,
+        }
+    }
+
+    fn shutdown(&mut self) {
+        // 先按命令行抓取完整树；若先 kill launcher，子进程可能被重新挂到系统进程，
+        // 随后就无法再从 parent 链识别为本会话 Chrome。
+        cleanup_browser_process_tree(&self.profile_dir, self.debug_port);
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for BrowserProcessGuard {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
 /// 包装一个真实的 ChromiumPage 实例。
 struct RealBrowserSession {
     page: ChromiumPage,
+    /// 与页面同生命周期；Drop 是所有错误/取消路径的最终进程清理保险。
+    _process: BrowserProcessGuard,
     site_base: String,
     /// 会话固定的本机代理转发端口。图书下载会话缺它就不许开始（第 8.1 节）。
     proxy_endpoint: Option<String>,
@@ -685,6 +745,186 @@ fn ensure_browser_debug_port_available_with(
     Ok(())
 }
 
+fn managed_chrome_args(
+    profile_dir: &Path,
+    debug_port: u16,
+    staging_root: &Path,
+    proxy_endpoint: Option<&str>,
+    headless: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        format!("--remote-debugging-port={debug_port}"),
+        "--remote-debugging-address=127.0.0.1".to_string(),
+        "--remote-allow-origins=*".to_string(),
+        format!("--user-data-dir={}", profile_dir.display()),
+        "--disable-suggestions-ui".to_string(),
+        "--disable-infobars".to_string(),
+        "--disable-popup-blocking".to_string(),
+        "--hide-crash-restore-bubble".to_string(),
+        "--disable-features=PrivacySandboxSettings4".to_string(),
+        "--disable-blink-features=AutomationControlled".to_string(),
+        "--no-sandbox".to_string(),
+        "--window-size=1920,1080".to_string(),
+    ];
+    args.extend(launch_args(staging_root, proxy_endpoint, headless));
+    args
+}
+
+fn cdp_version_is_ready(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("webSocketDebuggerUrl")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|url| !url.trim().is_empty())
+}
+
+async fn wait_for_cdp(debug_port: u16) -> Result<(), AutomationError> {
+    let endpoint = format!("http://127.0.0.1:{debug_port}/json/version");
+    let agent = ureq::AgentBuilder::new()
+        // CDP 永远是本机控制面，不能继承 Worker 机器上的任何系统代理设置。
+        .try_proxy_from_env(false)
+        .timeout_connect(CDP_PROBE_TIMEOUT)
+        .timeout_read(CDP_PROBE_TIMEOUT)
+        .timeout_write(CDP_PROBE_TIMEOUT)
+        .build();
+    let deadline = Instant::now() + BROWSER_START_TIMEOUT;
+    loop {
+        let last_error = match agent.get(&endpoint).call() {
+            Ok(response) => match response.into_string() {
+                Ok(body) if cdp_version_is_ready(&body) => return Ok(()),
+                Ok(_) => "CDP 响应缺少 webSocketDebuggerUrl".to_string(),
+                Err(err) => format!("读取 CDP 响应失败：{err}"),
+            },
+            Err(err) => err.to_string(),
+        };
+        if Instant::now() >= deadline {
+            return Err(AutomationError::new(
+                FailureClass::Retryable,
+                format!(
+                    "Chrome 已启动，但调试端口 {debug_port} 在 {} 秒内未就绪：{last_error}",
+                    BROWSER_START_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        tokio::time::sleep(CDP_PROBE_INTERVAL).await;
+    }
+}
+
+async fn launch_managed_browser(
+    browser_path: &Path,
+    profile_dir: &Path,
+    debug_port: u16,
+    staging_root: &Path,
+    proxy_endpoint: Option<&str>,
+    headless: bool,
+) -> Result<(ChromiumPage, BrowserProcessGuard), AutomationError> {
+    for name in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
+        let _ = std::fs::remove_file(profile_dir.join(name));
+    }
+
+    let child = Command::new(browser_path)
+        .args(managed_chrome_args(
+            profile_dir,
+            debug_port,
+            staging_root,
+            proxy_endpoint,
+            headless,
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| {
+            AutomationError::new(
+                FailureClass::Retryable,
+                format!("启动 Chrome 进程失败：{err}"),
+            )
+        })?;
+    let guard = BrowserProcessGuard::new(child, profile_dir.to_path_buf(), debug_port);
+
+    wait_for_cdp(debug_port).await?;
+    let endpoint = format!("127.0.0.1:{debug_port}");
+    let page = ChromiumPage::connect(&endpoint).map_err(|err| {
+        AutomationError::new(
+            FailureClass::Retryable,
+            format!("Chrome 调试端口已就绪，但建立 CDP 会话失败：{err}"),
+        )
+    })?;
+    rust_drission::stealth_inject(page.tab()).map_err(|err| {
+        AutomationError::new(
+            FailureClass::Retryable,
+            format!("初始化浏览器反检测脚本失败：{err}"),
+        )
+    })?;
+    Ok((page, guard))
+}
+
+fn process_matches_browser(cmd: &[OsString], profile_dir: &Path, debug_port: u16) -> bool {
+    let expected_port = format!("--remote-debugging-port={debug_port}");
+    let expected_profile = format!("--user-data-dir={}", profile_dir.display());
+    cmd.iter().any(|arg| {
+        let arg = arg.to_string_lossy();
+        arg.eq_ignore_ascii_case(&expected_port) || arg.eq_ignore_ascii_case(&expected_profile)
+    })
+}
+
+fn distance_to_root(
+    system: &System,
+    pid: Pid,
+    roots: &std::collections::HashSet<Pid>,
+) -> Option<usize> {
+    let mut current = Some(pid);
+    let mut visited = std::collections::HashSet::new();
+    let mut distance = 0usize;
+    while let Some(candidate) = current {
+        if roots.contains(&candidate) {
+            return Some(distance);
+        }
+        if !visited.insert(candidate) {
+            return None;
+        }
+        current = system
+            .process(candidate)
+            .and_then(|process| process.parent());
+        distance = distance.saturating_add(1);
+    }
+    None
+}
+
+fn cleanup_browser_process_tree(profile_dir: &Path, debug_port: u16) {
+    let system = System::new_all();
+    let roots: std::collections::HashSet<Pid> = system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            process_matches_browser(process.cmd(), profile_dir, debug_port).then_some(*pid)
+        })
+        .collect();
+    if roots.is_empty() {
+        return;
+    }
+
+    let mut targets: Vec<(Pid, usize)> = system
+        .processes()
+        .keys()
+        .copied()
+        .filter_map(|pid| distance_to_root(&system, pid, &roots).map(|depth| (pid, depth)))
+        .collect();
+    // 先杀最深的 renderer/gpu 子进程，最后才杀 browser 根进程。
+    targets.sort_unstable_by_key(|(_, depth)| std::cmp::Reverse(*depth));
+    for (pid, _) in targets {
+        if let Some(process) = system.process(pid) {
+            let _ = process
+                .kill_with(Signal::Kill)
+                .unwrap_or_else(|| process.kill());
+        }
+    }
+}
+
 /// 把选择器显式标成 `css:`。
 ///
 /// `rust_drission` 的定位器会先按第一个冒号切前缀，因此 `button:not(.x)`
@@ -1233,29 +1473,22 @@ impl AutomationEngine for RealAutomationEngine {
                 )
             })?;
 
-        let mut config = BrowserConfig::new()
-            .chrome_path(browser_path.display().to_string())
-            .set_local_port(spec.browser_debug_port)
-            .user_data_dir(spec.profile_dir.display().to_string())
-            .headless(spec.headless);
-        for arg in launch_args(
+        let (launched, process) = launch_managed_browser(
+            &browser_path,
+            &spec.profile_dir,
+            spec.browser_debug_port,
             &spec.staging_root,
             spec.proxy_endpoint.as_deref(),
             spec.headless,
-        ) {
-            config = config.set_argument(arg, None::<String>);
-        }
-        // 启动是一段有界的同步过程；之后所有等待都改用异步，不再阻塞运行时线程。
-        let launched = ChromiumPage::new(config).map_err(|err| {
-            AutomationError::new(FailureClass::Retryable, format!("启动浏览器失败：{err}"))
-        })?;
-        let owned = OwnedPage::new(launched);
+        )
+        .await?;
+        let owned = OwnedPage::new(launched, process);
 
         if spec.auto_login {
             login_site(owned.page(), &site_base, &spec.account).await?;
         }
 
-        let page = owned.into_inner();
+        let (page, process) = owned.into_parts();
         let mut guard = match self.sessions.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -1264,6 +1497,7 @@ impl AutomationEngine for RealAutomationEngine {
             spec.session_id.clone(),
             RealBrowserSession {
                 page,
+                _process: process,
                 site_base,
                 proxy_endpoint: spec.proxy_endpoint.clone(),
                 download_format,
@@ -1792,6 +2026,56 @@ mod tests {
         assert!(err.reason.contains("拒绝连接可能属于其他账号的 Chrome"));
 
         ensure_browser_debug_port_available_with(19220, |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn managed_launch_args_pin_the_session_profile_and_debug_port() {
+        let args = managed_chrome_args(
+            Path::new(r"C:\worker\profiles\session-1"),
+            19223,
+            Path::new(r"C:\worker\staging"),
+            Some("127.0.0.1:19004"),
+            false,
+        );
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--remote-debugging-port=19223"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == r"--user-data-dir=C:\worker\profiles\session-1"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--proxy-server=http://127.0.0.1:19004"));
+        assert!(args.iter().any(|arg| arg == "--remote-allow-origins=*"));
+    }
+
+    #[test]
+    fn cdp_probe_requires_a_non_empty_websocket_url() {
+        assert!(cdp_version_is_ready(
+            r#"{"Browser":"Chrome","webSocketDebuggerUrl":"ws://127.0.0.1/devtools/browser/1"}"#
+        ));
+        assert!(!cdp_version_is_ready(r#"{"Browser":"Chrome"}"#));
+        assert!(!cdp_version_is_ready(r#"{"webSocketDebuggerUrl":""}"#));
+        assert!(!cdp_version_is_ready("not-json"));
+    }
+
+    #[test]
+    fn cleanup_match_is_scoped_to_exact_profile_or_debug_port() {
+        let cmd = vec![
+            OsString::from("chrome.exe"),
+            OsString::from("--remote-debugging-port=19220"),
+            OsString::from(r"--user-data-dir=C:\worker\profiles\session-a"),
+        ];
+        assert!(process_matches_browser(
+            &cmd,
+            Path::new(r"C:\worker\profiles\session-a"),
+            19220
+        ));
+        assert!(!process_matches_browser(
+            &cmd,
+            Path::new(r"C:\worker\profiles\session-b"),
+            19221
+        ));
     }
 
     /// 只有「没有临时文件 + 大小连续不变」才算下载完成。

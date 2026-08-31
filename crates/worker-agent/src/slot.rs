@@ -42,6 +42,8 @@ use uuid::Uuid;
 
 /// 每个槽位独占一个 Chrome DevTools 调试端口，和 GOST 的 19001+ 端口段分离。
 const BROWSER_DEBUG_PORT_BASE: u16 = 19220;
+const BROWSER_START_BACKOFF_BASE_SECS: u64 = 30;
+const BROWSER_START_BACKOFF_MAX_SECS: u64 = 120;
 
 fn browser_debug_port(slot_index: u32) -> Result<u16> {
     let offset = u16::try_from(slot_index)
@@ -49,6 +51,23 @@ fn browser_debug_port(slot_index: u32) -> Result<u16> {
     BROWSER_DEBUG_PORT_BASE
         .checked_add(offset)
         .ok_or_else(|| anyhow::anyhow!("槽位序号 {slot_index} 无法映射浏览器调试端口"))
+}
+
+fn is_browser_start_failure(reason: &str) -> bool {
+    reason.contains("启动 Chrome 进程失败")
+        || reason.contains("Chrome 已启动，但调试端口")
+        || reason.contains("建立 CDP 会话失败")
+        || reason.contains("初始化浏览器反检测脚本失败")
+        // 兼容旧引擎错误，升级过程中仍能阻止重试风暴。
+        || reason.contains("Chrome did not become ready")
+}
+
+fn browser_start_backoff(consecutive_failures: u32) -> Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(2);
+    let seconds = BROWSER_START_BACKOFF_BASE_SECS
+        .saturating_mul(1u64 << exponent)
+        .min(BROWSER_START_BACKOFF_MAX_SECS);
+    Duration::from_secs(seconds)
 }
 
 /// 执行阶段技术枚举常量（V4 方案第 10.1 节）。
@@ -637,6 +656,7 @@ async fn run_slot_worker(
     bus: OutboundEventBus,
 ) {
     tracing::info!(slot = shared.index, "槽位协程已启动");
+    let mut consecutive_browser_start_failures = 0u32;
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -661,16 +681,41 @@ async fn run_slot_worker(
                 )
                 .await;
 
-                let (status, reason, completed) = match outcome {
-                    Ok(done) => (
-                        SessionStatus::Ended,
-                        lock(&shared.end_after_task)
-                            .clone()
-                            .unwrap_or_else(|| "会话正常结束".to_string()),
-                        done,
-                    ),
-                    Err(err) => (SessionStatus::Failed, format!("会话异常退出：{err}"), 0),
+                let (status, reason, completed, backoff) = match outcome {
+                    Ok(done) => {
+                        consecutive_browser_start_failures = 0;
+                        (
+                            SessionStatus::Ended,
+                            lock(&shared.end_after_task)
+                                .clone()
+                                .unwrap_or_else(|| "会话正常结束".to_string()),
+                            done,
+                            None,
+                        )
+                    }
+                    Err(err) => {
+                        let reason = format!("会话异常退出：{err}");
+                        let backoff = if is_browser_start_failure(&reason) {
+                            consecutive_browser_start_failures =
+                                consecutive_browser_start_failures.saturating_add(1);
+                            Some(browser_start_backoff(consecutive_browser_start_failures))
+                        } else {
+                            consecutive_browser_start_failures = 0;
+                            None
+                        };
+                        (SessionStatus::Failed, reason, 0, backoff)
+                    }
                 };
+
+                if let Some(delay) = backoff {
+                    let mut snap = shared.snapshot.write().await;
+                    snap.status = SlotStatus::Starting;
+                    snap.detail = format!(
+                        "浏览器启动连续失败 {} 次，冷却 {} 秒后再接受会话",
+                        consecutive_browser_start_failures,
+                        delay.as_secs()
+                    );
+                }
 
                 // 会话收尾必须可靠上报：Master 靠它释放账号、代理与槽位租约。
                 bus.send_reliable(
@@ -678,11 +723,22 @@ async fn run_slot_worker(
                     pb::worker_message::Payload::SessionClosed(pb::SessionClosed {
                         session_id: session_id.clone(),
                         status: status.as_str().to_string(),
-                        reason,
+                        reason: reason.clone(),
                         completed_count: completed,
                     }),
                 )
                 .await;
+
+                if let Some(delay) = backoff {
+                    tracing::warn!(
+                        slot = shared.index,
+                        consecutive_failures = consecutive_browser_start_failures,
+                        backoff_secs = delay.as_secs(),
+                        reason = %reason,
+                        "浏览器启动失败，槽位进入退避，防止重复打开窗口"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
 
                 {
                     let mut snap = shared.snapshot.write().await;
@@ -2556,5 +2612,28 @@ mod tests {
             5
         );
         assert!(ports.iter().all(|port| !(19001..=19064).contains(port)));
+    }
+
+    #[test]
+    fn browser_start_failures_use_bounded_exponential_backoff() {
+        assert_eq!(browser_start_backoff(1), Duration::from_secs(30));
+        assert_eq!(browser_start_backoff(2), Duration::from_secs(60));
+        assert_eq!(browser_start_backoff(3), Duration::from_secs(120));
+        assert_eq!(browser_start_backoff(20), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn only_browser_initialization_errors_trigger_browser_backoff() {
+        for reason in [
+            "启动 Chrome 进程失败：拒绝访问",
+            "Chrome 已启动，但调试端口 19220 在 30 秒内未就绪",
+            "Chrome 调试端口已就绪，但建立 CDP 会话失败",
+            "初始化浏览器反检测脚本失败",
+            "Chrome did not become ready within 5 seconds after launch",
+        ] {
+            assert!(is_browser_start_failure(reason), "{reason}");
+        }
+        assert!(!is_browser_start_failure("登录失败：密码错误"));
+        assert!(!is_browser_start_failure("代理出口 IP 不匹配"));
     }
 }
