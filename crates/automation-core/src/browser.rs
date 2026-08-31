@@ -82,8 +82,6 @@ pub fn launch_args(
     ];
     if let Some(endpoint) = proxy_endpoint {
         args.push(format!("--proxy-server=http://{endpoint}"));
-        // 本机转发端口必须走代理，因此不能把 127.0.0.1 加入 bypass 列表
-        args.push("--proxy-bypass-list=<-loopback>".to_string());
     }
     if headless {
         args.push("--headless=new".to_string());
@@ -112,7 +110,7 @@ mod tests {
         assert!(args
             .iter()
             .any(|a| a == "--proxy-server=http://127.0.0.1:19001"));
-        assert!(args.iter().any(|a| a == "--proxy-bypass-list=<-loopback>"));
+        assert!(!args.iter().any(|a| a.contains("proxy-bypass-list")));
         assert!(args.iter().any(|a| a == "--headless=new"));
     }
 

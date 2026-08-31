@@ -62,6 +62,10 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer().with_ansi(!cfg!(windows)))
         .init();
 
+    // rust_drission / ureq 默认会走 HTTP_PROXY。Windows 上一旦系统代理存在，
+    // 本机 127.0.0.1 调试端口探测会被送到远端，表现为 connection timed out。
+    ensure_loopback_not_proxied();
+
     let cli = Cli::parse();
     let config = WorkerConfig::load(&cli.config)?;
     let command = cli.command.unwrap_or(Commands::Run);
@@ -223,6 +227,23 @@ fn reset_identity(config: &WorkerConfig, yes: bool) -> Result<()> {
     }
     println!("已删除本机身份与凭据文件。请先确认云端旧节点已拒绝/禁用，再执行 `worker-agent run` 重新注册。");
     Ok(())
+}
+
+fn ensure_loopback_not_proxied() {
+    const LOOPBACK: &str = "127.0.0.1,localhost,::1";
+    for key in ["NO_PROXY", "no_proxy"] {
+        match std::env::var(key) {
+            Ok(existing)
+                if existing.split(',').any(|item| {
+                    let item = item.trim();
+                    item == "*" || item == "127.0.0.1" || item == "localhost" || item == "::1"
+                }) => {}
+            Ok(existing) if !existing.trim().is_empty() => {
+                std::env::set_var(key, format!("{existing},{LOOPBACK}"));
+            }
+            _ => std::env::set_var(key, LOOPBACK),
+        }
+    }
 }
 
 fn save_enrollment_artifacts(

@@ -40,8 +40,9 @@ use crate::storage;
 use platform_proto::v1::ExecutionStage;
 use uuid::Uuid;
 
-/// 每个槽位独占一个 Chrome DevTools 调试端口，和 GOST 的 19001+ 端口段分离。
-const BROWSER_DEBUG_PORT_BASE: u16 = 19220;
+/// 与 Tauri 客户端一致：`9300 + slot`。不要用 19220 附近——Windows Hyper-V/WinNAT
+/// 常把那段划进 excludedportrange，表现为浏览器窗口已开、CDP 一直超时。
+const BROWSER_DEBUG_PORT_BASE: u16 = 9300;
 const BROWSER_START_BACKOFF_BASE_SECS: u64 = 30;
 const BROWSER_START_BACKOFF_MAX_SECS: u64 = 120;
 
@@ -55,9 +56,14 @@ fn browser_debug_port(slot_index: u32) -> Result<u16> {
 
 fn is_browser_start_failure(reason: &str) -> bool {
     reason.contains("启动 Chrome 进程失败")
+        || reason.contains("启动浏览器进程失败")
+        || reason.contains("启动浏览器失败")
         || reason.contains("Chrome 已启动，但调试端口")
+        || reason.contains("浏览器已启动，但调试端口")
         || reason.contains("建立 CDP 会话失败")
         || reason.contains("初始化浏览器反检测脚本失败")
+        || reason.contains("DevToolsActivePort")
+        || reason.contains("无法分配可用的本机调试端口")
         // 兼容旧引擎错误，升级过程中仍能阻止重试风暴。
         || reason.contains("Chrome did not become ready")
 }
@@ -2602,7 +2608,7 @@ mod tests {
         let ports: Vec<u16> = (0..5)
             .map(|slot| browser_debug_port(slot).unwrap())
             .collect();
-        assert_eq!(ports, vec![19220, 19221, 19222, 19223, 19224]);
+        assert_eq!(ports, vec![9300, 9301, 9302, 9303, 9304]);
         assert_eq!(
             ports
                 .iter()
@@ -2626,9 +2632,13 @@ mod tests {
     fn only_browser_initialization_errors_trigger_browser_backoff() {
         for reason in [
             "启动 Chrome 进程失败：拒绝访问",
+            "启动浏览器进程失败：拒绝访问",
+            "启动浏览器失败：HTTP request failed",
             "Chrome 已启动，但调试端口 19220 在 30 秒内未就绪",
-            "Chrome 调试端口已就绪，但建立 CDP 会话失败",
+            "浏览器已启动，但调试端口 42220 在 60 秒内未就绪",
+            "浏览器调试端口已就绪，但建立 CDP 会话失败",
             "初始化浏览器反检测脚本失败",
+            "未读到 DevToolsActivePort",
             "Chrome did not become ready within 5 seconds after launch",
         ] {
             assert!(is_browser_start_failure(reason), "{reason}");
