@@ -157,6 +157,9 @@ pub async fn reap_once(state: &AppState) -> AppResult<ReapReport> {
             .publish("批次变更", serde_json::json!({ "批次": batch_id }));
     }
 
+    // 检查并执行每日 Webhook 统计定时推送（如到达 20:00）
+    let _ = crate::api::webhook::check_and_trigger_daily_webhook_push(state).await;
+
     let report = ReapReport {
         quota_reset,
         proxies_revived,

@@ -83,6 +83,7 @@ export function AccountCenterPage() {
   const [previewData, setPreviewData] = useState<AccountImportPreview | null>(null);
   const [committing, setCommitting] = useState(false);
   const [resettingQuota, setResettingQuota] = useState(false);
+  const [resettingDisabled, setResettingDisabled] = useState(false);
 
   // Outlook 同步向导状态
   const [outlookWizardOpen, setOutlookWizardOpen] = useState(false);
@@ -229,6 +230,19 @@ export function AccountCenterPage() {
     }
   };
 
+  const resetDisabled = async () => {
+    setResettingDisabled(true);
+    try {
+      const res = await api.post<ResetQuotaResponse>("/api/accounts/reset-disabled");
+      toast.success(res.message);
+      reload();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "重置已禁用账号失败");
+    } finally {
+      setResettingDisabled(false);
+    }
+  };
+
   const handleOpenImportWizard = () => {
     setImportStep("select");
     setSelectedFile(null);
@@ -328,6 +342,12 @@ export function AccountCenterPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {canManage && (
+            <Button variant="secondary" size="sm" loading={resettingDisabled} onClick={resetDisabled}>
+              <RefreshCw className="mr-1.5 h-4 w-4 text-slate-700" />
+              重置已禁用账号
+            </Button>
+          )}
           {canManage && (
             <Button variant="secondary" size="sm" loading={resettingQuota} onClick={resetQuota}>
               <RefreshCw className="mr-1.5 h-4 w-4" />

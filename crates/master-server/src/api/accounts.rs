@@ -172,6 +172,31 @@ pub async fn reset_account_quota(
     }))
 }
 
+/// POST /api/accounts/reset-disabled
+pub async fn reset_disabled_accounts(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+) -> AppResult<Json<ResetQuotaResponse>> {
+    auth.require_write()?;
+    let reset_count = store::resource::reset_disabled_accounts(&state.pool).await?;
+
+    store::admin::log(
+        &state.pool,
+        platform_domain::OperationSource::Admin,
+        platform_domain::LogLevel::Info,
+        &auth.username,
+        "重置已禁用账号",
+        "all",
+        &format!("将 {reset_count} 个「已禁用」账号重置为可用"),
+    )
+    .await?;
+
+    Ok(Json(ResetQuotaResponse {
+        reset_count,
+        message: format!("已将 {reset_count} 个「已禁用」账号重置为可用"),
+    }))
+}
+
 /// GET /api/accounts/:id
 pub async fn get_account(
     State(state): State<AppState>,

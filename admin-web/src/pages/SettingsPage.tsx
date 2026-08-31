@@ -7,6 +7,7 @@ import { can } from "../lib/permissions";
 import { api, changePassword } from "../lib/api";
 import { ApiError, type Setting } from "../lib/types";
 import { MailCodeSettings } from "../features/system/MailCodeSettings";
+import { WebhookSettings } from "../features/system/WebhookSettings";
 import {
   Button,
   Card,
@@ -95,7 +96,7 @@ export function SettingsPage() {
   if (error) return <ErrorBox message={error} onRetry={reload} />;
 
   const settings = (data ?? []).filter(
-    (setting) => !["mail_code_provider", "global_download_paused"].includes(setting.key),
+    (setting) => !["mail_code_provider", "global_download_paused", "webhook_notification_config"].includes(setting.key),
   );
   const grouped: Array<{ title: string; description: string; pattern: RegExp; items: Setting[] }> = GROUP_RULES.map((group) => ({
     ...group,
@@ -127,6 +128,8 @@ export function SettingsPage() {
       </div>
 
       <MailCodeSettings canManage={canManage} />
+
+      <WebhookSettings canManage={canManage} />
 
       <Card className="p-5">
         <div className="text-sm font-semibold text-slate-800">其余运行参数</div>

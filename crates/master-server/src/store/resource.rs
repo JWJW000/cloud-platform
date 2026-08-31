@@ -219,6 +219,21 @@ pub async fn reset_exhausted_quota(executor: impl PgExecutor<'_>) -> AppResult<u
     Ok(affected)
 }
 
+/// 手动将「已禁用」的账号全部恢复为可用（已注册）。
+pub async fn reset_disabled_accounts(executor: impl PgExecutor<'_>) -> AppResult<u64> {
+    let affected = sqlx::query(
+        "UPDATE accounts SET daily_used = 0, reset_date = current_date, \
+             status = $1, last_error = NULL, updated_at = now() \
+         WHERE status = $2",
+    )
+    .bind(AccountStatus::Registered.as_str())
+    .bind(AccountStatus::Disabled.as_str())
+    .execute(executor)
+    .await?
+    .rows_affected();
+    Ok(affected)
+}
+
 /// 当前可用账号数（已注册、未被占用、还有额度）。
 pub async fn count_available_accounts(executor: impl PgExecutor<'_>) -> AppResult<i64> {
     let count: i64 = sqlx::query_scalar(

@@ -88,10 +88,21 @@ async fn account_list_total_status_summary_and_manual_reset() {
     assert_eq!(account.status, "已注册");
     assert_eq!(account.daily_used, 0);
 
+    let reset_disabled_count = master_server::store::resource::reset_disabled_accounts(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(reset_disabled_count, 1);
+
+    let disabled_account = master_server::store::resource::get_account(&db.pool, _disabled_id)
+        .await
+        .unwrap();
+    assert_eq!(disabled_account.status, "已注册");
+    assert_eq!(disabled_account.daily_used, 0);
+
     let available = master_server::store::resource::count_available_accounts(&db.pool)
         .await
         .unwrap();
-    assert_eq!(available, 2);
+    assert_eq!(available, 3);
 
     db.teardown().await;
 }

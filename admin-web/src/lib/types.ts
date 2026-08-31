@@ -638,6 +638,29 @@ export interface UpdateMailProviderPayload {
   allowed_senders?: string[];
 }
 
+export type WebhookPlatform = "feishu" | "wechat" | "dingtalk" | "generic";
+
+export interface WebhookConfig {
+  enabled: boolean;
+  url: string;
+  platform: WebhookPlatform;
+  secret?: string | null;
+  daily_push_time: string;
+  title_prefix: string;
+  include_system_status: boolean;
+  last_pushed_date?: string | null;
+}
+
+export interface WebhookDetailsResponse {
+  config: WebhookConfig;
+  preview_markdown: string;
+}
+
+export interface SendWebhookResponse {
+  success: boolean;
+  message: string;
+}
+
 export interface MailProviderStatus {
   provider_type: "manual" | "outlook_http" | "mock" | string;
   version: number;

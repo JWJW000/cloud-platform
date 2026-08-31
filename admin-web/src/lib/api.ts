@@ -533,3 +533,21 @@ export async function testMailProvider(
 ): Promise<import("./types").TestMailProviderResult> {
   return api.post<import("./types").TestMailProviderResult>("/api/settings/mail-provider/test", data);
 }
+
+// ---------------------------------------------------------------- Webhook 接口
+
+export async function getWebhookDetails(): Promise<import("./types").WebhookDetailsResponse> {
+  return api.get<import("./types").WebhookDetailsResponse>("/api/settings/webhook");
+}
+
+export async function updateWebhookConfig(
+  data: import("./types").WebhookConfig
+): Promise<import("./types").WebhookConfig> {
+  return api.put<import("./types").WebhookConfig>("/api/settings/webhook", data);
+}
+
+export async function sendWebhookManual(
+  data?: { custom_note?: string }
+): Promise<import("./types").SendWebhookResponse> {
+  return api.post<import("./types").SendWebhookResponse>("/api/settings/webhook/send", data ?? {});
+}

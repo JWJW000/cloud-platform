@@ -92,7 +92,7 @@ pub async fn put_setting(
         || key.is_empty()
         || matches!(
             normalized.as_str(),
-            "mail_code_provider" | "global_download_paused"
+            "mail_code_provider" | "global_download_paused" | "webhook_notification_config"
         )
     {
         return Err(AppError::bad("该设置键无效或必须使用类型化设置接口"));

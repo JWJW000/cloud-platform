@@ -24,6 +24,7 @@ pub mod sessions;
 pub mod settings;
 pub mod static_files;
 pub mod tasks;
+pub mod webhook;
 pub mod workers;
 
 use axum::body::Body;
@@ -351,6 +352,10 @@ pub fn router(state: AppState) -> Router {
             post(accounts::reset_account_quota),
         )
         .route(
+            "/api/accounts/reset-disabled",
+            post(accounts::reset_disabled_accounts),
+        )
+        .route(
             "/api/accounts/outlook/preview",
             post(outlook_accounts::preview_outlook_accounts),
         )
@@ -408,6 +413,15 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/mail-provider/status",
             get(mail_provider::get_mail_provider_status),
+        )
+        // Webhook 定时推送与测试
+        .route(
+            "/api/settings/webhook",
+            get(webhook::get_webhook_endpoint).put(webhook::update_webhook_endpoint),
+        )
+        .route(
+            "/api/settings/webhook/send",
+            post(webhook::manual_send_webhook),
         )
         // 系统设置与字典
         .route("/api/settings", get(settings::list_settings))
