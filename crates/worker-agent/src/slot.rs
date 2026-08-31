@@ -45,6 +45,7 @@ use uuid::Uuid;
 const BROWSER_DEBUG_PORT_BASE: u16 = 9300;
 const BROWSER_START_BACKOFF_BASE_SECS: u64 = 30;
 const BROWSER_START_BACKOFF_MAX_SECS: u64 = 120;
+const PROXY_TUNNEL_BACKOFF: Duration = Duration::from_secs(30);
 
 fn browser_debug_port(slot_index: u32) -> Result<u16> {
     let offset = u16::try_from(slot_index)
@@ -461,6 +462,14 @@ impl SlotManager {
         }
         match self.slots.get(session.slot_index as usize) {
             Some(slot) => {
+                // 收到创建会话指令后，立即原子更新快照为 Starting 并记录 active_session_id，
+                // 防止槽位协程启动浏览器耗时期间，心跳被 Master 误判为空闲而重复下发或回收会话。
+                {
+                    let mut snap = slot.snapshot.write().await;
+                    snap.status = SlotStatus::Starting;
+                    snap.active_session_id = Some(session.session_id.clone());
+                    snap.detail = "正在启动本地代理与浏览器会话".to_string();
+                }
                 slot.command_tx
                     .send(SlotCommand::CreateSession(session))
                     .await?;
@@ -705,6 +714,11 @@ async fn run_slot_worker(
                             consecutive_browser_start_failures =
                                 consecutive_browser_start_failures.saturating_add(1);
                             Some(browser_start_backoff(consecutive_browser_start_failures))
+                        } else if platform_domain::classify_failure(&reason, None)
+                            == platform_domain::FailureClass::ProxyFailure
+                        {
+                            consecutive_browser_start_failures = 0;
+                            Some(PROXY_TUNNEL_BACKOFF)
                         } else {
                             consecutive_browser_start_failures = 0;
                             None
@@ -716,11 +730,18 @@ async fn run_slot_worker(
                 if let Some(delay) = backoff {
                     let mut snap = shared.snapshot.write().await;
                     snap.status = SlotStatus::Starting;
-                    snap.detail = format!(
-                        "浏览器启动连续失败 {} 次，冷却 {} 秒后再接受会话",
-                        consecutive_browser_start_failures,
-                        delay.as_secs()
-                    );
+                    snap.detail = if consecutive_browser_start_failures > 0 {
+                        format!(
+                            "浏览器启动连续失败 {} 次，冷却 {} 秒后再接受会话",
+                            consecutive_browser_start_failures,
+                            delay.as_secs()
+                        )
+                    } else {
+                        format!(
+                            "代理隧道失败，冷却 {} 秒后再接受会话，避免同一坏代理连闪窗口",
+                            delay.as_secs()
+                        )
+                    };
                 }
 
                 // 会话收尾必须可靠上报：Master 靠它释放账号、代理与槽位租约。
@@ -741,7 +762,7 @@ async fn run_slot_worker(
                         consecutive_failures = consecutive_browser_start_failures,
                         backoff_secs = delay.as_secs(),
                         reason = %reason,
-                        "浏览器启动失败，槽位进入退避，防止重复打开窗口"
+                        "会话失败，槽位进入退避，防止重复打开窗口"
                     );
                     tokio::time::sleep(delay).await;
                 }
@@ -2645,5 +2666,16 @@ mod tests {
         }
         assert!(!is_browser_start_failure("登录失败：密码错误"));
         assert!(!is_browser_start_failure("代理出口 IP 不匹配"));
+    }
+
+    #[test]
+    fn tunnel_failures_are_proxy_failures_not_browser_start() {
+        let reason =
+            "会话异常退出：打开首页失败：Page.navigate failed: net::ERR_TUNNEL_CONNECTION_FAILED";
+        assert!(!is_browser_start_failure(reason));
+        assert_eq!(
+            platform_domain::classify_failure(reason, None),
+            platform_domain::FailureClass::ProxyFailure
+        );
     }
 }

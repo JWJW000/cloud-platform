@@ -236,12 +236,9 @@ impl RealAutomationEngine {
         for attempt in 1..=MAX_ATTEMPTS {
             cancel.check()?;
             let get_err = self.with_session(session_id, |sess| {
-                sess.page.get(url).map_err(|err| {
-                    AutomationError::new(
-                        FailureClass::SiteUnavailable,
-                        format!("页面导航失败：{err} ({url})"),
-                    )
-                })
+                sess.page
+                    .get(url)
+                    .map_err(|err| navigation_failure(url, &err.to_string()))
             });
             if let Err(err) = get_err {
                 if site::navigation_error_is_site_unavailable(&err.reason) && attempt < MAX_ATTEMPTS
@@ -278,7 +275,7 @@ impl RealAutomationEngine {
 
             let blocked = self.with_session(session_id, |sess| {
                 if let Some(reason) = site_unavailable_reason(&sess.page) {
-                    return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
+                    return Err(unavailable_page_error(reason));
                 }
                 if js_flag(&sess.page, site::CONNECTION_PROBLEM_SCRIPT) {
                     return Err(AutomationError::new(
@@ -319,7 +316,7 @@ impl RealAutomationEngine {
             cancel.check()?;
             let snapshot = self.with_session(&session.session_id, |sess| {
                 if let Some(reason) = site_unavailable_reason(&sess.page) {
-                    return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
+                    return Err(unavailable_page_error(reason));
                 }
                 if js_flag(&sess.page, site::QUOTA_LIMIT_PAGE_SCRIPT) {
                     let quota = read_quota_from_page(&sess.page);
@@ -1558,6 +1555,87 @@ fn fill_field(page: &ChromiumPage, selectors: &str, value: &str) -> Result<(), A
     })
 }
 
+fn navigation_failure(url: &str, err_text: &str) -> AutomationError {
+    let reason = format!("打开首页失败：{err_text} ({url})");
+    if site::is_proxy_tunnel_error(err_text) {
+        AutomationError::new(FailureClass::ProxyFailure, reason)
+    } else {
+        AutomationError::new(FailureClass::SiteUnavailable, reason)
+    }
+}
+
+fn unavailable_page_error(reason: String) -> AutomationError {
+    if site::is_proxy_tunnel_error(&reason) {
+        AutomationError::new(FailureClass::ProxyFailure, reason)
+    } else {
+        AutomationError::new(FailureClass::SiteUnavailable, reason)
+    }
+}
+
+fn should_retry_navigation(err: &AutomationError) -> bool {
+    matches!(
+        err.class,
+        FailureClass::SiteUnavailable | FailureClass::ProxyFailure
+    ) || site::navigation_error_is_site_unavailable(&err.reason)
+}
+
+/// 与 Tauri `navigate_page` 对齐：网络/`net::err_`/隧道失败重试 3 次，窗口保持打开。
+async fn navigate_page(page: &ChromiumPage, url: &str) -> Result<(), AutomationError> {
+    const MAX_ATTEMPTS: usize = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        if let Err(err) = page.get(url) {
+            let mapped = navigation_failure(url, &err.to_string());
+            if should_retry_navigation(&mapped) && attempt < MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
+                continue;
+            }
+            return Err(mapped);
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        let challenge_deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < challenge_deadline {
+            if !js_flag(page, site::CHALLENGE_PAGE_SCRIPT) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        let problem_deadline = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < problem_deadline {
+            if !js_flag(page, site::CONNECTION_PROBLEM_SCRIPT) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+
+        if js_flag(page, site::CONNECTION_PROBLEM_SCRIPT) {
+            let err = AutomationError::new(
+                FailureClass::SiteUnavailable,
+                format!("站点返回 Connection Problem 页面: {url}"),
+            );
+            if attempt < MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
+                continue;
+            }
+            return Err(err);
+        }
+        if let Some(reason) = site_unavailable_reason(page) {
+            let err = unavailable_page_error(reason);
+            if should_retry_navigation(&err) && attempt < MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
+                continue;
+            }
+            return Err(err);
+        }
+        return Ok(());
+    }
+    Err(AutomationError::new(
+        FailureClass::SiteUnavailable,
+        format!("页面导航失败: {url}"),
+    ))
+}
+
 /// 登录站点：首页弹窗 `#loginForm`，瞬时拒绝最多 3 次并刷新挑战 token。
 async fn login_site(
     page: &ChromiumPage,
@@ -1589,41 +1667,7 @@ async fn login_attempt(
     account: &AccountCredential,
 ) -> Result<(), AutomationError> {
     let root = site::site_root_url(site_base);
-    page.get(&root).map_err(|err| {
-        AutomationError::new(
-            FailureClass::SiteUnavailable,
-            format!("打开首页失败：{err}"),
-        )
-    })?;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-
-    // 若处于反爬 JS 挑战首屏 (Checking your browser ...)，等待页面 JS 计算 c_token 并自动刷新
-    let challenge_deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < challenge_deadline {
-        if !js_flag(page, site::CHALLENGE_PAGE_SCRIPT) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    // Connection Problem 拦截页等待最多 6 秒（可能由挑战刷新过渡）
-    let problem_deadline = Instant::now() + Duration::from_secs(6);
-    while Instant::now() < problem_deadline {
-        if !js_flag(page, site::CONNECTION_PROBLEM_SCRIPT) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-    }
-
-    if js_flag(page, site::CONNECTION_PROBLEM_SCRIPT) {
-        return Err(AutomationError::new(
-            FailureClass::SiteUnavailable,
-            format!("站点返回 Connection Problem 页面: {root}"),
-        ));
-    }
-    if let Some(reason) = site_unavailable_reason(page) {
-        return Err(AutomationError::new(FailureClass::SiteUnavailable, reason));
-    }
+    navigate_page(page, &root).await?;
 
     // 新会话即使遇到已有 Cookie，也必须退出后按 Master 下发的账号重新登录。
     // 直接复用“已登录”状态无法证明当前页面属于本会话账号，会造成跨槽位串号。

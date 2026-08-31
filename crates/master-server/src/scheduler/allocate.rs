@@ -10,7 +10,7 @@
 
 use chrono::{DateTime, Utc};
 use platform_domain::{
-    AccountStatus, ProxyStatus, SessionStatus, SlotStatus, TaskType, WorkerStatus,
+    classify_failure, AccountStatus, ProxyStatus, SessionStatus, SlotStatus, TaskType, WorkerStatus,
 };
 use uuid::Uuid;
 
@@ -342,11 +342,17 @@ async fn claim_slot(
     node_id: Uuid,
     preferred_slot: Option<i32>,
 ) -> AppResult<Option<i32>> {
+    // 只有当前槽位为空闲、且没有未结束的执行会话时才允许分配新会话，防止重复分配冲掉还在启动的浏览器
     let slot: Option<i32> = sqlx::query_scalar(
-        "SELECT slot_index FROM worker_slots \
-         WHERE node_id = $1 AND status = $2 AND session_id IS NULL \
-           AND ($3::int IS NULL OR slot_index = $3) \
-         ORDER BY slot_index \
+        "SELECT ws.slot_index FROM worker_slots ws \
+         WHERE ws.node_id = $1 AND ws.status = $2 AND ws.session_id IS NULL \
+           AND ($3::int IS NULL OR ws.slot_index = $3) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM execution_sessions es \
+               WHERE es.node_id = ws.node_id AND es.slot_index = ws.slot_index \
+                 AND es.ended_at IS NULL AND es.status IN ('创建中', '运行中') \
+           ) \
+         ORDER BY ws.slot_index \
          FOR UPDATE SKIP LOCKED LIMIT 1",
     )
     .bind(node_id)
@@ -514,6 +520,19 @@ pub async fn close_session(
     let session = store::session::get_session(&state.pool, session_id).await?;
 
     let mut tx = state.pool.begin().await?;
+    if status == SessionStatus::Failed {
+        let attribution = classify_failure(reason, None).attribution();
+        if let (Some(proxy_id), Some(proxy_status)) = (session.proxy_id, attribution.proxy_status) {
+            crate::scheduler::submit::apply_proxy_status(&mut tx, proxy_id, proxy_status, state)
+                .await?;
+        }
+        if let (Some(account_id), Some(account_status)) =
+            (session.account_id, attribution.account_status)
+        {
+            store::resource::set_account_status(&mut *tx, account_id, account_status, Some(reason))
+                .await?;
+        }
+    }
     store::session::end_session(&mut *tx, session_id, status, reason).await?;
     store::session::release_session_resources(&mut tx, session_id).await?;
     requeue_leased_tasks(&mut tx, session_id, reason).await?;

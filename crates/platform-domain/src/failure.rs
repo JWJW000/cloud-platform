@@ -146,6 +146,15 @@ pub fn classify_failure(reason: &str, quota_indicator: Option<(u32, u32)>) -> Fa
         "代理连接",
         "代理认证",
         "proxy authentication",
+        "err_tunnel",
+        "err_proxy",
+        "tunnel_connection",
+        "proxy_connection",
+        "err_no_supported_proxies",
+        "chrome-error://",
+        "出口 ip",
+        "代理连通",
+        "代理检测失败",
     ]) {
         return FailureClass::ProxyFailure;
     }
@@ -236,6 +245,26 @@ mod tests {
         assert!(!attribution.consumes_retry);
         assert_eq!(attribution.proxy_status, Some(ProxyStatus::Error));
         assert_eq!(attribution.task_status, Some(TaskStatus::Pending));
+    }
+
+    #[test]
+    fn tunnel_and_chrome_error_pages_are_proxy_failures() {
+        for reason in [
+            "打开首页失败：Page.navigate failed: net::ERR_TUNNEL_CONNECTION_FAILED",
+            "会话异常退出：打开首页失败：net::ERR_PROXY_CONNECTION_FAILED",
+            "Chrome 网络错误页: chrome-error://chromewebdata/",
+            "代理连通性或出口 IP 探测失败：出口 IP 探测失败: Proxy failed to connect",
+        ] {
+            assert_eq!(
+                classify_failure(reason, None),
+                FailureClass::ProxyFailure,
+                "{reason}"
+            );
+            assert_eq!(
+                classify_failure(reason, None).attribution().proxy_status,
+                Some(ProxyStatus::Error)
+            );
+        }
     }
 
     #[test]

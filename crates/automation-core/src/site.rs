@@ -301,6 +301,18 @@ pub fn navigation_error_is_site_unavailable(message: &str) -> bool {
         || message.to_ascii_lowercase().contains("dns")
 }
 
+/// Chrome 经本地 GOST 做 HTTPS CONNECT 失败，或落到 `chrome-error://` 拦截页。
+pub fn is_proxy_tunnel_error(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    text.contains("err_tunnel")
+        || text.contains("err_proxy")
+        || text.contains("tunnel_connection")
+        || text.contains("proxy_connection")
+        || text.contains("err_no_supported_proxies")
+        || text.contains("chrome-error://")
+        || text.contains("proxy failed")
+}
+
 /// 密码是否满足站点 9..=32 限制。
 pub fn password_length_ok(password: &str) -> bool {
     (9..=32).contains(&password.chars().count())

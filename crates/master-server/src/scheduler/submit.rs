@@ -993,7 +993,7 @@ async fn apply_cancelled_in_tx(
 }
 
 /// 代理的两种降级走不同的语句：冷却要带时长与限流计数，异常只改状态。
-async fn apply_proxy_status(
+pub(crate) async fn apply_proxy_status(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     proxy_id: Uuid,
     status: ProxyStatus,

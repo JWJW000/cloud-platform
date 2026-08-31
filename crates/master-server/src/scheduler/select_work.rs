@@ -90,11 +90,16 @@ pub async fn trigger_scheduler_sweep(state: &AppState) -> AppResult<()> {
         let Some(sender) = state.links.sender(node_id) else {
             continue;
         };
-        // 查找该节点的空闲槽位
+        // 查找该节点真正空闲（无未结束活跃会话）的槽位
         let idle_slots: Vec<i32> = sqlx::query_scalar(
-            "SELECT slot_index FROM worker_slots \
-             WHERE node_id = $1 AND status = $2 AND session_id IS NULL \
-             ORDER BY slot_index",
+            "SELECT ws.slot_index FROM worker_slots ws \
+             WHERE ws.node_id = $1 AND ws.status = $2 AND ws.session_id IS NULL \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM execution_sessions es \
+                   WHERE es.node_id = ws.node_id AND es.slot_index = ws.slot_index \
+                     AND es.ended_at IS NULL AND es.status IN ('创建中', '运行中') \
+               ) \
+             ORDER BY ws.slot_index",
         )
         .bind(node_id)
         .bind(SlotStatus::Idle.as_str())
