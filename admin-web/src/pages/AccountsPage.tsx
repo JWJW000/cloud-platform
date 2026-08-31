@@ -212,8 +212,8 @@ export function AccountsPage() {
   };
 
   const handleFetchOutlookAccounts = async () => {
-    if (defaultPassword.trim().length < 6 || defaultPassword.trim().length > 64) {
-      toast.error("请先设置云端统一注册密码（6–64 字符）");
+    if (defaultPassword.trim().length < 9 || defaultPassword.trim().length > 64) {
+      toast.error("请先设置云端统一注册密码（9–64 字符，站点要求至少 9 位）");
       return;
     }
     setPreviewingOutlook(true);

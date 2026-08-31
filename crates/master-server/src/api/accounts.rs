@@ -218,8 +218,9 @@ pub async fn create_account(
     if email.is_empty() {
         return Err(AppError::bad("邮箱不能为空"));
     }
-    if req.password.trim().is_empty() {
-        return Err(AppError::bad("密码不能为空"));
+    let password = req.password.trim();
+    if password.len() < 9 || password.len() > 64 {
+        return Err(AppError::bad("密码长度须为 9–64 字符"));
     }
 
     let cipher_text = state

@@ -193,8 +193,8 @@ pub async fn sync_outlook_accounts(
     auth.require_super_admin()?;
 
     let password = req.default_password.trim();
-    if password.len() < 6 || password.len() > 64 {
-        return Err(AppError::bad("注册密码长度须为 6–64 字符"));
+    if password.len() < 9 || password.len() > 64 {
+        return Err(AppError::bad("注册密码长度须为 9–64 字符"));
     }
 
     // 勾选邮箱规范化 + 去重（小写、含 @、非空）

@@ -1,6 +1,5 @@
 //! Webhook 消息推送配置与每日统计通知（支持飞书机器人及多平台适配）。
 
-use std::time::Duration;
 use axum::extract::State;
 use axum::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -9,6 +8,7 @@ use chrono::{Local, Timelike};
 use reqwest::Client;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::api::auth::AuthenticatedUser;
 use crate::error::{AppError, AppResult};
@@ -18,19 +18,14 @@ use crate::store;
 pub const SETTING_KEY_WEBHOOK: &str = "webhook_notification_config";
 
 /// Webhook 平台类型。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WebhookPlatform {
+    #[default]
     Feishu,
     Wechat,
     Dingtalk,
     Generic,
-}
-
-impl Default for WebhookPlatform {
-    fn default() -> Self {
-        Self::Feishu
-    }
 }
 
 /// Webhook 推送配置。
@@ -154,17 +149,25 @@ pub async fn build_daily_report_markdown(
 
     let mut md = String::new();
     md.push_str(&format!("### 📊 {}\n", title_prefix));
-    md.push_str(&format!("> **统计日期**：{} {}\n\n", today_date, today_time));
+    md.push_str(&format!(
+        "> **统计日期**：{} {}\n\n",
+        today_date, today_time
+    ));
 
     md.push_str("#### 📚 今日图书获取统计\n");
     md.push_str(&format!("- ✅ **成功下载**：**{}** 本\n", completed));
     md.push_str(&format!("- ❌ **下载失败**：{} 本\n", failed));
     md.push_str(&format!("- ⏭️ **跳过未收录**：{} 本\n", skipped));
-    md.push_str(&format!("- 💾 **总下载流量**：{}\n", format_bytes(bytes_total)));
+    md.push_str(&format!(
+        "- 💾 **总下载流量**：{}\n",
+        format_bytes(bytes_total)
+    ));
     md.push_str(&format!("- 🔑 **账号使用次数**：{} 次\n", account_used));
 
     if include_system_status {
-        let nodes = store::node::list_nodes(&state.pool).await.unwrap_or_default();
+        let nodes = store::node::list_nodes(&state.pool)
+            .await
+            .unwrap_or_default();
         let total_workers = nodes.len();
         let online_workers = nodes.iter().filter(|n| n.connected).count();
 
@@ -288,7 +291,10 @@ pub async fn send_to_webhook(
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(code) = val.get("code").and_then(|c| c.as_i64()) {
                     if code != 0 {
-                        let msg = val.get("msg").and_then(|m| m.as_str()).unwrap_or("未知错误");
+                        let msg = val
+                            .get("msg")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("未知错误");
                         return Err(format!("飞书接口错误 (code={code}): {msg}"));
                     }
                 }
