@@ -856,7 +856,9 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
              (SELECT 1 FROM editions e WHERE e.work_id = w.id AND e.owned_at IS NOT NULL))::bigint as ambiguous_works_count,
           (SELECT count(*) FROM holdings WHERE created_at >= CURRENT_DATE)::bigint as today_downloaded_count,
           (SELECT count(DISTINCT work_id) FROM editions
-             WHERE owned_at >= CURRENT_DATE AND work_id IN (SELECT id FROM works WHERE work_type != '章节'))::bigint as today_added_works_count
+             WHERE owned_at IS NOT NULL
+               AND COALESCE(NULLIF(owned_at, '-infinity'::timestamptz), created_at) >= CURRENT_DATE
+               AND work_id IN (SELECT id FROM works WHERE work_type != '章节'))::bigint as today_added_works_count
         "#,
     )
     .fetch_one(pool)

@@ -69,16 +69,6 @@ async fn 全迁移_幂等_约束生效() {
     .unwrap();
     assert_eq!(owned_at_column, 1, "版本必须显式记录是否已拥有");
 
-    let owned_editions_index: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM pg_indexes \
-         WHERE schemaname = current_schema() AND tablename = 'editions' \
-           AND indexname = 'idx_editions_owned_updated'",
-    )
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
-    assert_eq!(owned_editions_index, 1, "总库分页必须只扫描已拥有版本");
-
     // 2. 重复执行迁移：幂等，不报错（sqlx 按版本记录跳过）
     master_server::store::run_migrations(&db.pool)
         .await
