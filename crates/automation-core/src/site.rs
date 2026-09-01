@@ -313,9 +313,9 @@ pub fn is_proxy_tunnel_error(message: &str) -> bool {
         || text.contains("proxy failed")
 }
 
-/// 密码是否满足站点 9..=32 限制。
+/// 密码是否满足站点 8..=32 限制。
 pub fn password_length_ok(password: &str) -> bool {
-    (9..=32).contains(&password.chars().count())
+    (8..=32).contains(&password.chars().count())
 }
 
 /// 昵称：账号昵称为空时用邮箱 @ 前一段。
@@ -406,7 +406,7 @@ pub fn is_retryable_registration_error(message: &str) -> bool {
     if message.contains("已存在")
         || message.contains("already exists")
         || message.contains("password length")
-        || message.contains("out of range 9..=32")
+        || message.contains("out of range 8..=32")
     {
         return false;
     }
@@ -480,8 +480,9 @@ mod tests {
 
     #[test]
     fn password_and_nickname_helpers() {
-        assert!(password_length_ok("abcdefghij"));
-        assert!(!password_length_ok("short"));
+        assert!(password_length_ok("12345678"));
+        assert!(!password_length_ok("1234567"));
+        assert!(!password_length_ok(&"x".repeat(33)));
         assert_eq!(nickname_from_email("alice@example.com"), "alice");
     }
 

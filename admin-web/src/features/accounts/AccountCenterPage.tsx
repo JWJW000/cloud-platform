@@ -111,8 +111,8 @@ export function AccountCenterPage() {
   };
 
   const handleFetchOutlookAccounts = async () => {
-    if (defaultPassword.trim().length < 9 || defaultPassword.trim().length > 64) {
-      toast.error("请先设置云端统一注册密码（9–64 字符，站点要求至少 9 位）");
+    if (defaultPassword.trim().length < 8 || defaultPassword.trim().length > 64) {
+      toast.error("请先设置云端统一注册密码（8–64 字符）");
       return;
     }
     setPreviewingOutlook(true);
@@ -711,7 +711,7 @@ export function AccountCenterPage() {
           <div className="space-y-4">
             <div className="rounded-lg bg-blue-50/60 p-3 border border-blue-100 space-y-3">
               <Input
-                label="云端统一注册密码（必填，6–64 字符）"
+                label="云端统一注册密码（必填，8–64 字符）"
                 type="password"
                 value={defaultPassword}
                 onChange={(e) => setDefaultPassword(e.target.value)}

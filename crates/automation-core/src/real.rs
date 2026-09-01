@@ -2114,7 +2114,7 @@ impl AutomationEngine for RealAutomationEngine {
             return Err(AutomationError::new(
                 FailureClass::Fatal,
                 format!(
-                    "password length {} out of range 9..=32, registration aborted",
+                    "password length {} out of range 8..=32, registration aborted",
                     spec.account.password.chars().count()
                 ),
             ));

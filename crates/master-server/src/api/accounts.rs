@@ -219,8 +219,8 @@ pub async fn create_account(
         return Err(AppError::bad("邮箱不能为空"));
     }
     let password = req.password.trim();
-    if password.len() < 9 || password.len() > 64 {
-        return Err(AppError::bad("密码长度须为 9–64 字符"));
+    if !(8..=64).contains(&password.chars().count()) {
+        return Err(AppError::bad("密码长度须为 8–64 字符"));
     }
 
     let cipher_text = state
@@ -317,8 +317,8 @@ pub async fn update_account_password(
 ) -> AppResult<Json<serde_json::Value>> {
     auth.require_write()?;
     let password = req.password.trim();
-    if password.is_empty() {
-        return Err(AppError::bad("密码不能为空"));
+    if !(8..=64).contains(&password.chars().count()) {
+        return Err(AppError::bad("密码长度须为 8–64 字符"));
     }
 
     let cipher_text = state.cipher.encrypt(password).map_err(AppError::Internal)?;
