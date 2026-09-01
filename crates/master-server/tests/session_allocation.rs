@@ -25,7 +25,7 @@ async fn 会话独占锁定账号代理与槽位() {
         "host",
         "Linux",
         "1.0",
-        "1.0",
+        "0.3.24",
         2,
         "token_hash",
     )
@@ -70,8 +70,41 @@ async fn 会话独占锁定账号代理与槽位() {
     store::resource::set_proxy_status(&db.pool, proxy.id, ProxyStatus::Available, None)
         .await
         .unwrap();
+    sqlx::query(
+        "UPDATE proxies SET last_checked_at = now(), exit_ip = '203.0.113.10' WHERE id = $1",
+    )
+    .bind(proxy.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
 
-    let state = db.create_test_state();
+    let provider_secret = store::mail_provider::save_secret_ciphertext(
+        &db.pool,
+        &cipher.encrypt("test-outlook-api-key").unwrap(),
+        "test",
+    )
+    .await
+    .unwrap();
+    store::mail_provider::save_active_config(
+        &db.pool,
+        store::mail_provider::UpsertMailProviderConfig {
+            provider_type: "outlook_http".to_string(),
+            endpoint: "https://outlook.example.test".to_string(),
+            api_key_secret_ref: Some(provider_secret),
+            poll_interval_secs: 2,
+            timeout_secs: 30,
+            allowed_hosts: vec!["outlook.example.test".to_string()],
+            allowed_senders: Vec::new(),
+        },
+        "test",
+    )
+    .await
+    .unwrap();
+    let mut state = db.create_test_state();
+    std::sync::Arc::get_mut(&mut state.config)
+        .unwrap()
+        .security
+        .require_client_cert = true;
 
     // 3. 槽位 0 申请会话，应当成功锁定该账号和代理
     let outcome1 = allocate_session(&state, node.id, TaskType::BookDownload, Some(0))
@@ -84,6 +117,12 @@ async fn 会话独占锁定账号代理与槽位() {
 
     assert_eq!(grant1.account.as_ref().unwrap().email, "only_one@test.com");
     assert_eq!(grant1.proxy.as_ref().unwrap().host, "1.2.3.4");
+    let recovery_provider = grant1
+        .mail_provider
+        .as_ref()
+        .expect("新 Worker 的下载会话必须收到登录恢复 Provider");
+    assert_eq!(recovery_provider.provider_type, "outlook_http");
+    assert_eq!(recovery_provider.api_key, "test-outlook-api-key");
 
     // 4. 槽位 1 申请会话，由于账号与代理已被占用，应当分配失败并说明原因
     let outcome2 = allocate_session(&state, node.id, TaskType::BookDownload, Some(1))
@@ -135,9 +174,69 @@ async fn 会话独占锁定账号代理与槽位() {
     let outcome3 = allocate_session(&state, node.id, TaskType::BookDownload, Some(0))
         .await
         .unwrap();
+    let grant3 = match outcome3 {
+        master_server::scheduler::AllocationOutcome::Granted(grant) => grant,
+        other => panic!("释放后应能再次分配，实际得到 {other:?}"),
+    };
+    master_server::scheduler::allocate::close_session(
+        &state,
+        grant3.session_id,
+        platform_domain::SessionStatus::Ended,
+        "正常测试结束",
+    )
+    .await
+    .unwrap();
+
+    // 7. 历史登录失败账号允许进入一次恢复会话，且分配时立即留痕。
+    store::resource::set_account_status(
+        &db.pool,
+        account.id,
+        AccountStatus::LoginFailed,
+        Some("历史密码错误"),
+    )
+    .await
+    .unwrap();
+    let recovery = allocate_session(&state, node.id, TaskType::BookDownload, Some(0))
+        .await
+        .unwrap();
+    let recovery_grant = match recovery {
+        master_server::scheduler::AllocationOutcome::Granted(grant) => grant,
+        other => panic!("登录失败账号应获得一次恢复会话，实际得到 {other:?}"),
+    };
+    let recovered_state: (String, bool) = sqlx::query_as(
+        "SELECT status, login_recovery_attempted_at IS NOT NULL FROM accounts WHERE id = $1",
+    )
+    .bind(account.id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(recovered_state.0, AccountStatus::Registered.as_str());
+    assert!(recovered_state.1, "恢复账号必须记录已尝试，防止失败后循环");
+
+    // 8. 恢复仍失败后标记并切换，不得再分配同一账号。
+    master_server::scheduler::allocate::close_session(
+        &state,
+        recovery_grant.session_id,
+        platform_domain::SessionStatus::Failed,
+        "authentication failed: automatic login recovery failed: 验证码被拒绝",
+    )
+    .await
+    .unwrap();
+    let failed_state: (String, bool) = sqlx::query_as(
+        "SELECT status, login_recovery_attempted_at IS NOT NULL FROM accounts WHERE id = $1",
+    )
+    .bind(account.id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(failed_state.0, AccountStatus::LoginFailed.as_str());
+    assert!(failed_state.1);
+    let no_repeat = allocate_session(&state, node.id, TaskType::BookDownload, Some(0))
+        .await
+        .unwrap();
     assert!(matches!(
-        outcome3,
-        master_server::scheduler::AllocationOutcome::Granted(_)
+        no_repeat,
+        master_server::scheduler::AllocationOutcome::Unavailable(_)
     ));
 
     db.teardown().await;

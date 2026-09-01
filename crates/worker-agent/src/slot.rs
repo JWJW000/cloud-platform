@@ -1017,6 +1017,42 @@ async fn execute_download_session(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("会话缺少账号凭据，无法登录站点"))?;
 
+    // 登录恢复的 OutlookMail 配置只保留在本会话内存中。旧 Master
+    // 没有字段时为 None，Worker 仍兼容原登录流程。
+    let login_mail_provider: Option<Arc<dyn automation_core::mail_code::MailCodeProvider>> =
+        match session.mail_provider.clone() {
+            Some(lease) if lease.provider_type == "outlook_http" => {
+                match crate::mail::outlook_http::OutlookHttpMailCodeAdapter::new(
+                    crate::mail::outlook_http::OutlookConfig {
+                        endpoint: lease.endpoint,
+                        api_key: lease.api_key,
+                        poll_interval: Duration::from_secs(
+                            lease.poll_interval_secs.clamp(1, 60) as u64
+                        ),
+                        timeout: Duration::from_secs(lease.timeout_secs.clamp(10, 300) as u64),
+                        allowed_hosts: lease.allowed_hosts,
+                        allowed_senders: lease.allowed_senders,
+                    },
+                ) {
+                    Ok(provider) => {
+                        let mut state = shared.mail_provider_state.write().await;
+                        state.version = lease.version;
+                        state.name = "outlook_http".to_string();
+                        state.health = "已应用（登录恢复）".to_string();
+                        Some(Arc::new(provider))
+                    }
+                    Err(_) => {
+                        let mut state = shared.mail_provider_state.write().await;
+                        state.version = lease.version;
+                        state.name = "outlook_http".to_string();
+                        state.health = "登录恢复 Provider 配置无效".to_string();
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+
     let spec = SessionSpec {
         session_id: session_id.clone(),
         site_base: site_base.clone(),
@@ -1039,6 +1075,7 @@ async fn execute_download_session(
         },
         download_format: snapshot_cfg.download_format.clone(),
         auto_login: true,
+        login_mail_provider,
         max_duration: Duration::from_secs(
             session
                 .max_duration_secs
@@ -1573,6 +1610,7 @@ async fn execute_registration_session(
         },
         download_format: snapshot_cfg.download_format.clone(),
         auto_login: false, // 账号注册严禁先调用下载登录！
+        login_mail_provider: None,
         max_duration: Duration::from_secs(
             session
                 .max_duration_secs

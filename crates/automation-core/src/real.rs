@@ -37,6 +37,7 @@ use crate::browser::detect_browser;
 use crate::cancel::CancelToken;
 use crate::engine::{AutomationEngine, EventSink};
 use crate::http_download::{self, HttpDownloadOutcome, HttpDownloadRequest};
+use crate::mail_code::MailCodeProvider;
 use crate::matching::{select_candidate, MatchRecord, MatchTarget};
 use crate::site::{self, SiteCard};
 use crate::types::{
@@ -72,6 +73,13 @@ const LOGIN_EMAIL: &str = "#loginForm input[name='email']";
 const LOGIN_PASSWORD: &str = "#loginForm input[name='password']";
 const LOGIN_SUBMIT: &str = "#loginForm button[type='submit']";
 const LOGIN_ERROR: &str = "#loginForm .validation-error";
+const PASSWORD_RECOVERY_LINK: &str = "a.password-recovery-btn";
+const PASSWORD_RECOVERY_FORM: &str = "form#passwordrecovery_form";
+const PASSWORD_RECOVERY_EMAIL: &str =
+    "form#passwordrecovery_form input[name='email'], form#passwordrecovery_form input[type='email']";
+const PASSWORD_RECOVERY_SUBMIT: &str = "form#passwordrecovery_form > button.btn";
+const PASSWORD_RECOVERY_ERROR: &str =
+    "form#passwordrecovery_form .validation-error, #verificationContent .validation-error";
 const REG_FORM: &str = "#registrationForm";
 const REG_EMAIL: &str = "#registrationForm input[name='email']";
 const REG_PASSWORD: &str = "#registrationForm input[name='password']";
@@ -1648,8 +1656,170 @@ async fn login_site(
     page: &ChromiumPage,
     site_base: &str,
     account: &AccountCredential,
+    mail_provider: Option<&dyn MailCodeProvider>,
 ) -> Result<(), AutomationError> {
-    login_attempt(page, site_base, account).await
+    match login_attempt(page, site_base, account).await {
+        Ok(()) => Ok(()),
+        Err(login_error)
+            if login_error.class == FailureClass::AuthFailed && mail_provider.is_some() =>
+        {
+            let provider = mail_provider.expect("guarded by is_some");
+            tracing::warn!(
+                account_id = %account.account_id,
+                provider = provider.name(),
+                "站点拒绝登录凭据，开始邮箱验证码恢复访问"
+            );
+            recover_login_access(page, account, provider)
+                .await
+                .map_err(|recovery_error| {
+                    AutomationError::new(
+                        FailureClass::AuthFailed,
+                        format!(
+                            "automatic login recovery failed: 登录凭据被拒且自动恢复访问失败：{}",
+                            recovery_error.reason
+                        ),
+                    )
+                })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// 站点密码错误后的官方“恢复访问”流程。
+///
+/// 必须先建立邮件基线再点击发送按钮，否则邮箱中的历史验证码可能被误认为本次验证码。
+/// 验证码只保存在函数栈与 Provider 内存中，不写日志、不落盘。
+async fn recover_login_access(
+    page: &ChromiumPage,
+    account: &AccountCredential,
+    mail_provider: &dyn MailCodeProvider,
+) -> Result<(), AutomationError> {
+    let cursor = mail_provider
+        .prepare(&account.email, Duration::from_secs(10 * 60))
+        .await
+        .map_err(|error| {
+            AutomationError::new(
+                FailureClass::Retryable,
+                format!("恢复访问前准备邮件验证码失败：{error}"),
+            )
+        })?;
+
+    let recovery_link = first_page_element(page, PASSWORD_RECOVERY_LINK).ok_or_else(|| {
+        AutomationError::new(
+            FailureClass::SiteUnavailable,
+            "登录页未找到忘记密码入口 a.password-recovery-btn",
+        )
+    })?;
+    recovery_link.click().map_err(|error| {
+        AutomationError::new(
+            FailureClass::Retryable,
+            format!("点击忘记密码入口失败：{error}"),
+        )
+    })?;
+
+    let form_deadline = Instant::now() + LOGIN_TIMEOUT;
+    loop {
+        let form_visible = first_page_element(page, PASSWORD_RECOVERY_FORM)
+            .and_then(|form| form.is_displayed().ok())
+            .unwrap_or(false);
+        if form_visible {
+            break;
+        }
+        if Instant::now() >= form_deadline {
+            return Err(AutomationError::new(
+                FailureClass::SiteUnavailable,
+                "点击忘记密码后未出现 #passwordrecovery_form",
+            ));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    // 部分站点版本会把登录邮箱自动带入，另一些版本需要在恢复表单再填一次。
+    if let Some(email_input) = first_page_element(page, PASSWORD_RECOVERY_EMAIL) {
+        let _ = email_input.clear();
+        email_input.input(&account.email).map_err(|error| {
+            AutomationError::new(
+                FailureClass::Retryable,
+                format!("填写恢复访问邮箱失败：{error}"),
+            )
+        })?;
+    }
+
+    let recovery_submit = first_page_element(page, PASSWORD_RECOVERY_SUBMIT).ok_or_else(|| {
+        AutomationError::new(
+            FailureClass::SiteUnavailable,
+            "恢复表单未找到“恢复访问”按钮",
+        )
+    })?;
+    recovery_submit.click().map_err(|error| {
+        AutomationError::new(
+            FailureClass::Retryable,
+            format!("点击恢复访问按钮失败：{error}"),
+        )
+    })?;
+
+    let verification_deadline = Instant::now() + LOGIN_TIMEOUT;
+    loop {
+        if first_page_element(page, VERIFY_INPUT).is_some() {
+            break;
+        }
+        if let Some(message) = first_page_element(page, PASSWORD_RECOVERY_ERROR)
+            .and_then(|element| element.text().ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+        {
+            return Err(AutomationError::new(
+                FailureClass::Retryable,
+                format!("站点拒绝发送恢复验证码：{message}"),
+            ));
+        }
+        if Instant::now() >= verification_deadline {
+            return Err(AutomationError::new(
+                FailureClass::Retryable,
+                "点击恢复访问后未出现验证码输入框",
+            ));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    let cancel = CancelToken::new();
+    let code = mail_provider
+        .await_code(&cursor, &cancel)
+        .await
+        .map_err(|error| {
+            AutomationError::new(
+                FailureClass::Retryable,
+                format!("获取恢复访问验证码失败：{error}"),
+            )
+        })?
+        .code;
+    fill_verification_digits(page, &code)?;
+
+    let success_deadline = Instant::now() + LOGIN_TIMEOUT;
+    loop {
+        close_bonus_popup(page);
+        if first_page_element(page, LOGOUT_SELECTORS).is_some() {
+            tracing::info!(account_id = %account.account_id, "邮箱验证码恢复访问成功，站点已自动登录");
+            return Ok(());
+        }
+        if let Some(message) = first_page_element(page, PASSWORD_RECOVERY_ERROR)
+            .and_then(|element| element.text().ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+        {
+            return Err(AutomationError::new(
+                FailureClass::Retryable,
+                format!("恢复访问验证码被站点拒绝：{message}"),
+            ));
+        }
+        if Instant::now() >= success_deadline {
+            return Err(AutomationError::new(
+                FailureClass::Retryable,
+                "提交恢复访问验证码后未确认自动登录成功",
+            ));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 async fn login_attempt(
@@ -1816,7 +1986,13 @@ impl AutomationEngine for RealAutomationEngine {
         let owned = OwnedPage::new(launched, process);
 
         if spec.auto_login {
-            login_site(owned.page(), &site_base, &spec.account).await?;
+            login_site(
+                owned.page(),
+                &site_base,
+                &spec.account,
+                spec.login_mail_provider.as_deref(),
+            )
+            .await?;
         }
 
         let (page, process) = owned.into_parts();
@@ -2291,6 +2467,16 @@ mod tests {
         assert_eq!(
             classify_form_error("Invalid CSRF token, please retry"),
             FailureClass::Retryable
+        );
+    }
+
+    #[test]
+    fn password_recovery_uses_the_confirmed_site_selectors() {
+        assert_eq!(PASSWORD_RECOVERY_LINK, "a.password-recovery-btn");
+        assert_eq!(PASSWORD_RECOVERY_FORM, "form#passwordrecovery_form");
+        assert_eq!(
+            PASSWORD_RECOVERY_SUBMIT,
+            "form#passwordrecovery_form > button.btn"
         );
     }
 

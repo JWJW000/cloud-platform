@@ -470,6 +470,8 @@ message CreateSession {
   uint32 max_downloads = 7;        // 账号当日剩余额度
   uint32 max_duration_secs = 8;
   string lease_expires_at = 9;
+  // 仅用于登录凭据被拒后的邮箱验证码恢复；只通过 mTLS 下发到本会话内存。
+  MailProviderLease mail_provider = 10;
 }
 
 message AccountCredential {

@@ -79,6 +79,19 @@ pub fn create_session_message(grant: &SessionGrant) -> pb::MasterMessage {
         max_downloads: grant.max_downloads.max(0) as u32,
         max_duration_secs: grant.max_duration_secs.clamp(0, u32::MAX as i64) as u32,
         lease_expires_at: to_rfc3339(grant.lease_expires_at),
+        mail_provider: grant
+            .mail_provider
+            .as_ref()
+            .map(|provider| pb::MailProviderLease {
+                version: provider.version.max(0) as u64,
+                provider_type: provider.provider_type.clone(),
+                endpoint: provider.endpoint.clone(),
+                api_key: provider.api_key.clone(),
+                poll_interval_secs: provider.poll_interval_secs.max(1) as u32,
+                timeout_secs: provider.timeout_secs.max(10) as u32,
+                allowed_hosts: provider.allowed_hosts.clone(),
+                allowed_senders: provider.allowed_senders.clone(),
+            }),
     };
     pb::MasterMessage::new(
         now_rfc3339(),

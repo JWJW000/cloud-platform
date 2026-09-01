@@ -24,7 +24,7 @@ pub struct AccountCredential {
 }
 
 /// 一次执行会话的规格：`账号 + 固定代理端口 + Profile`（第 6.1 节）。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SessionSpec {
     /// 会话编号。
     pub session_id: String,
@@ -53,8 +53,38 @@ pub struct SessionSpec {
     pub download_format: String,
     /// 是否在打开会话时自动执行登录（图书下载为 true，账号注册为 false）。
     pub auto_login: bool,
+    /// 登录凭据被拒时用于自动恢复访问的邮件验证码 Provider。
+    ///
+    /// 配置只随本次 mTLS 会话进入内存，不落盘、不进入 Debug 输出。
+    pub login_mail_provider: Option<std::sync::Arc<dyn crate::mail_code::MailCodeProvider>>,
     /// 会话最长时长。
     pub max_duration: Duration,
+}
+
+impl std::fmt::Debug for SessionSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionSpec")
+            .field("session_id", &self.session_id)
+            .field("site_base", &self.site_base)
+            .field("browser_path", &self.browser_path)
+            .field("headless", &self.headless)
+            .field("browser_debug_port", &self.browser_debug_port)
+            .field("profile_dir", &self.profile_dir)
+            .field("staging_root", &self.staging_root)
+            .field("proxy_endpoint", &self.proxy_endpoint)
+            .field("account_id", &self.account.account_id)
+            .field("download_format", &self.download_format)
+            .field("auto_login", &self.auto_login)
+            .field(
+                "login_mail_provider",
+                &self
+                    .login_mail_provider
+                    .as_ref()
+                    .map(|provider| provider.name()),
+            )
+            .field("max_duration", &self.max_duration)
+            .finish()
+    }
 }
 
 /// 已建立的会话句柄。引擎内部状态（浏览器进程、页面）由实现持有。

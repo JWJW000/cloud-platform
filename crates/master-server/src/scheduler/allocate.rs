@@ -57,6 +57,45 @@ pub struct ProxyCredential {
     pub password: Option<String>,
 }
 
+/// 登录恢复所需的任务级邮件 Provider 凭据。
+///
+/// 不实现 `Serialize`，Debug 也必须脱敏：API Key 只能进入已认证 Worker 的
+/// mTLS 下行消息，不得进入日志或管理端 JSON。
+#[derive(Clone)]
+pub struct MailProviderCredential {
+    /// 配置版本。
+    pub version: i64,
+    /// Provider 类型，下载恢复目前只下发 `outlook_http`。
+    pub provider_type: String,
+    /// OutlookMail 服务端点。
+    pub endpoint: String,
+    /// 仅本次会话可见的 API Key 明文。
+    pub api_key: String,
+    /// 轮询间隔秒数。
+    pub poll_interval_secs: i32,
+    /// 最长取码时间秒数。
+    pub timeout_secs: i32,
+    /// SSRF 防护允许的主机。
+    pub allowed_hosts: Vec<String>,
+    /// 允许的验证码邮件发件人。
+    pub allowed_senders: Vec<String>,
+}
+
+impl std::fmt::Debug for MailProviderCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailProviderCredential")
+            .field("version", &self.version)
+            .field("provider_type", &self.provider_type)
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &"[REDACTED]")
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("allowed_senders", &self.allowed_senders)
+            .finish()
+    }
+}
+
 /// 分配成功后交给 gRPC 层组装 `CreateSession` 的全部要素。
 #[derive(Debug, Clone)]
 pub struct SessionGrant {
@@ -80,6 +119,8 @@ pub struct SessionGrant {
     pub max_duration_secs: i64,
     /// 会话租约到期时间，Worker 必须在此之前续租。
     pub lease_expires_at: DateTime<Utc>,
+    /// 下载登录失败时的 OutlookMail 恢复凭据。
+    pub mail_provider: Option<MailProviderCredential>,
 }
 
 /// 无法分配的原因，直接对应 `NoTaskAvailable`。
@@ -131,6 +172,21 @@ fn needs_of(task_type: TaskType) -> (AccountNeed, ProxyNeed) {
     }
 }
 
+/// `CreateSession.mail_provider` 从 Worker v0.3.24 起才会被消费。
+/// Master 可能先于 Worker 滚动升级，因此不能把历史失败账号发给旧 Worker。
+fn worker_supports_login_recovery(agent_version: &str) -> bool {
+    let mut parts = agent_version
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| part.parse::<u64>());
+    let version = match (parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch))) => (major, minor, patch),
+        _ => return false,
+    };
+    version >= (0, 3, 24)
+}
+
 /// 本机转发端口：每个槽位一个固定端口（第 10.1 节）。
 ///
 /// 固定而不是随机：排障时「19003 端口对应 3 号槽位」这个对应关系可以直接靠肉眼判断，
@@ -140,6 +196,52 @@ pub const FORWARD_PORT_BASE: i32 = 19001;
 /// 槽位对应的本机转发端口。
 pub fn forward_port(slot_index: i32) -> i32 {
     FORWARD_PORT_BASE + slot_index.max(0)
+}
+
+/// 为下载会话构造一份只存在于内存的 OutlookMail 快照。
+async fn load_login_recovery_provider(
+    state: &AppState,
+) -> AppResult<Option<MailProviderCredential>> {
+    let Some(record) = store::mail_provider::get_active_config(&state.pool).await? else {
+        return Ok(None);
+    };
+    if record.provider_type != "outlook_http" {
+        return Ok(None);
+    }
+    if !state.config.security.require_client_cert {
+        tracing::warn!(
+            provider_version = record.version,
+            "当前未强制 Worker 客户端证书，不下发登录恢复所需 Outlook 密钥"
+        );
+        return Ok(None);
+    }
+
+    let Some(secret_ref) = record.api_key_secret_ref.as_deref() else {
+        return Ok(None);
+    };
+    let Some(cipher_text) =
+        store::mail_provider::get_secret_ciphertext(&state.pool, secret_ref).await?
+    else {
+        return Ok(None);
+    };
+    let api_key = state
+        .cipher
+        .decrypt(&cipher_text)
+        .map_err(AppError::Internal)?;
+    if api_key.trim().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(MailProviderCredential {
+        version: record.version,
+        provider_type: record.provider_type,
+        endpoint: record.endpoint,
+        api_key,
+        poll_interval_secs: record.poll_interval_secs,
+        timeout_secs: record.timeout_secs,
+        allowed_hosts: record.allowed_hosts,
+        allowed_senders: record.allowed_senders,
+    }))
 }
 
 /// 为节点分配一个执行会话。
@@ -173,6 +275,17 @@ pub async fn allocate_session(
         ));
     }
 
+    // 在领取账号前就固定本次 Provider 快照：只有新 Worker 且 Outlook 配置可用时，
+    // 才允许领取历史“登录失败”账号，避免滚动升级期间被旧 Worker 消耗恢复机会。
+    let login_recovery_provider = if task_type == TaskType::BookDownload
+        && worker_supports_login_recovery(&node.agent_version)
+    {
+        load_login_recovery_provider(state).await?
+    } else {
+        None
+    };
+    let can_recover_failed_account = login_recovery_provider.is_some();
+
     let (account_need, proxy_need) = needs_of(task_type);
     let mut tx = state.pool.begin().await?;
 
@@ -192,7 +305,7 @@ pub async fn allocate_session(
 
     let account = match account_need {
         AccountNeed::None => None,
-        need => match claim_account(&mut tx, need).await? {
+        need => match claim_account(&mut tx, need, can_recover_failed_account).await? {
             Some(row) => Some(row),
             None => {
                 tx.rollback().await?;
@@ -233,6 +346,18 @@ pub async fn allocate_session(
     .await?;
 
     if let Some(row) = &account {
+        // 历史“登录失败”账号允许进入一次新的邮箱恢复流程。
+        // 先在同一分配事务内记录尝试，可以防止多槽位重复抢到它。
+        if row.status == AccountStatus::LoginFailed.as_str() {
+            sqlx::query(
+                "UPDATE accounts SET status = $2, last_error = NULL, \
+                     login_recovery_attempted_at = now(), updated_at = now() WHERE id = $1",
+            )
+            .bind(row.id)
+            .bind(AccountStatus::Registered.as_str())
+            .execute(&mut *tx)
+            .await?;
+        }
         lease_account(&mut tx, row.id, session.id, session.lease_expires_at).await?;
     }
     if let Some(row) = &proxy {
@@ -261,6 +386,7 @@ pub async fn allocate_session(
                 .min(scheduler.session_max_downloads.max(1))
         })
         .unwrap_or(1);
+    let mail_provider = account.as_ref().and(login_recovery_provider);
 
     let grant = SessionGrant {
         session_id: session.id,
@@ -299,6 +425,7 @@ pub async fn allocate_session(
         // 超过它说明 Worker 已经不正常，宁可结束会话换一个干净的浏览器。
         max_duration_secs: lease_secs * (max_downloads as i64 + 1),
         lease_expires_at: session.lease_expires_at,
+        mail_provider,
     };
 
     state.events.publish(
@@ -353,6 +480,7 @@ struct ClaimedAccount {
     email: String,
     nickname: String,
     password_cipher: String,
+    status: String,
     daily_used: i32,
     daily_limit: i32,
 }
@@ -364,6 +492,7 @@ struct ClaimedAccount {
 async fn claim_account(
     tx: &mut sqlx::PgConnection,
     need: AccountNeed,
+    can_recover_failed: bool,
 ) -> AppResult<Option<ClaimedAccount>> {
     let row = match need {
         AccountNeed::ToRegister => {
@@ -371,7 +500,7 @@ async fn claim_account(
             // 会选中仍处于退避期、已取消或批次未运行的账号，浏览器启动后 Master
             // 找不到对应任务，Worker 只能等待 30 秒后关闭。
             sqlx::query_as::<_, ClaimedAccount>(
-                "SELECT a.id, a.email, a.nickname, a.password_cipher, a.daily_used, a.daily_limit \
+                "SELECT a.id, a.email, a.nickname, a.password_cipher, a.status, a.daily_used, a.daily_limit \
                  FROM accounts a \
                  JOIN account_registration_tasks t ON t.account_id = a.id \
                  JOIN account_registration_batches b ON b.id = t.batch_id \
@@ -387,15 +516,30 @@ async fn claim_account(
             .fetch_optional(&mut *tx)
             .await?
         }
-        AccountNeed::Usable => sqlx::query_as::<_, ClaimedAccount>(
-            "SELECT id, email, nickname, password_cipher, daily_used, daily_limit FROM accounts \
-             WHERE status = $1 AND lease_session_id IS NULL AND daily_used < daily_limit \
-             ORDER BY daily_used, created_at \
-             FOR UPDATE SKIP LOCKED LIMIT 1",
-        )
-        .bind(AccountStatus::Registered.as_str())
-        .fetch_optional(&mut *tx)
-        .await?,
+        AccountNeed::Usable if can_recover_failed => {
+            sqlx::query_as::<_, ClaimedAccount>(
+                "SELECT id, email, nickname, password_cipher, status, daily_used, daily_limit FROM accounts \
+                 WHERE status IN ($1, $2) AND lease_session_id IS NULL AND daily_used < daily_limit \
+                   AND (status = $1 OR login_recovery_attempted_at IS NULL) \
+                 ORDER BY CASE WHEN status = $2 THEN 0 ELSE 1 END, daily_used, created_at \
+                 FOR UPDATE SKIP LOCKED LIMIT 1",
+            )
+            .bind(AccountStatus::Registered.as_str())
+            .bind(AccountStatus::LoginFailed.as_str())
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+        AccountNeed::Usable => {
+            sqlx::query_as::<_, ClaimedAccount>(
+                "SELECT id, email, nickname, password_cipher, status, daily_used, daily_limit FROM accounts \
+                 WHERE status = $1 AND lease_session_id IS NULL AND daily_used < daily_limit \
+                 ORDER BY daily_used, created_at \
+                 FOR UPDATE SKIP LOCKED LIMIT 1",
+            )
+            .bind(AccountStatus::Registered.as_str())
+            .fetch_optional(&mut *tx)
+            .await?
+        }
         AccountNeed::None => None,
     };
     Ok(row)
@@ -532,6 +676,17 @@ pub async fn close_session(
         {
             store::resource::set_account_status(&mut *tx, account_id, account_status, Some(reason))
                 .await?;
+            if account_status == AccountStatus::LoginFailed
+                && reason.contains("automatic login recovery failed:")
+            {
+                sqlx::query(
+                    "UPDATE accounts SET login_recovery_attempted_at = now(), updated_at = now() \
+                     WHERE id = $1",
+                )
+                .bind(account_id)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
     }
     store::session::end_session(&mut *tx, session_id, status, reason).await?;
@@ -637,5 +792,14 @@ mod tests {
             needs_of(TaskType::ProxyCheck),
             (AccountNeed::None, ProxyNeed::ForCheck)
         );
+    }
+
+    #[test]
+    fn login_recovery_is_only_sent_to_compatible_workers() {
+        assert!(!worker_supports_login_recovery(""));
+        assert!(!worker_supports_login_recovery("0.3.23"));
+        assert!(worker_supports_login_recovery("0.3.24"));
+        assert!(worker_supports_login_recovery("v0.4.0"));
+        assert!(worker_supports_login_recovery("1.0.0"));
     }
 }

@@ -398,6 +398,7 @@ mod tests {
             },
             download_format: "pdf".to_string(),
             auto_login: true,
+            login_mail_provider: None,
             max_duration: Duration::from_secs(3600),
         }
     }
