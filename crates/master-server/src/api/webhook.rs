@@ -1,4 +1,6 @@
-//! Webhook 消息推送配置与每日统计通知（支持飞书机器人及多平台适配）。
+//! Webhook 消息推送配置与每日统计通知（支持飞书机器人卡片及多平台适配）。
+
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::Json;
@@ -8,7 +10,6 @@ use chrono::{Local, Timelike};
 use reqwest::Client;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 use crate::api::auth::AuthenticatedUser;
 use crate::error::{AppError, AppResult};
@@ -54,7 +55,7 @@ fn default_daily_push_time() -> String {
 }
 
 fn default_title_prefix() -> String {
-    "「数字图书馆」每日下载日报".to_string()
+    "📚 数字图书馆每日下载日报".to_string()
 }
 
 fn default_true() -> bool {
@@ -97,6 +98,24 @@ pub struct WebhookDetailsResponse {
     pub preview_markdown: String,
 }
 
+/// 今日统计数据快照。
+#[derive(Debug, Clone, Default)]
+pub struct DailyStatsSnapshot {
+    pub today_date: String,
+    pub today_time: String,
+    pub completed: i64,
+    pub failed: i64,
+    pub skipped: i64,
+    pub bytes_total: i64,
+    pub account_used: i64,
+    pub online_workers: usize,
+    pub total_workers: usize,
+    pub available_accounts: i64,
+    pub total_accounts: i64,
+    pub pending_tasks: i64,
+    pub running_tasks: i64,
+}
+
 /// 格式化字节数。
 fn format_bytes(bytes: i64) -> String {
     if bytes <= 0 {
@@ -123,13 +142,8 @@ fn sign_feishu(timestamp: i64, secret: &str) -> Option<String> {
     Some(BASE64.encode(signature.as_ref()))
 }
 
-/// 汇集今日统计指标并生成 Markdown 报告。
-pub async fn build_daily_report_markdown(
-    state: &AppState,
-    title_prefix: &str,
-    include_system_status: bool,
-    custom_note: Option<&str>,
-) -> AppResult<String> {
+/// 采集当前系统与下载数据快照。
+pub async fn fetch_daily_snapshot(state: &AppState) -> AppResult<DailyStatsSnapshot> {
     let today_date = Local::now().format("%Y-%m-%d").to_string();
     let today_time = Local::now().format("%H:%M:%S").to_string();
 
@@ -147,62 +161,89 @@ pub async fn build_daily_report_markdown(
             (0, 0, 0, 0, 0)
         };
 
+    let nodes = store::node::list_nodes(&state.pool)
+        .await
+        .unwrap_or_default();
+    let total_workers = nodes.len();
+    let online_workers = nodes.iter().filter(|n| n.connected).count();
+
+    let available_accounts = store::resource::count_available_accounts(&state.pool)
+        .await
+        .unwrap_or(0);
+    let total_accounts = store::resource::count_accounts(&state.pool, None)
+        .await
+        .unwrap_or(0);
+
+    let task_counts = store::task::count_by_status(&state.pool)
+        .await
+        .unwrap_or_default();
+    let mut pending_tasks = 0;
+    let mut running_tasks = 0;
+    for (status, count) in task_counts {
+        match status.as_str() {
+            "待处理" => pending_tasks += count,
+            "已分配" | "执行中" | "等待入库" => running_tasks += count,
+            _ => {}
+        }
+    }
+
+    Ok(DailyStatsSnapshot {
+        today_date,
+        today_time,
+        completed,
+        failed,
+        skipped,
+        bytes_total,
+        account_used,
+        online_workers,
+        total_workers,
+        available_accounts,
+        total_accounts,
+        pending_tasks,
+        running_tasks,
+    })
+}
+
+/// 汇集今日统计指标并生成标准 Markdown 报告（供企微/钉钉/预览使用）。
+pub fn build_daily_report_markdown(
+    snap: &DailyStatsSnapshot,
+    title_prefix: &str,
+    include_system_status: bool,
+    custom_note: Option<&str>,
+) -> String {
     let mut md = String::new();
-    md.push_str(&format!("### 📊 {}\n", title_prefix));
+    md.push_str(&format!("### {}\n", title_prefix));
     md.push_str(&format!(
         "> **统计日期**：{} {}\n\n",
-        today_date, today_time
+        snap.today_date, snap.today_time
     ));
 
     md.push_str("#### 📚 今日图书获取统计\n");
-    md.push_str(&format!("- ✅ **成功下载**：**{}** 本\n", completed));
-    md.push_str(&format!("- ❌ **下载失败**：{} 本\n", failed));
-    md.push_str(&format!("- ⏭️ **跳过未收录**：{} 本\n", skipped));
+    md.push_str(&format!("- ✅ **成功下载**：**{}** 本\n", snap.completed));
+    md.push_str(&format!("- ❌ **下载失败**：{} 本\n", snap.failed));
+    md.push_str(&format!("- ⏭️ **跳过未收录**：{} 本\n", snap.skipped));
     md.push_str(&format!(
         "- 💾 **总下载流量**：{}\n",
-        format_bytes(bytes_total)
+        format_bytes(snap.bytes_total)
     ));
-    md.push_str(&format!("- 🔑 **账号使用次数**：{} 次\n", account_used));
+    md.push_str(&format!(
+        "- 🔑 **账号使用次数**：{} 次\n",
+        snap.account_used
+    ));
 
     if include_system_status {
-        let nodes = store::node::list_nodes(&state.pool)
-            .await
-            .unwrap_or_default();
-        let total_workers = nodes.len();
-        let online_workers = nodes.iter().filter(|n| n.connected).count();
-
-        let available_accounts = store::resource::count_available_accounts(&state.pool)
-            .await
-            .unwrap_or(0);
-        let total_accounts = store::resource::count_accounts(&state.pool, None)
-            .await
-            .unwrap_or(0);
-
-        let task_counts = store::task::count_by_status(&state.pool)
-            .await
-            .unwrap_or_default();
-        let mut pending_tasks = 0;
-        let mut running_tasks = 0;
-        for (status, count) in task_counts {
-            match status.as_str() {
-                "待处理" => pending_tasks += count,
-                "已分配" | "执行中" | "等待入库" => running_tasks += count,
-                _ => {}
-            }
-        }
-
         md.push_str("\n#### 🖥️ 集群与资源运行概况\n");
         md.push_str(&format!(
             "- ⚡ **Worker 节点**：在线 {} / 总数 {}\n",
-            online_workers, total_workers
+            snap.online_workers, snap.total_workers
         ));
         md.push_str(&format!(
             "- 👤 **下载账号池**：可用 {} / 总数 {}\n",
-            available_accounts, total_accounts
+            snap.available_accounts, snap.total_accounts
         ));
         md.push_str(&format!(
             "- ⏳ **待执行任务**：待处理 {} 本，执行中 {} 本\n",
-            pending_tasks, running_tasks
+            snap.pending_tasks, snap.running_tasks
         ));
     }
 
@@ -212,15 +253,168 @@ pub async fn build_daily_report_markdown(
         }
     }
 
-    Ok(md)
+    md
+}
+
+/// 构造飞书交互式卡片 JSON Payload（div + fields + lark_md 官方渲染规范）。
+pub fn build_feishu_card_payload(
+    snap: &DailyStatsSnapshot,
+    config: &WebhookConfig,
+    custom_note: Option<&str>,
+) -> serde_json::Value {
+    let title = format!("{} ({})", config.title_prefix, snap.today_date);
+    let mut elements: Vec<serde_json::Value> = Vec::new();
+
+    // 1. 图书获取统计标题与分栏网格
+    elements.push(serde_json::json!({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": "**📊 今日图书获取统计**"
+        }
+    }));
+
+    elements.push(serde_json::json!({
+        "tag": "div",
+        "fields": [
+            {
+                "is_short": true,
+                "text": {
+                    "tag": "lark_md",
+                    "content": format!("**✅ 成功下载：** **{}** 本", snap.completed)
+                }
+            },
+            {
+                "is_short": true,
+                "text": {
+                    "tag": "lark_md",
+                    "content": format!("**❌ 下载失败：** {} 本", snap.failed)
+                }
+            },
+            {
+                "is_short": true,
+                "text": {
+                    "tag": "lark_md",
+                    "content": format!("**⏭️ 跳过未收录：** {} 本", snap.skipped)
+                }
+            },
+            {
+                "is_short": true,
+                "text": {
+                    "tag": "lark_md",
+                    "content": format!("**💾 总下载流量：** {}", format_bytes(snap.bytes_total))
+                }
+            },
+            {
+                "is_short": true,
+                "text": {
+                    "tag": "lark_md",
+                    "content": format!("**🔑 账号使用：** {} 次", snap.account_used)
+                }
+            }
+        ]
+    }));
+
+    // 2. 集群运行概况（可选）
+    if config.include_system_status {
+        elements.push(serde_json::json!({ "tag": "hr" }));
+        elements.push(serde_json::json!({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "**🖥️ 集群与资源运行概况**"
+            }
+        }));
+        elements.push(serde_json::json!({
+            "tag": "div",
+            "fields": [
+                {
+                    "is_short": true,
+                    "text": {
+                        "tag": "lark_md",
+                        "content": format!("**⚡ Worker 节点：** 在线 {} / 总数 {}", snap.online_workers, snap.total_workers)
+                    }
+                },
+                {
+                    "is_short": true,
+                    "text": {
+                        "tag": "lark_md",
+                        "content": format!("**👤 下载账号池：** 可用 {} / 总数 {}", snap.available_accounts, snap.total_accounts)
+                    }
+                },
+                {
+                    "is_short": true,
+                    "text": {
+                        "tag": "lark_md",
+                        "content": format!("**⏳ 待执行任务：** 待处理 {} 本，执行中 {} 本", snap.pending_tasks, snap.running_tasks)
+                    }
+                }
+            ]
+        }));
+    }
+
+    // 3. 备注信息（若有）
+    if let Some(note) = custom_note {
+        if !note.trim().is_empty() {
+            elements.push(serde_json::json!({ "tag": "hr" }));
+            elements.push(serde_json::json!({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": format!("**💬 备注信息：**\n{}", note.trim())
+                }
+            }));
+        }
+    }
+
+    // 4. 底部时间与备注
+    elements.push(serde_json::json!({ "tag": "hr" }));
+    elements.push(serde_json::json!({
+        "tag": "note",
+        "elements": [
+            {
+                "tag": "plain_text",
+                "content": format!("统计时间: {} {} | 数字图书馆自动化调度", snap.today_date, snap.today_time)
+            }
+        ]
+    }));
+
+    let mut payload = serde_json::json!({
+        "msg_type": "interactive",
+        "card": {
+            "config": {
+                "wide_screen_mode": true
+            },
+            "header": {
+                "template": "blue",
+                "title": {
+                    "tag": "plain_text",
+                    "content": title
+                }
+            },
+            "elements": elements
+        }
+    });
+
+    if let Some(secret) = &config.secret {
+        if !secret.trim().is_empty() {
+            let timestamp = chrono::Utc::now().timestamp();
+            if let Some(sign) = sign_feishu(timestamp, secret.trim()) {
+                payload["timestamp"] = serde_json::json!(timestamp.to_string());
+                payload["sign"] = serde_json::json!(sign);
+            }
+        }
+    }
+
+    payload
 }
 
 /// 执行向 Webhook URL 发送消息。
 pub async fn send_to_webhook(
     client: &Client,
     config: &WebhookConfig,
-    title: &str,
-    markdown_content: &str,
+    snap: &DailyStatsSnapshot,
+    custom_note: Option<&str>,
 ) -> Result<(), String> {
     let url = config.url.trim();
     if url.is_empty() {
@@ -229,50 +423,7 @@ pub async fn send_to_webhook(
 
     match config.platform {
         WebhookPlatform::Feishu => {
-            let timestamp = chrono::Utc::now().timestamp();
-            let mut payload = serde_json::json!({
-                "msg_type": "interactive",
-                "card": {
-                    "config": {
-                        "wide_screen_mode": true
-                    },
-                    "header": {
-                        "template": "blue",
-                        "title": {
-                            "content": title,
-                            "tag": "plain_text"
-                        }
-                    },
-                    "elements": [
-                        {
-                            "tag": "markdown",
-                            "content": markdown_content
-                        },
-                        {
-                            "tag": "hr"
-                        },
-                        {
-                            "tag": "note",
-                            "elements": [
-                                {
-                                    "tag": "plain_text",
-                                    "content": format!("推送时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"))
-                                }
-                            ]
-                        }
-                    ]
-                }
-            });
-
-            if let Some(secret) = &config.secret {
-                if !secret.trim().is_empty() {
-                    if let Some(sign) = sign_feishu(timestamp, secret.trim()) {
-                        payload["timestamp"] = serde_json::json!(timestamp.to_string());
-                        payload["sign"] = serde_json::json!(sign);
-                    }
-                }
-            }
-
+            let payload = build_feishu_card_payload(snap, config, custom_note);
             let resp = client
                 .post(url)
                 .timeout(Duration::from_secs(10))
@@ -287,7 +438,6 @@ pub async fn send_to_webhook(
                 return Err(format!("飞书 Webhook 返回 HTTP {status}: {text}"));
             }
 
-            // 飞书机器人可能会返回 200 但 code != 0
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(code) = val.get("code").and_then(|c| c.as_i64()) {
                     if code != 0 {
@@ -302,10 +452,16 @@ pub async fn send_to_webhook(
             Ok(())
         }
         WebhookPlatform::Wechat => {
+            let md = build_daily_report_markdown(
+                snap,
+                &config.title_prefix,
+                config.include_system_status,
+                custom_note,
+            );
             let payload = serde_json::json!({
                 "msgtype": "markdown",
                 "markdown": {
-                    "content": markdown_content
+                    "content": md
                 }
             });
             let resp = client
@@ -323,11 +479,17 @@ pub async fn send_to_webhook(
             Ok(())
         }
         WebhookPlatform::Dingtalk => {
+            let md = build_daily_report_markdown(
+                snap,
+                &config.title_prefix,
+                config.include_system_status,
+                custom_note,
+            );
             let payload = serde_json::json!({
                 "msgtype": "markdown",
                 "markdown": {
-                    "title": title,
-                    "text": markdown_content
+                    "title": config.title_prefix,
+                    "text": md
                 }
             });
             let resp = client
@@ -345,9 +507,28 @@ pub async fn send_to_webhook(
             Ok(())
         }
         WebhookPlatform::Generic => {
+            let md = build_daily_report_markdown(
+                snap,
+                &config.title_prefix,
+                config.include_system_status,
+                custom_note,
+            );
             let payload = serde_json::json!({
-                "title": title,
-                "markdown": markdown_content,
+                "title": config.title_prefix,
+                "markdown": md,
+                "snapshot": {
+                    "completed": snap.completed,
+                    "failed": snap.failed,
+                    "skipped": snap.skipped,
+                    "bytes_total": snap.bytes_total,
+                    "account_used": snap.account_used,
+                    "online_workers": snap.online_workers,
+                    "total_workers": snap.total_workers,
+                    "available_accounts": snap.available_accounts,
+                    "total_accounts": snap.total_accounts,
+                    "pending_tasks": snap.pending_tasks,
+                    "running_tasks": snap.running_tasks,
+                },
                 "timestamp": chrono::Utc::now().to_rfc3339()
             });
             let resp = client
@@ -384,13 +565,13 @@ pub async fn get_webhook_endpoint(
 ) -> AppResult<Json<WebhookDetailsResponse>> {
     auth.require_super_admin()?;
     let config = get_webhook_config(&state.pool).await;
+    let snap = fetch_daily_snapshot(&state).await?;
     let preview_markdown = build_daily_report_markdown(
-        &state,
+        &snap,
         &config.title_prefix,
         config.include_system_status,
         Some("（此为手动预览样例）"),
-    )
-    .await?;
+    );
 
     Ok(Json(WebhookDetailsResponse {
         config,
@@ -456,16 +637,9 @@ pub async fn manual_send_webhook(
         return Err(AppError::bad("尚未配置 Webhook 推送地址"));
     }
 
-    let md = build_daily_report_markdown(
-        &state,
-        &config.title_prefix,
-        config.include_system_status,
-        req.custom_note.as_deref(),
-    )
-    .await?;
-
+    let snap = fetch_daily_snapshot(&state).await?;
     let client = Client::new();
-    match send_to_webhook(&client, &config, &config.title_prefix, &md).await {
+    match send_to_webhook(&client, &config, &snap, req.custom_note.as_deref()).await {
         Ok(_) => {
             store::admin::log(
                 &state.pool,
@@ -530,16 +704,9 @@ pub async fn check_and_trigger_daily_webhook_push(state: &AppState) -> AppResult
 
     // 如果当前小时和分钟大于等于设定时间
     if (current_hour > target_hour) || (current_hour == target_hour && current_min >= target_min) {
-        let md = build_daily_report_markdown(
-            state,
-            &config.title_prefix,
-            config.include_system_status,
-            None,
-        )
-        .await?;
-
+        let snap = fetch_daily_snapshot(state).await?;
         let client = Client::new();
-        match send_to_webhook(&client, &config, &config.title_prefix, &md).await {
+        match send_to_webhook(&client, &config, &snap, None).await {
             Ok(_) => {
                 let mut updated_config = config;
                 updated_config.last_pushed_date = Some(today_str);
