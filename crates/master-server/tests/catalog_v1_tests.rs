@@ -461,6 +461,74 @@ async fn 下载批次_总库已有则跳过_成功后新书才进入总库() {
             .unwrap();
     assert_eq!(owned_batch_rows, 0, "总库已有书不得创建下载任务关联");
 
+    let candidate_edition_id: Uuid = sqlx::query_scalar(
+        "SELECT e.id FROM editions e JOIN identifiers i ON i.object_id = e.id \
+         WHERE i.normalized_value = '9780262033848' LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE editions SET owned_at = NULL WHERE id = $1")
+        .bind(candidate_edition_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+    let candidate_summary = master_server::store::catalog::import_books(
+        &db.pool,
+        &master_server::store::catalog::ImportRequest {
+            batch_name: "候选版本重新下载批次",
+            source_file: Some("candidate.csv"),
+            format: "pdf",
+            priority: 0,
+            created_by: None,
+            max_attempts: 3,
+        },
+        &[master_server::models::ImportRow {
+            title: "已拥有测试书".to_string(),
+            author: Some("作者甲".to_string()),
+            publisher: Some("出版社甲".to_string()),
+            isbn: Some("9780262033848".to_string()),
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(candidate_summary.already_owned, 0);
+    assert_eq!(candidate_summary.new_books, 1);
+
+    let candidate_task_id: Uuid = sqlx::query_scalar(
+        "SELECT t.id FROM book_tasks t JOIN batch_books bb ON bb.book_id = t.book_id \
+         WHERE bb.batch_id = $1 LIMIT 1",
+    )
+    .bind(candidate_summary.batch_id.unwrap())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let mut candidate_tx = db.pool.begin().await.unwrap();
+    success_in_tx(
+        &mut candidate_tx,
+        candidate_task_id,
+        Uuid::nil(),
+        None,
+        &FileEvidence {
+            nas_relative_path: "文件/候选版本恢复.pdf".to_string(),
+            file_name: "候选版本恢复.pdf".to_string(),
+            size_bytes: 5_000_000,
+            sha256: "c".repeat(64),
+            format: "pdf".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    candidate_tx.commit().await.unwrap();
+    let candidate_owned: bool =
+        sqlx::query_scalar("SELECT owned_at IS NOT NULL FROM editions WHERE id = $1")
+            .bind(candidate_edition_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(candidate_owned, "候选版本只有下载校验成功后才进入总库");
+
     let new_summary = master_server::store::catalog::import_books(
         &db.pool,
         &master_server::store::catalog::ImportRequest {

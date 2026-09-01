@@ -466,6 +466,15 @@ async fn attach_source_and_assets(
     confidence: f64,
     status: ResolutionStatus,
 ) -> AppResult<ResolutionResult> {
+    // 进入“我的书目总库”的显式导入会把已存在的候选版本转为已拥有；仅下载
+    // 调度创建的候选版本保持 owned_at 为空，直至文件校验成功。
+    sqlx::query(
+        "UPDATE editions SET owned_at = COALESCE(owned_at, now()), updated_at = now() WHERE id = $1",
+    )
+    .bind(edition_id)
+    .execute(&mut **tx)
+    .await?;
+
     // 写入消歧映射
     sqlx::query(
         "INSERT INTO record_resolutions (id, source_record_id, work_id, edition_id, match_method, confidence, rule_version, is_manual) \

@@ -396,7 +396,7 @@ pub async fn recalculate_publisher_stats(pool: &PgPool, publisher_id: Uuid) -> A
              FROM editions e \
              LEFT JOIN holdings h ON h.edition_id = e.id \
              LEFT JOIN library_files lf ON lf.id = h.library_file_id \
-             WHERE e.publisher_id = $1 \
+             WHERE e.publisher_id = $1 AND e.owned_at IS NOT NULL \
          ) \
          UPDATE publishers SET \
              works_count = stats.works_c, \
@@ -436,8 +436,9 @@ pub async fn list_publisher_editions(
         sqlx::query_scalar(
             "SELECT count(*) FROM editions e \
              LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-             WHERE e.publisher_id = $1 \
-               AND coalesce(at.status, '待下载') = $2",
+             WHERE e.publisher_id = $1 AND e.owned_at IS NOT NULL \
+               AND CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+                        THEN '总库已拥有' ELSE at.status END = $2",
         )
         .bind(publisher_id)
         .bind(status)
@@ -465,15 +466,17 @@ pub async fn list_publisher_editions(
         Option<String>,
     )> = sqlx::query_as(
         "SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publish_year, e.language, \
-                coalesce(at.status, '待下载') as acq_status, w.resolution_status, e.updated_at, \
+                CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+                     THEN '总库已拥有' ELSE at.status END as acq_status, w.resolution_status, e.updated_at, \
                 wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
          FROM editions e \
          JOIN works w ON w.id = e.work_id \
          LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
          LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
          LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
-         WHERE e.publisher_id = $1 \
-           AND ($2::text IS NULL OR coalesce(at.status, '待下载') = $2) \
+         WHERE e.publisher_id = $1 AND e.owned_at IS NOT NULL \
+           AND ($2::text IS NULL OR CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+                                         THEN '总库已拥有' ELSE at.status END = $2) \
          ORDER BY e.publish_year DESC NULLS LAST, e.updated_at DESC, e.id DESC \
          LIMIT $3 OFFSET $4",
     )
@@ -586,7 +589,7 @@ pub async fn sync_publishers_from_editions(pool: &PgPool) -> AppResult<usize> {
          SELECT DISTINCT trim(publisher) as name, \
                 regexp_replace(lower(trim(publisher)), '[^a-z0-9\\u4e00-\\u9fa5]', '', 'g') as norm \
          FROM editions \
-         WHERE publisher IS NOT NULL AND trim(publisher) != '' \
+         WHERE owned_at IS NOT NULL AND publisher IS NOT NULL AND trim(publisher) != '' \
          ON CONFLICT (normalized_name) DO NOTHING",
     )
     .execute(pool)
@@ -598,6 +601,7 @@ pub async fn sync_publishers_from_editions(pool: &PgPool) -> AppResult<usize> {
         "UPDATE editions SET publisher_id = p.id \
          FROM publishers p \
          WHERE editions.publisher_id IS NULL \
+           AND editions.owned_at IS NOT NULL \
            AND editions.publisher IS NOT NULL \
            AND regexp_replace(lower(trim(editions.publisher)), '[^a-z0-9\\u4e00-\\u9fa5]', '', 'g') = p.normalized_name",
     )
@@ -616,7 +620,7 @@ pub async fn sync_publishers_from_editions(pool: &PgPool) -> AppResult<usize> {
              FROM editions e \
              LEFT JOIN holdings h ON h.edition_id = e.id \
              LEFT JOIN library_files lf ON lf.id = h.library_file_id \
-             WHERE e.publisher_id IS NOT NULL \
+             WHERE e.publisher_id IS NOT NULL AND e.owned_at IS NOT NULL \
              GROUP BY e.publisher_id \
          ) \
          UPDATE publishers SET \

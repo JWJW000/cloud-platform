@@ -21,6 +21,31 @@ pub async fn find_owned_edition<'e, E>(
 where
     E: PgExecutor<'e>,
 {
+    find_matching_edition(executor, identity, true).await
+}
+
+/// 查询任意规范版本，包括尚未下载的候选版本。
+///
+/// 下载导入用它复用候选元数据与既有任务；是否应跳过仍只能由
+/// [`find_owned_edition`] 决定。
+pub async fn find_catalog_edition<'e, E>(
+    executor: E,
+    identity: &BookIdentity,
+) -> AppResult<Option<Uuid>>
+where
+    E: PgExecutor<'e>,
+{
+    find_matching_edition(executor, identity, false).await
+}
+
+async fn find_matching_edition<'e, E>(
+    executor: E,
+    identity: &BookIdentity,
+    owned_only: bool,
+) -> AppResult<Option<Uuid>>
+where
+    E: PgExecutor<'e>,
+{
     match &identity.dedup_key {
         DedupKey::Isbn(isbn) => {
             let id = sqlx::query_scalar(
@@ -30,11 +55,13 @@ where
                  WHERE i.object_type = 'edition' AND i.is_valid \
                    AND i.identifier_type IN ('isbn13', 'isbn10') \
                    AND i.normalized_value = $1 \
+                   AND (NOT $2::boolean OR e.owned_at IS NOT NULL) \
                    AND e.status NOT IN ('已合并', '已拆分') \
                    AND w.resolution_status NOT IN ('已合并', '已忽略') \
                  ORDER BY e.created_at LIMIT 1",
             )
             .bind(isbn)
+            .bind(owned_only)
             .fetch_optional(executor)
             .await?;
             Ok(id)
@@ -50,6 +77,7 @@ where
                 "SELECT e.id, e.publisher FROM works w \
                  JOIN editions e ON e.work_id = w.id \
                  WHERE w.normalized_title = $1 \
+                   AND (NOT $3::boolean OR e.owned_at IS NOT NULL) \
                    AND e.status NOT IN ('已合并', '已拆分') \
                    AND w.resolution_status NOT IN ('已合并', '已忽略') \
                    AND EXISTS ( \
@@ -61,6 +89,7 @@ where
             )
             .bind(&identity.normalized_title)
             .bind(author)
+            .bind(owned_only)
             .fetch_all(executor)
             .await?;
 
@@ -77,11 +106,13 @@ where
                 "SELECT e.id FROM works w \
                  JOIN editions e ON e.work_id = w.id \
                  WHERE w.normalized_title = $1 \
+                   AND (NOT $2::boolean OR e.owned_at IS NOT NULL) \
                    AND e.status NOT IN ('已合并', '已拆分') \
                    AND w.resolution_status NOT IN ('已合并', '已忽略') \
                  ORDER BY e.created_at LIMIT 1",
             )
             .bind(&identity.normalized_title)
+            .bind(owned_only)
             .fetch_optional(executor)
             .await?;
             Ok(id)
@@ -110,6 +141,7 @@ pub async fn promote_downloaded_book(
     .await?;
 
     if let Some(edition_id) = row.4 {
+        mark_edition_owned(tx, edition_id).await?;
         return Ok(edition_id);
     }
 
@@ -119,6 +151,7 @@ pub async fn promote_downloaded_book(
         .fetch_optional(&mut **tx)
         .await?;
     if let Some(edition_id) = same_id {
+        mark_edition_owned(tx, edition_id).await?;
         link_book_to_edition(tx, book_id, edition_id).await?;
         return Ok(edition_id);
     }
@@ -240,6 +273,16 @@ async fn link_book_to_edition(
     Ok(())
 }
 
+async fn mark_edition_owned(tx: &mut Transaction<'_, Postgres>, edition_id: Uuid) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE editions SET owned_at = COALESCE(owned_at, now()), updated_at = now() WHERE id = $1",
+    )
+    .bind(edition_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// 为已拥有版本登记当前可用的文件资产；拥有关系不依赖 NAS，文件只是附属资产。
 pub async fn record_owned_file(
     tx: &mut Transaction<'_, Postgres>,
@@ -249,6 +292,7 @@ pub async fn record_owned_file(
     file: &FileEvidence,
     match_type: &str,
 ) -> AppResult<Uuid> {
+    mark_edition_owned(tx, edition_id).await?;
     if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(AppError::bad("SHA-256 必须为 64 位十六进制字符串"));
     }
@@ -333,6 +377,7 @@ pub async fn record_owned_file(
                   LEFT JOIN holdings h ON h.edition_id = e.id \
                   LEFT JOIN library_files lf ON lf.id = h.library_file_id \
                   WHERE e.publisher_id = (SELECT publisher_id FROM target) \
+                    AND e.owned_at IS NOT NULL \
               ) \
          UPDATE publishers p SET works_count = stats.works_c, editions_count = stats.editions_c, \
              holdings_count = stats.files_c, acquired_count = stats.editions_with_files_c, \

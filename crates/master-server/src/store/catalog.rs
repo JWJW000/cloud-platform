@@ -94,7 +94,38 @@ pub async fn import_books(
             continue;
         }
 
-        let (book_id, _book_seq, is_new) = upsert_book(&mut tx, &identity).await?;
+        // 可能已经存在“候选版本”（例如历史待下载数据源），但 owned_at 为空。
+        // 这时复用它的 Worker 任务载体，避免再次导入制造重复版本。
+        let candidate_edition =
+            crate::catalog_ownership::find_catalog_edition(&mut *tx, &identity).await?;
+        let existing_candidate_book: Option<(Uuid, i64)> = if let Some(edition_id) =
+            candidate_edition
+        {
+            sqlx::query_as(
+                "SELECT id, seq FROM books WHERE catalog_edition_id = $1 ORDER BY created_at LIMIT 1",
+            )
+            .bind(edition_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            None
+        };
+
+        let (book_id, _book_seq, is_new) = if let Some((id, seq)) = existing_candidate_book {
+            (id, seq, false)
+        } else {
+            let result = upsert_book(&mut tx, &identity).await?;
+            if let Some(edition_id) = candidate_edition {
+                sqlx::query(
+                    "UPDATE books SET catalog_edition_id = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(result.0)
+                .bind(edition_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            result
+        };
         if is_new {
             summary.new_books += 1;
         } else {

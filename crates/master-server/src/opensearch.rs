@@ -538,7 +538,7 @@ async fn load_documents(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<SearchDocumen
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = format!("{DOCUMENT_SELECT} WHERE e.id = ANY($1)");
+    let sql = format!("{DOCUMENT_SELECT} WHERE e.id = ANY($1) AND e.owned_at IS NOT NULL");
     Ok(sqlx::query_as(&sql).bind(ids).fetch_all(pool).await?)
 }
 
@@ -548,7 +548,7 @@ async fn load_documents_page(
     limit: usize,
 ) -> Result<Vec<SearchDocument>> {
     let sql = format!(
-        "{DOCUMENT_SELECT} WHERE ($1::uuid IS NULL OR e.id > $1) ORDER BY e.id ASC LIMIT $2"
+        "{DOCUMENT_SELECT} WHERE e.owned_at IS NOT NULL AND ($1::uuid IS NULL OR e.id > $1) ORDER BY e.id ASC LIMIT $2"
     );
     Ok(sqlx::query_as(&sql)
         .bind(cursor)

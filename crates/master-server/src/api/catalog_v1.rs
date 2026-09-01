@@ -87,19 +87,21 @@ async fn merge_impact(state: &AppState, work_id: Uuid) -> AppResult<MergeImpactI
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| AppError::missing("作品不存在"))?;
-    let editions: i64 = sqlx::query_scalar("SELECT count(*) FROM editions WHERE work_id = $1")
-        .bind(work_id)
-        .fetch_one(&state.pool)
-        .await?;
+    let editions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM editions WHERE work_id = $1 AND owned_at IS NOT NULL",
+    )
+    .bind(work_id)
+    .fetch_one(&state.pool)
+    .await?;
     let source_records: i64 = sqlx::query_scalar(
         "SELECT count(DISTINCT rr.source_record_id) FROM record_resolutions rr \
-         JOIN editions e ON e.id = rr.edition_id WHERE e.work_id = $1",
+         JOIN editions e ON e.id = rr.edition_id WHERE e.work_id = $1 AND e.owned_at IS NOT NULL",
     )
     .bind(work_id)
     .fetch_one(&state.pool)
     .await?;
     let holdings: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM holdings h JOIN editions e ON e.id = h.edition_id WHERE e.work_id = $1",
+        "SELECT count(*) FROM holdings h JOIN editions e ON e.id = h.edition_id WHERE e.work_id = $1 AND e.owned_at IS NOT NULL",
     )
     .bind(work_id)
     .fetch_one(&state.pool)

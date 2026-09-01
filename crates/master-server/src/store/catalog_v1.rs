@@ -833,14 +833,18 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
         SELECT
           (SELECT count(*) FROM catalog_sources)::bigint as total_sources,
           (SELECT count(*) FROM source_records)::bigint as total_source_records,
-          (SELECT count(*) FROM works WHERE work_type != '章节')::bigint as total_works,
-          (SELECT count(*) FROM works WHERE work_type = '章节')::bigint as total_chapters,
-          (SELECT count(*) FROM editions)::bigint as total_editions,
-          (SELECT count(*) FROM holdings)::bigint as total_holdings,
+          (SELECT count(*) FROM works w WHERE work_type != '章节' AND EXISTS
+             (SELECT 1 FROM editions e WHERE e.work_id = w.id AND e.owned_at IS NOT NULL))::bigint as total_works,
+          (SELECT count(*) FROM works w WHERE work_type = '章节' AND EXISTS
+             (SELECT 1 FROM editions e WHERE e.work_id = w.id AND e.owned_at IS NOT NULL))::bigint as total_chapters,
+          (SELECT count(*) FROM editions WHERE owned_at IS NOT NULL)::bigint as total_editions,
+          (SELECT count(*) FROM holdings h JOIN editions e ON e.id = h.edition_id
+             WHERE e.owned_at IS NOT NULL)::bigint as total_holdings,
           (SELECT count(*) FROM library_files WHERE verify_status = '有效')::bigint as total_library_files,
           (SELECT count(DISTINCT h.edition_id) FROM holdings h
              JOIN library_files lf ON lf.id = h.library_file_id
-             WHERE h.meets_strategy AND lf.verify_status = '有效')::bigint as editions_with_files,
+             JOIN editions e ON e.id = h.edition_id
+             WHERE e.owned_at IS NOT NULL AND h.meets_strategy AND lf.verify_status = '有效')::bigint as editions_with_files,
           (SELECT coalesce(sum(actual_size_bytes), 0) FROM library_files WHERE verify_status = '有效')::bigint as total_library_bytes,
           (SELECT count(*) FROM acquisition_targets WHERE status = '已下载')::bigint as acquired_targets,
           (SELECT count(*) FROM acquisition_targets WHERE status IN ('待下载', '排队中'))::bigint as pending_targets,
@@ -848,9 +852,11 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
           (SELECT count(*) FROM acquisition_targets WHERE status IN ('暂时失败', '来源无效'))::bigint as failed_targets,
           (SELECT count(*) FROM acquisition_targets WHERE status = '人工确认')::bigint as needs_confirm_targets,
           (SELECT count(*) FROM quarantined_records WHERE NOT resolved)::bigint as total_quarantined,
-          (SELECT count(*) FROM works WHERE resolution_status = '待消歧')::bigint as ambiguous_works_count,
+          (SELECT count(*) FROM works w WHERE resolution_status = '待消歧' AND EXISTS
+             (SELECT 1 FROM editions e WHERE e.work_id = w.id AND e.owned_at IS NOT NULL))::bigint as ambiguous_works_count,
           (SELECT count(*) FROM holdings WHERE created_at >= CURRENT_DATE)::bigint as today_downloaded_count,
-          (SELECT count(*) FROM works WHERE created_at >= CURRENT_DATE AND work_type != '章节')::bigint as today_added_works_count
+          (SELECT count(DISTINCT work_id) FROM editions
+             WHERE owned_at >= CURRENT_DATE AND work_id IN (SELECT id FROM works WHERE work_type != '章节'))::bigint as today_added_works_count
         "#,
     )
     .fetch_one(pool)
@@ -890,7 +896,7 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
 
     // 缺失 ISBN 与作者的计数采用轻量独立计算
     let missing_isbn: i64 = sqlx::query_scalar(
-        r#"SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.identifier_type IN ('isbn13', 'isbn10') AND i.is_valid)"#
+        r#"SELECT count(*) FROM editions e WHERE e.owned_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.identifier_type IN ('isbn13', 'isbn10') AND i.is_valid)"#
     )
     .fetch_one(pool)
     .await
@@ -898,7 +904,7 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
     stats.missing_isbn_count = missing_isbn;
 
     let missing_author: i64 = sqlx::query_scalar(
-        r#"SELECT count(*) FROM editions e WHERE NOT EXISTS (SELECT 1 FROM edition_contributors ec WHERE ec.edition_id = e.id)"#
+        r#"SELECT count(*) FROM editions e WHERE e.owned_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM edition_contributors ec WHERE ec.edition_id = e.id)"#
     )
     .fetch_one(pool)
     .await
@@ -973,7 +979,8 @@ pub async fn search_editions(
          LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
          LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
          LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
-         WHERE ($2::text IS NULL \
+         WHERE e.owned_at IS NOT NULL \
+           AND ($2::text IS NULL \
                 OR ($2 = '__actionable__' AND at.status IN \
                     ('待下载', '排队中', '已领取', '下载中', '校验中', '暂时失败', '来源无效', '人工确认')) \
                 OR CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
@@ -1003,7 +1010,8 @@ pub async fn search_editions(
          LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
          LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
          LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
-         WHERE ($2::text IS NULL \
+         WHERE e.owned_at IS NOT NULL \
+           AND ($2::text IS NULL \
                 OR ($2 = '__actionable__' AND at.status IN \
                     ('待下载', '排队中', '已领取', '下载中', '校验中', '暂时失败', '来源无效', '人工确认')) \
                 OR CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
@@ -1164,7 +1172,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
     let edition: EditionRow = sqlx::query_as(
         "SELECT id, work_id, edition_title, language, publisher, publisher_id, publish_year, publish_date_text, \
                 edition_number, intro, format_summary, status, created_at, updated_at \
-         FROM editions WHERE id = $1",
+         FROM editions WHERE id = $1 AND owned_at IS NOT NULL",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1183,7 +1191,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
     let sibling_editions: Vec<EditionRow> = sqlx::query_as(
         "SELECT id, work_id, edition_title, language, publisher, publisher_id, publish_year, publish_date_text, \
                 edition_number, intro, format_summary, status, created_at, updated_at \
-         FROM editions WHERE work_id = $1 AND id != $2 ORDER BY publish_year DESC NULLS LAST",
+         FROM editions WHERE work_id = $1 AND id != $2 AND owned_at IS NOT NULL ORDER BY publish_year DESC NULLS LAST",
     )
     .bind(edition.work_id)
     .bind(id)
