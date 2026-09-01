@@ -68,6 +68,7 @@ pub struct CommitBooksRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct CommitBooksResponse {
     pub batch: DownloadBatch,
+    pub already_owned: usize,
     pub deduplicated: usize,
     pub already_ingested: usize,
 }
@@ -165,14 +166,16 @@ async fn preview_books(
     let mut valid_parsed: Vec<ParsedBookRow> = Vec::new();
 
     for row in parsed_rows {
-        let dedup_str = BookIdentity::from_raw(
+        let identity = BookIdentity::from_raw(
             &row.title,
             row.author.as_deref(),
             row.publisher.as_deref(),
             row.isbn.as_deref(),
-        )
-        .map(|i| i.storage_key())
-        .unwrap_or_else(|| row.title.clone());
+        );
+        let dedup_str = identity
+            .as_ref()
+            .map(BookIdentity::storage_key)
+            .unwrap_or_else(|| row.title.clone());
 
         let is_file_dup = !seen_in_file.insert(dedup_str.clone());
         if is_file_dup {
@@ -191,29 +194,38 @@ async fn preview_books(
             continue;
         }
 
-        let existing_book: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM books WHERE dedup_key = $1")
-                .bind(&dedup_str)
-                .fetch_optional(&state.pool)
-                .await?;
-        let is_lib_dup = existing_book.is_some();
+        let existing_edition = match identity.as_ref() {
+            Some(identity) => {
+                crate::catalog_ownership::find_owned_edition(&state.pool, identity).await?
+            }
+            None => None,
+        };
+        let is_lib_dup = existing_edition.is_some();
         let mut ingested = false;
 
-        if let Some((book_id,)) = existing_book {
+        if let Some(edition_id) = existing_edition {
             duplicate_in_library_count += 1;
-            let files = store::catalog::list_book_files(&state.pool, book_id).await?;
-            ingested = files
-                .iter()
-                .any(|f| f.format == download_format && f.status == "有效");
+            ingested = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS( \
+                    SELECT 1 FROM holdings h \
+                    JOIN library_files lf ON lf.id = h.library_file_id \
+                    WHERE h.edition_id = $1 AND h.meets_strategy \
+                      AND lf.verify_status = '有效' AND lower(lf.format) = $2 \
+                )",
+            )
+            .bind(edition_id)
+            .bind(&download_format)
+            .fetch_one(&state.pool)
+            .await?;
             if ingested {
                 already_ingested_count += 1;
             }
         }
 
         let status_str = if ingested {
-            "已入库"
+            "总库已拥有（文件已归档）"
         } else if is_lib_dup {
-            "库内已有"
+            "总库已拥有，跳过下载"
         } else {
             "有效待下"
         };
@@ -230,7 +242,9 @@ async fn preview_books(
             });
         }
 
-        valid_parsed.push(row);
+        if !is_lib_dup {
+            valid_parsed.push(row);
+        }
     }
 
     for inv in &invalid_rows {
@@ -323,9 +337,14 @@ async fn commit_books(
             let batch = store::catalog::get_batch(&state.pool, batch_id).await?;
             return Ok(Json(CommitBooksResponse {
                 batch,
+                already_owned: job
+                    .summary
+                    .get("already_owned")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize,
                 deduplicated: job
                     .summary
-                    .get("duplicate_in_library")
+                    .get("deduplicated")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as usize,
                 already_ingested: job
@@ -379,6 +398,23 @@ async fn commit_books(
         let _ = scheduler::trigger_scheduler_sweep(&state).await;
     }
 
+    let already_owned = job
+        .summary
+        .get("duplicate_in_library")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0) as usize
+        + import_summary.already_owned;
+    store::import_job::merge_import_job_summary(
+        &state.pool,
+        job.id,
+        &serde_json::json!({
+            "already_owned": already_owned,
+            "deduplicated": import_summary.deduplicated,
+            "already_ingested": import_summary.already_ingested,
+        }),
+    )
+    .await?;
+
     store::import_job::mark_import_job_committed(&state.pool, job.id, batch_id).await?;
 
     state.events.publish(
@@ -393,6 +429,7 @@ async fn commit_books(
     let batch = store::catalog::get_batch(&state.pool, batch_id).await?;
     Ok(Json(CommitBooksResponse {
         batch,
+        already_owned,
         deduplicated: import_summary.deduplicated,
         already_ingested: import_summary.already_ingested,
     }))

@@ -201,9 +201,10 @@ pub async fn import_batch(
             .map(|id| id.to_string())
             .unwrap_or_default(),
         &format!(
-            "批次《{}》导入：总行数 {}，新建 {}，去重 {}，已有文件 {}",
+            "批次《{}》导入：总行数 {}，总库已有并跳过 {}，新建待下载 {}，任务去重 {}，已有文件 {}",
             req.batch_name,
             summary.total_rows,
+            summary.already_owned,
             summary.new_books,
             summary.deduplicated,
             summary.already_ingested

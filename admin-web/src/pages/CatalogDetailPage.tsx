@@ -156,7 +156,7 @@ export function CatalogDetailPage() {
             </div>
             {holdings.length > 0 ? (
               <div className="mt-2 flex items-center gap-1 text-xs text-emerald-600 font-semibold">
-                <CheckCircle2 className="h-4 w-4" /> 已有有效馆藏 ({holdings.length})
+                <CheckCircle2 className="h-4 w-4" /> 当前有可用文件 ({holdings.length})
               </div>
             ) : (
               <div className="mt-2 text-xs text-amber-600">尚未入库有效文件</div>
@@ -197,7 +197,7 @@ export function CatalogDetailPage() {
               : "border-transparent text-slate-500 hover:text-slate-700"
           }`}
         >
-          <HardDrive className="h-4 w-4" /> 馆藏证据与哈希校验 ({holdings.length})
+          <HardDrive className="h-4 w-4" /> 文件资产与哈希校验 ({holdings.length})
         </button>
 
         <button
@@ -304,7 +304,7 @@ export function CatalogDetailPage() {
         </Card>
       )}
 
-      {/* Tab 3: 馆藏证据与哈希校验 */}
+      {/* Tab 3: 文件资产与哈希校验 */}
       {activeTab === "holdings" && (
         <div className="space-y-4">
           {holdings.length === 0 ? (

@@ -125,7 +125,7 @@ export function BatchesPage() {
         start_immediately: startImmediately,
       });
       toast.success(
-        `批次「${res.batch.name}」创建成功（有效 ${previewData.valid_rows} 本，去重 ${res.deduplicated} 本）`
+        `批次「${res.batch.name}」创建成功：待下载 ${previewData.valid_rows} 本，总库已有跳过 ${res.already_owned} 本，任务去重 ${res.deduplicated} 本`
       );
       setWizardOpen(false);
       reload();
@@ -337,11 +337,11 @@ export function BatchesPage() {
                   <div className="text-lg font-bold text-amber-700">{previewData.duplicate_in_file}</div>
                 </div>
                 <div className="rounded-lg bg-purple-50 p-2 border border-purple-200">
-                  <div className="text-xs text-purple-600">库内已有</div>
+                  <div className="text-xs text-purple-600">总库已有，跳过</div>
                   <div className="text-lg font-bold text-purple-700">{previewData.duplicate_in_library}</div>
                 </div>
                 <div className="rounded-lg bg-green-50 p-2 border border-green-200">
-                  <div className="text-xs text-green-600">已入库</div>
+                  <div className="text-xs text-green-600">已有归档文件</div>
                   <div className="text-lg font-bold text-green-700">{previewData.already_ingested}</div>
                 </div>
                 <div className="rounded-lg bg-red-50 p-2 border border-red-200">
@@ -393,9 +393,9 @@ export function BatchesPage() {
                               className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-medium ${
                                 p.status === "有效待下"
                                   ? "bg-blue-100 text-blue-800"
-                                  : p.status === "已入库"
+                                  : p.status.includes("文件已归档")
                                   ? "bg-green-100 text-green-800"
-                                  : p.status === "库内已有"
+                                  : p.status.includes("总库已拥有")
                                   ? "bg-purple-100 text-purple-800"
                                   : "bg-red-100 text-red-800"
                               }`}

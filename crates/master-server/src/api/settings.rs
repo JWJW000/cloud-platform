@@ -9,6 +9,7 @@ use platform_domain::{
 use serde::{Deserialize, Serialize};
 
 use crate::api::auth::AuthenticatedUser;
+use crate::download_search::{self, DownloadSearchOptions};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::store;
@@ -92,7 +93,10 @@ pub async fn put_setting(
         || key.is_empty()
         || matches!(
             normalized.as_str(),
-            "mail_code_provider" | "global_download_paused" | "webhook_notification_config"
+            "mail_code_provider"
+                | "global_download_paused"
+                | "webhook_notification_config"
+                | "download_search_options"
         )
     {
         return Err(AppError::bad("该设置键无效或必须使用类型化设置接口"));
@@ -128,6 +132,61 @@ pub async fn put_setting(
     .await?;
 
     Ok(Json(serde_json::json!({ "message": "设置已保存" })))
+}
+
+/// GET /api/settings/download-search
+pub async fn get_download_search_options(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+) -> AppResult<Json<DownloadSearchOptions>> {
+    auth.require_super_admin()?;
+    Ok(Json(download_search::load(&state.pool).await?))
+}
+
+/// PUT /api/settings/download-search
+pub async fn update_download_search_options(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Json(request): Json<DownloadSearchOptions>,
+) -> AppResult<Json<DownloadSearchOptions>> {
+    auth.require_super_admin()?;
+    let options = request.normalized()?;
+    let value = serde_json::to_value(&options).map_err(|error| AppError::Internal(error.into()))?;
+    store::admin::put_setting(&state.pool, download_search::SETTING_KEY, &value).await?;
+
+    store::admin::log(
+        &state.pool,
+        platform_domain::OperationSource::Admin,
+        platform_domain::LogLevel::Info,
+        &auth.username,
+        "修改下载搜索参数",
+        download_search::SETTING_KEY,
+        &format!(
+            "order={},extensions_count={}",
+            options.order,
+            options.extensions.len()
+        ),
+    )
+    .await?;
+
+    // 在线 Worker 立即收到新快照；正在执行的搜索保持原参数，新任务使用新值。
+    for node_id in state.links.online_nodes() {
+        let Some(sender) = state.links.sender(node_id) else {
+            continue;
+        };
+        match store::node::get_node(&state.pool, node_id).await {
+            Ok(node) => crate::grpc::inbound::send_node_config(&state, &node, &sender).await,
+            Err(error) => {
+                tracing::warn!(node_id = %node_id, %error, "搜索参数已保存，但读取在线节点失败")
+            }
+        }
+    }
+
+    state.events.publish(
+        "设置变更",
+        serde_json::json!({ "设置": download_search::SETTING_KEY }),
+    );
+    Ok(Json(options))
 }
 
 /// GET /api/dict

@@ -152,7 +152,7 @@ export function CatalogImportsPage() {
     }
     try {
       await resolveCatalogQuarantine(id, { corrected_title: resolveTitle.trim() });
-      success("隔离记录已修正并重新入库");
+      success("隔离记录已修正并重新加入总库");
       setResolvingId(null);
       setResolveTitle("");
       loadData();
@@ -275,13 +275,13 @@ export function CatalogImportsPage() {
             <h3 className="font-semibold text-slate-900">隔离区异常行明细与人工修复</h3>
           </div>
           <span className="text-xs text-slate-400">
-            书名缺失或脏格式数据将被隔离，修复后可重新归并入库。
+            书名缺失或脏格式数据将被隔离，修复后可重新归并到书目总库。
           </span>
         </div>
 
         {quarantined.length === 0 ? (
           <div className="text-center py-6 text-sm text-slate-400">
-            隔离区为空，所有数据均正常归并入库。
+            隔离区为空，所有数据均正常归并到书目总库。
           </div>
         ) : (
           <div className="space-y-3">
@@ -307,7 +307,7 @@ export function CatalogImportsPage() {
                       className="text-xs"
                     />
                     <Button size="sm" variant="primary" onClick={() => handleResolveQuarantine(q.id)}>
-                      确认并入库
+                      确认并加入总库
                     </Button>
                     <Button size="sm" variant="secondary" onClick={() => setResolvingId(null)}>
                       取消
@@ -431,7 +431,7 @@ export function CatalogImportsPage() {
                 预检解析
               </Button>
               <Button variant="primary" onClick={handleSubmitImport} disabled={importing}>
-                {importing ? "正在导入..." : "确认提交入库"}
+                {importing ? "正在导入..." : "确认加入书目总库"}
               </Button>
             </div>
           </div>

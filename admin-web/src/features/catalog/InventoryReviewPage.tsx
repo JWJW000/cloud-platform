@@ -31,7 +31,7 @@ export function InventoryReviewPage() {
       const res = await listInventoryReviews();
       setReviews(res.reviews || []);
     } catch (err: any) {
-      setError(err.message || "加载待确认馆藏列表失败");
+      setError(err.message || "加载待确认文件关联列表失败");
     } finally {
       setLoading(false);
     }
@@ -49,7 +49,7 @@ export function InventoryReviewPage() {
     try {
       setProcessingId(entryId);
       await confirmInventoryReview(entryId, editionId);
-      success("候选已成功确认并关联馆藏");
+      success("候选已成功确认并关联到书目版本");
       setReviews((prev) => prev.filter((r) => r.id !== entryId));
     } catch (err: any) {
       toastError(err.message || "确认候选失败");
@@ -74,7 +74,7 @@ export function InventoryReviewPage() {
   };
 
   if (loading && reviews.length === 0) {
-    return <Spinner label="正在加载待确认馆藏..." />;
+    return <Spinner label="正在加载待确认文件关联..." />;
   }
 
   return (
@@ -84,10 +84,10 @@ export function InventoryReviewPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
             <AlertTriangle className="w-7 h-7 text-amber-500" />
-            待确认馆藏审核
+            待确认文件关联审核
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            处理扫描过程中多候选、字段冲突或低置信度的文件，确认后将自动登记馆藏并收敛为“已下载”
+            处理扫描过程中多候选、字段冲突或低置信度的文件，确认后登记为对应书目版本的可用文件
           </p>
         </div>
         <Button variant="secondary" onClick={loadData}>
@@ -187,7 +187,7 @@ export function InventoryReviewPage() {
         {reviews.length === 0 && (
           <div className="p-12 text-center bg-gray-50 rounded-lg border border-dashed border-gray-200">
             <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto mb-2" />
-            <h3 className="text-sm font-semibold text-gray-900">当前没有待确认的馆藏</h3>
+            <h3 className="text-sm font-semibold text-gray-900">当前没有待确认的文件关联</h3>
             <p className="text-xs text-gray-500 mt-1">所有扫描发现的文件均已成功自动匹配或进入未匹配池</p>
           </div>
         )}

@@ -13,7 +13,9 @@
 
 pub mod api;
 pub mod catalog;
+pub mod catalog_ownership;
 pub mod config;
+pub mod download_search;
 pub mod error;
 pub mod events;
 pub mod grpc;

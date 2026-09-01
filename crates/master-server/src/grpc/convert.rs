@@ -294,6 +294,7 @@ pub fn cancel_registration_task_message(
 pub fn node_config_message(
     node: &crate::models::WorkerNode,
     config: &crate::config::MasterConfig,
+    search: &crate::download_search::DownloadSearchOptions,
     layout_root: &str,
     max_session_duration_secs: u32,
 ) -> pb::MasterMessage {
@@ -319,6 +320,8 @@ pub fn node_config_message(
         min_agent_version: String::new(),
         diagnostics_enabled: node.diagnostics_enabled,
         minimum_file_bytes: config.nas.minimum_file_bytes,
+        search_order: search.order.clone(),
+        search_extensions: search.extensions.clone(),
     };
     pb::MasterMessage::new(
         now_rfc3339(),

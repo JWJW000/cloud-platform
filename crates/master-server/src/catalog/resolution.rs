@@ -526,9 +526,6 @@ async fn attach_source_and_assets(
         }
     }
 
-    // 确保版本对应的全局获取目标存在
-    ensure_acquisition_target(tx, edition_id).await?;
-
     Ok(ResolutionResult {
         work_id,
         edition_id,
@@ -540,7 +537,10 @@ async fn attach_source_and_assets(
     })
 }
 
-/// 确保版本对应的获取目标存在并处于正确状态。
+/// 显式创建补文件任务时，确保版本对应的获取目标存在并处于正确状态。
+///
+/// 总库导入不再自动调用本函数：总库中的书已经属于“已拥有”，没有 NAS 文件也不
+/// 等于待下载。只有用户主动发起补文件任务时才应建立获取目标。
 pub async fn ensure_acquisition_target(
     tx: &mut Transaction<'_, Postgres>,
     edition_id: Uuid,

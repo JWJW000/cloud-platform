@@ -117,6 +117,24 @@ pub const EMAIL_EXISTS_SCRIPT: &str = r#"
     })()
 "#;
 
+/// 验证码提交后的强成功信号。
+///
+/// 仅凭验证码输入框消失不能证明注册已经完成：站点提交时会先隐藏表单，再异步
+/// 返回结果。这里只接受明确的成功提示、注册奖励弹窗或已登录账号入口。
+pub const REGISTRATION_SUCCESS_SCRIPT: &str = r#"
+    (() => {
+        if (document.querySelector(
+            '.btnCloseRegBonusPopup, [data-action="logout"], a[href*="/logout"], .logout-link, #logout-link'
+        )) return true;
+        const text = (document.body ? document.body.innerText : '') || '';
+        return text.includes('注册成功')
+            || text.includes('账户创建成功')
+            || text.includes('账号创建成功')
+            || /registration\s+(was\s+)?successful/i.test(text)
+            || /account\s+(was\s+)?created\s+successfully/i.test(text);
+    })()
+"#;
+
 /// 连接问题拦截页。
 pub const CONNECTION_PROBLEM_SCRIPT: &str = r#"
     (() => {
@@ -343,17 +361,40 @@ pub fn percent_encode(raw: &str) -> String {
     out
 }
 
-/// 搜索 URL：按书名搜，带站点排序；按目标格式过滤扩展名。
-pub fn search_url(site_base: &str, title: &str, format: &str) -> String {
+/// 搜索 URL：按书名搜索，并使用运行配置中的排序和扩展名筛选。
+///
+/// `extensions` 为空时回退到任务目标格式，保持旧配置与旧 Master 的行为。
+pub fn search_url(
+    site_base: &str,
+    title: &str,
+    order: &str,
+    extensions: &[String],
+    fallback_format: &str,
+) -> String {
     let encoded = percent_encode(title);
     let mut url = format!(
-        "{}/s/{}?order=bestmatch",
+        "{}/s/{}?order={}",
         site_base.trim_end_matches('/'),
-        encoded
+        encoded,
+        percent_encode(order.trim())
     );
-    let ext = format.trim().trim_start_matches('.').to_ascii_lowercase();
-    if ext == "pdf" || ext == "epub" {
-        url.push_str(&format!("&extensions%5B0%5D={ext}"));
+
+    let fallback;
+    let selected = if extensions.is_empty() {
+        fallback = vec![fallback_format.to_string()];
+        fallback.as_slice()
+    } else {
+        extensions
+    };
+    for (index, raw) in selected.iter().enumerate() {
+        let extension = raw.trim().trim_start_matches('.').to_ascii_lowercase();
+        if extension.is_empty() {
+            continue;
+        }
+        url.push_str(&format!(
+            "&extensions%5B{index}%5D={}",
+            percent_encode(&extension)
+        ));
     }
     url
 }
@@ -488,11 +529,31 @@ mod tests {
 
     #[test]
     fn search_url_uses_title_and_format_filter() {
-        let url = search_url("https://zh.loves.works", "算法导论", "pdf");
+        let url = search_url(
+            "https://zh.loves.works",
+            "算法导论",
+            "bestmatch",
+            &[],
+            "pdf",
+        );
         assert!(url.starts_with("https://zh.loves.works/s/"));
         assert!(url.contains("order=bestmatch"));
         assert!(url.contains("extensions%5B0%5D=pdf"));
         assert!(!url.contains("register"));
+    }
+
+    #[test]
+    fn search_url_uses_custom_order_and_extensions() {
+        let url = search_url(
+            "https://zh.loves.works/",
+            "Rust & Systems",
+            "newest",
+            &["pdf".to_string(), "epub".to_string()],
+            "pdf",
+        );
+        assert!(url.contains("/s/Rust%20%26%20Systems?order=newest"));
+        assert!(url.contains("extensions%5B0%5D=pdf"));
+        assert!(url.contains("extensions%5B1%5D=epub"));
     }
 
     #[test]

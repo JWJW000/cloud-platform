@@ -84,6 +84,16 @@ pub async fn import_books(
             continue;
         };
 
+        // 总库就是“已经拥有”。无论 NAS 是否存在文件，只要可靠命中总库版本，
+        // 本次下载导入就直接跳过，不能再创建或复活下载任务。
+        if crate::catalog_ownership::find_owned_edition(&mut *tx, &identity)
+            .await?
+            .is_some()
+        {
+            summary.already_owned += 1;
+            continue;
+        }
+
         let (book_id, _book_seq, is_new) = upsert_book(&mut tx, &identity).await?;
         if is_new {
             summary.new_books += 1;

@@ -418,6 +418,8 @@ mod tests {
             staging_dir: root.join("staging/task-任务1"),
             stall_timeout: Duration::from_secs(120),
             minimum_size_bytes: 32 * 1024,
+            search_order: "bestmatch".to_string(),
+            search_extensions: Vec::new(),
             attempt: 1,
         }
     }

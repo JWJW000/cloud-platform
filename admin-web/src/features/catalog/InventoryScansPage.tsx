@@ -42,7 +42,7 @@ export function InventoryScansPage() {
       setLocations(locRes.locations || []);
       setJobs(jobRes.jobs || []);
     } catch (err: any) {
-      setError(err.message || "加载馆藏扫描数据失败");
+      setError(err.message || "加载文件盘点扫描数据失败");
     } finally {
       setLoading(false);
     }
@@ -69,7 +69,7 @@ export function InventoryScansPage() {
         storage_location_id: loc.id,
         scan_mode: scanMode,
       });
-      success("馆藏扫描任务已成功下发");
+      success("文件盘点扫描任务已成功下发");
       setShowModal(false);
       loadData();
     } catch (err: any) {
@@ -91,7 +91,7 @@ export function InventoryScansPage() {
   };
 
   if (loading && locations.length === 0) {
-    return <Spinner label="正在加载馆藏扫描任务..." />;
+    return <Spinner label="正在加载文件盘点扫描任务..." />;
   }
 
   return (
@@ -101,10 +101,10 @@ export function InventoryScansPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
             <FolderSearch className="w-7 h-7 text-primary-600" />
-            馆藏扫描
+            文件盘点扫描
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            只读扫描 Worker 节点/移动硬盘/NAS 已有图书，自动闭环校验并标记为“已下载”
+            只读扫描 Worker 节点、移动硬盘或 NAS 中的文件，校验后关联到已拥有书目版本
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -244,7 +244,7 @@ export function InventoryScansPage() {
           <Card className="w-full max-w-md p-6 bg-white shadow-xl">
             <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
               <Play className="w-5 h-5 text-primary-600" />
-              新建馆藏扫描任务
+              新建文件盘点扫描任务
             </h3>
             <form onSubmit={handleStartScan} className="space-y-4">
               <div>

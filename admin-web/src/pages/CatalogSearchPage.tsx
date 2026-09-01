@@ -46,7 +46,7 @@ export function CatalogSearchPage() {
       });
       setData(res);
     } catch (err: any) {
-      setError(err.message || "检索图书总库失败");
+      setError(err.message || "检索我的书目总库失败");
     } finally {
       setLoading(false);
     }
@@ -84,7 +84,7 @@ export function CatalogSearchPage() {
   return (
     <div className="flex flex-col h-full space-y-4 overflow-hidden">
       <div className="shrink-0">
-        <h1 className="text-xl font-bold text-slate-900">图书总库检索与分面索引</h1>
+        <h1 className="text-xl font-bold text-slate-900">我的书目总库检索</h1>
         <p className="text-xs text-slate-500">
           多源归并后的规范书目检索：支持题名、作者、ISBN/DOI、来源编号与全维度分面过滤。
         </p>
@@ -140,8 +140,8 @@ export function CatalogSearchPage() {
               <div className="space-y-1">
                 {[
                   { label: "全部状态", val: "" },
-                  { label: "已下载 (经过核验)", val: "已下载" },
-                  { label: "待下载 / 排队中", val: "待下载" },
+                  { label: "总库已拥有", val: "总库已拥有" },
+                  { label: "文件已归档", val: "已下载" },
                   { label: "正在下载 / 校验", val: "下载中" },
                   { label: "暂时失败 / 重试", val: "暂时失败" },
                   { label: "待人工确认", val: "人工确认" },
@@ -337,7 +337,7 @@ export function CatalogSearchPage() {
                         </div>
 
                         <div className="flex items-center gap-1.5">
-                          <span className="text-slate-400">馆藏已入库：</span>
+                          <span className="text-slate-400">当前可用文件：</span>
                           {item.holding_formats.length > 0 ? (
                             item.holding_formats.map((f, i) => (
                               <span key={i} className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded font-mono text-[11px] flex items-center gap-0.5">
@@ -346,7 +346,7 @@ export function CatalogSearchPage() {
                               </span>
                             ))
                           ) : (
-                            <span className="text-slate-400">尚未入库</span>
+                            <span className="text-slate-400">仅书目，暂无归档文件</span>
                           )}
                         </div>
                       </div>

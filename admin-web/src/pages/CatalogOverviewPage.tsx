@@ -53,25 +53,18 @@ export function CatalogOverviewPage() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
-  const totalAcq =
-    (stats?.acquired_targets || 0) +
-    (stats?.pending_targets || 0) +
-    (stats?.downloading_targets || 0) +
-    (stats?.failed_targets || 0) +
-    (stats?.needs_confirm_targets || 0);
-
-  const acqRate =
-    totalAcq > 0
-      ? (((stats?.acquired_targets || 0) / totalAcq) * 100).toFixed(1)
+  const fileArchiveRate =
+    (stats?.total_editions || 0) > 0
+      ? (((stats?.editions_with_files || 0) / (stats?.total_editions || 1)) * 100).toFixed(1)
       : "0.0";
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">图书馆总库与索引总览</h1>
+          <h1 className="text-xl font-bold text-slate-900">我的书目总库</h1>
           <p className="text-xs text-slate-500">
-            云端唯一图书事实库：全量书目去重聚合、馆藏文件证据核验与持续全局获取调度。
+            记录当前已经拥有的全部图书；NAS 文件是独立资产，不决定书目是否属于总库。
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -141,27 +134,27 @@ export function CatalogOverviewPage() {
         <Card className="p-5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              馆藏下载满足率
+              文件归档率
             </span>
             <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
               <CheckCircle2 className="h-5 w-5" />
             </div>
           </div>
           <div className="mt-3 text-3xl font-bold text-slate-900">
-            {acqRate}%
+            {fileArchiveRate}%
           </div>
           <div className="mt-2 text-xs text-slate-500 flex items-center justify-between">
             <span className="text-emerald-600 font-medium">
-              {stats?.acquired_targets.toLocaleString() || 0} 已满足
+              {(stats?.editions_with_files || 0).toLocaleString()} 个版本有文件
             </span>
-            <span>待补齐 {stats?.pending_targets.toLocaleString() || 0}</span>
+            <span>仅书目 {(stats?.editions_without_files || 0).toLocaleString()}</span>
           </div>
         </Card>
 
         <Card className="p-5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              经过校验的馆藏资产
+              当前可用文件资产
             </span>
             <div className="p-2 bg-amber-50 text-amber-600 rounded-lg">
               <HardDrive className="h-5 w-5" />
@@ -178,16 +171,16 @@ export function CatalogOverviewPage() {
 
       {/* 获取进度与数据质量监控 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* 全局获取调度池分布 */}
+        {/* 主动补文件任务分布 */}
         <Card className="p-5 lg:col-span-2">
           <CardHeader
-            title="全局获取调度池分布"
+            title="主动补文件任务分布"
             action={
               <Link
                 to="/catalog/acquisitions"
                 className="text-xs text-blue-600 hover:text-blue-800 font-medium"
               >
-                查看全局任务池 →
+                查看补文件任务 →
               </Link>
             }
           />

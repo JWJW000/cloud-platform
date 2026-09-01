@@ -391,11 +391,11 @@ pub async fn recalculate_publisher_stats(pool: &PgPool, publisher_id: Uuid) -> A
              SELECT \
                  count(DISTINCT e.work_id) as works_c, \
                  count(e.id) as editions_c, \
-                 count(DISTINCT h.id) as holdings_c, \
-                 count(DISTINCT CASE WHEN at.status = '已下载' THEN at.id END) as acquired_c \
+                 count(DISTINCT CASE WHEN lf.verify_status = '有效' THEN h.id END) as holdings_c, \
+                 count(DISTINCT CASE WHEN lf.verify_status = '有效' AND h.meets_strategy THEN e.id END) as acquired_c \
              FROM editions e \
              LEFT JOIN holdings h ON h.edition_id = e.id \
-             LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
+             LEFT JOIN library_files lf ON lf.id = h.library_file_id \
              WHERE e.publisher_id = $1 \
          ) \
          UPDATE publishers SET \
@@ -611,11 +611,11 @@ pub async fn sync_publishers_from_editions(pool: &PgPool) -> AppResult<usize> {
                  e.publisher_id, \
                  count(DISTINCT e.work_id) as works_c, \
                  count(e.id) as editions_c, \
-                 count(DISTINCT h.id) as holdings_c, \
-                 count(DISTINCT CASE WHEN at.status = '已下载' THEN at.id END) as acquired_c \
+                 count(DISTINCT CASE WHEN lf.verify_status = '有效' THEN h.id END) as holdings_c, \
+                 count(DISTINCT CASE WHEN lf.verify_status = '有效' AND h.meets_strategy THEN e.id END) as acquired_c \
              FROM editions e \
              LEFT JOIN holdings h ON h.edition_id = e.id \
-             LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
+             LEFT JOIN library_files lf ON lf.id = h.library_file_id \
              WHERE e.publisher_id IS NOT NULL \
              GROUP BY e.publisher_id \
          ) \

@@ -13,6 +13,7 @@
 //!    `site_base = ""` 去启动浏览器。校验失败时保留旧快照并上报原因，
 //!    这比带着坏配置继续跑更容易排查。
 
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use platform_proto::v1 as pb;
@@ -75,6 +76,10 @@ pub struct DynamicConfig {
     pub site_base: String,
     /// 默认下载格式（技术标识 pdf / epub）。
     pub download_format: String,
+    /// 下载搜索 URL 的 `order` 参数。
+    pub search_order: String,
+    /// 下载搜索 URL 的 `extensions[index]` 参数；空数组表示按任务格式自动生成。
+    pub search_extensions: Vec<String>,
     /// 是否开启诊断上传。
     pub diagnostics_enabled: bool,
 }
@@ -103,6 +108,8 @@ impl Default for DynamicConfig {
             minimum_file_bytes: DEFAULT_MINIMUM_FILE_BYTES,
             site_base: String::new(),
             download_format: "pdf".to_string(),
+            search_order: "bestmatch".to_string(),
+            search_extensions: Vec::new(),
             diagnostics_enabled: false,
         }
     }
@@ -195,6 +202,31 @@ impl DynamicConfig {
             });
         };
 
+        // 空 order 来自旧版 Master，必须保持升级前的 bestmatch 行为。
+        let search_order = if cfg.search_order.trim().is_empty() {
+            "bestmatch".to_string()
+        } else {
+            normalize_search_token("search_order", &cfg.search_order, 32)?
+        };
+        if cfg.search_extensions.len() > 10 {
+            return Err(ConfigRejection {
+                field: "search_extensions",
+                reason: "最多允许 10 个扩展名".to_string(),
+            });
+        }
+        let mut seen_extensions = HashSet::new();
+        let mut search_extensions = Vec::new();
+        for raw in &cfg.search_extensions {
+            let normalized = normalize_search_token(
+                "search_extensions",
+                raw.trim().trim_start_matches('.'),
+                16,
+            )?;
+            if seen_extensions.insert(normalized.clone()) {
+                search_extensions.push(normalized);
+            }
+        }
+
         // 站点地址允许暂时为空（节点刚注册、管理员还没配站点），
         // 但不允许是一个格式错误或占位的地址——那是配置错误而不是「还没配」。
         let site_base = cfg.site_base.trim().to_string();
@@ -236,6 +268,8 @@ impl DynamicConfig {
             },
             site_base,
             download_format,
+            search_order,
+            search_extensions,
             diagnostics_enabled: cfg.diagnostics_enabled,
         })
     }
@@ -245,6 +279,26 @@ impl DynamicConfig {
         validate_site_base(&self.site_base)?;
         Ok(self.site_base.trim_end_matches('/').to_string())
     }
+}
+
+fn normalize_search_token(
+    field: &'static str,
+    raw: &str,
+    max_len: usize,
+) -> Result<String, ConfigRejection> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.len() > max_len
+        || !normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(ConfigRejection {
+            field,
+            reason: format!("必须是 1–{max_len} 位字母、数字、下划线或连字符"),
+        });
+    }
+    Ok(normalized)
 }
 
 /// 线程安全的动态配置快照容器。
@@ -328,6 +382,8 @@ mod tests {
             config_version: "v7".to_string(),
             min_agent_version: String::new(),
             diagnostics_enabled: false,
+            search_order: "bestmatch".to_string(),
+            search_extensions: Vec::new(),
         }
     }
 
@@ -390,6 +446,32 @@ mod tests {
         p.download_format = "docx".to_string();
         let err = DynamicConfig::from_proto(&p).expect_err("应拒绝未知格式");
         assert_eq!(err.field, "download_format");
+    }
+
+    #[test]
+    fn search_options_are_normalized_and_old_master_keeps_defaults() {
+        let mut p = proto();
+        p.search_order = " Newest ".to_string();
+        p.search_extensions = vec![".PDF".to_string(), "pdf".to_string(), "EPUB".to_string()];
+        let cfg = DynamicConfig::from_proto(&p).unwrap();
+        assert_eq!(cfg.search_order, "newest");
+        assert_eq!(cfg.search_extensions, vec!["pdf", "epub"]);
+
+        p.search_order.clear();
+        p.search_extensions.clear();
+        let old_master = DynamicConfig::from_proto(&p).unwrap();
+        assert_eq!(old_master.search_order, "bestmatch");
+        assert!(old_master.search_extensions.is_empty());
+    }
+
+    #[test]
+    fn search_options_reject_query_injection() {
+        let mut p = proto();
+        p.search_order = "bestmatch&admin=true".to_string();
+        assert_eq!(
+            DynamicConfig::from_proto(&p).unwrap_err().field,
+            "search_order"
+        );
     }
 
     #[test]

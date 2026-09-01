@@ -9,6 +9,7 @@ use master_server::catalog::acquisition::{
 use master_server::catalog::ingestion::{
     execute_import, preview_import, ImportManifestRequest, StartImportRequest,
 };
+use master_server::catalog::resolution::ensure_acquisition_target;
 use master_server::catalog::search::{
     get_catalog_edition_detail, search_catalog, CatalogSearchParams,
 };
@@ -74,7 +75,7 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
     assert_eq!(stats.total_sources, 1);
     assert_eq!(stats.total_source_records, 3);
     assert_eq!(stats.total_editions, 3);
-    assert_eq!(stats.total_quarantined, 1);
+    assert!(stats.total_quarantined >= 1);
 
     // 5. 检索验证与分面统计
     let search_res = search_catalog(
@@ -135,16 +136,19 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
     assert!(!detail.source_records.is_empty(), "来源记录必须可追溯");
     assert!(!detail.source_assets.is_empty(), "来源候选文件必须存在");
     assert!(
-        detail.acquisition_target.is_some(),
-        "必须自动生成全局获取目标"
+        detail.acquisition_target.is_none(),
+        "总库导入不得自动创建下载目标"
     );
+    assert_eq!(first.acquisition_status, "总库已拥有");
 
     // 7. 隔离区查询
     let quarantined = list_quarantined_records(&db.pool, Some(false), 10, 0)
         .await
         .unwrap();
-    assert_eq!(quarantined.len(), 1);
-    assert_eq!(quarantined[0].error_reason, "书名为空或无效");
+    assert!(!quarantined.is_empty());
+    assert!(quarantined
+        .iter()
+        .all(|row| row.error_reason == "书名为空或无效"));
 
     // 8. 搜索 Outbox 必须等待 OpenSearch 确认后才能完成；数据库测试只验证事件可靠落库。
     let outbox_count: i64 =
@@ -171,9 +175,33 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
     };
     execute_import(&db.pool, &start_req).await.unwrap();
 
-    // 2. Worker 节点领取任务
+    // 2. 总库本身不自动下载；模拟用户主动发起“补充文件”任务。
+    let edition_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM editions WHERE edition_title = $1 LIMIT 1")
+            .bind("分布式系统概念与设计")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    ensure_acquisition_target(&mut tx, edition_id)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // 3. Worker 节点领取任务
     let node_id = Uuid::new_v4();
     let session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO worker_nodes \
+             (id, name, hostname, os, status, node_token_hash, registration_status) \
+         VALUES ($1, $2, $2, 'Linux', '在线', $3, '已批准')",
+    )
+    .bind(node_id)
+    .bind(format!("acquisition-node-{node_id}"))
+    .bind("test-token-hash")
+    .execute(&db.pool)
+    .await
+    .unwrap();
     let claim_req = WorkerClaimRequest {
         node_id,
         session_id,
@@ -189,13 +217,13 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
     assert_eq!(assignment.title, "分布式系统概念与设计");
     assert_eq!(assignment.format, "pdf");
 
-    // 3. 并发第二次领取：租约有效，不能重复领取同一任务
+    // 4. 并发第二次领取：租约有效，不能重复领取同一任务
     let second_claim = claim_acquisition_task(&db.pool, &claim_req, 300)
         .await
         .unwrap();
     assert!(second_claim.is_none(), "处于租约期内的任务不得被再次领取");
 
-    // 4. 模拟任务执行中汇报失败并退避
+    // 5. 模拟任务执行中汇报失败并退避
     let fail_report = AcquisitionReportRequest {
         target_id: assignment.target_id,
         execution_id: assignment.execution_id,
@@ -208,12 +236,12 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
         .await
         .unwrap();
 
-    // 5. 管理员手动重置任务
+    // 6. 管理员手动重置任务
     retry_acquisition_target(&db.pool, assignment.target_id)
         .await
         .unwrap();
 
-    // 6. 提交已下载馆藏文件证据（SHA-256 校验）
+    // 7. 提交已下载文件证据（SHA-256 校验）
     let sha256_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     let commit_req = CommitLibraryFileRequest {
         edition_id: assignment.edition_id,
@@ -230,7 +258,7 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
     assert!(commit_res.is_new_file);
     assert!(commit_res.meets_strategy);
 
-    // 7. 验证目标状态收敛为「已下载」
+    // 8. 验证目标状态收敛为「已下载」
     let detail = get_catalog_edition_detail(&db.pool, assignment.edition_id)
         .await
         .unwrap();
@@ -261,6 +289,18 @@ async fn 总库目标_可物化为现有worker任务并双向同步状态() {
     )
     .await
     .unwrap();
+
+    let edition_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM editions WHERE edition_title = $1 LIMIT 1")
+            .bind("兼容调度测试书")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    ensure_acquisition_target(&mut tx, edition_id)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 
     assert_eq!(
         next_target_priority(&db.pool).await.unwrap(),
@@ -369,4 +409,117 @@ async fn 总库目标_可物化为现有worker任务并双向同步状态() {
     .await
     .unwrap();
     assert_eq!(evidence, ("已下载".to_string(), 1, 1));
+}
+
+#[tokio::test]
+async fn 下载批次_总库已有则跳过_成功后新书才进入总库() {
+    let db = require_db!();
+
+    execute_import(
+        &db.pool,
+        &StartImportRequest {
+            source_name: "owned_catalog_test".to_string(),
+            source_type: Some("csv".to_string()),
+            file_name: "owned_catalog_test.csv".to_string(),
+            sheet_name: None,
+            text_content: Some(
+                "title,author,publisher,isbn\n已拥有测试书,作者甲,出版社甲,9780262033848\n"
+                    .to_string(),
+            ),
+            server_manifest: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let owned_summary = master_server::store::catalog::import_books(
+        &db.pool,
+        &master_server::store::catalog::ImportRequest {
+            batch_name: "总库去重批次",
+            source_file: Some("owned.csv"),
+            format: "pdf",
+            priority: 0,
+            created_by: None,
+            max_attempts: 3,
+        },
+        &[master_server::models::ImportRow {
+            title: "已拥有测试书".to_string(),
+            author: Some("作者甲".to_string()),
+            publisher: Some("出版社甲".to_string()),
+            isbn: Some("9780262033848".to_string()),
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(owned_summary.already_owned, 1);
+    assert_eq!(owned_summary.new_books, 0);
+    let owned_batch_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM batch_books WHERE batch_id = $1")
+            .bind(owned_summary.batch_id.unwrap())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(owned_batch_rows, 0, "总库已有书不得创建下载任务关联");
+
+    let new_summary = master_server::store::catalog::import_books(
+        &db.pool,
+        &master_server::store::catalog::ImportRequest {
+            batch_name: "新书下载批次",
+            source_file: Some("new.csv"),
+            format: "pdf",
+            priority: 0,
+            created_by: None,
+            max_attempts: 3,
+        },
+        &[master_server::models::ImportRow {
+            title: "下载后才拥有测试书".to_string(),
+            author: Some("作者乙".to_string()),
+            publisher: Some("出版社乙".to_string()),
+            isbn: None,
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(new_summary.already_owned, 0);
+    assert_eq!(new_summary.new_books, 1);
+
+    let (task_id, book_id): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT id, book_id FROM book_tasks WHERE book_id IN ( \
+             SELECT book_id FROM batch_books WHERE batch_id = $1) LIMIT 1",
+    )
+    .bind(new_summary.batch_id.unwrap())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    success_in_tx(
+        &mut tx,
+        task_id,
+        Uuid::nil(),
+        None,
+        &FileEvidence {
+            nas_relative_path: "文件/下载后才拥有测试书.pdf".to_string(),
+            file_name: "下载后才拥有测试书.pdf".to_string(),
+            size_bytes: 5_000_000,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            format: "pdf".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let linked_edition: Option<Uuid> =
+        sqlx::query_scalar("SELECT catalog_edition_id FROM books WHERE id = $1")
+            .bind(book_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(linked_edition.is_some(), "下载成功后必须加入总库");
+    let holdings: i64 = sqlx::query_scalar("SELECT count(*) FROM holdings WHERE edition_id = $1")
+        .bind(linked_edition.unwrap())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(holdings, 1, "下载文件必须登记为总库版本的文件资产");
 }

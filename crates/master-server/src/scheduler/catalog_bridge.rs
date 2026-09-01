@@ -7,7 +7,7 @@ use platform_domain::ExecutionResult;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::scheduler::FileEvidence;
 
 const PDF_BATCH_ID: Uuid = Uuid::from_u128(0x000000000000000000000000000000ac);
@@ -243,9 +243,6 @@ pub async fn success_in_tx(
     node_id: Option<Uuid>,
     file: &FileEvidence,
 ) -> AppResult<()> {
-    if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(AppError::bad("SHA-256 必须为 64 位十六进制字符串"));
-    }
     let target: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
         "SELECT edition_id, active_source_asset_id FROM acquisition_targets WHERE id = $1",
     )
@@ -253,74 +250,34 @@ pub async fn success_in_tx(
     .fetch_optional(&mut **tx)
     .await?;
     let Some((edition_id, source_asset_id)) = target else {
+        // 普通 CSV 下载任务成功后，才把书目提升进“我的书目总库”。在成功前它只
+        // 是任务候选，不应污染总库数量或被总库检索命中。
+        let book_id: Uuid = sqlx::query_scalar("SELECT book_id FROM book_tasks WHERE id = $1")
+            .bind(target_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        let edition_id =
+            crate::catalog_ownership::promote_downloaded_book(tx, book_id, &file.format).await?;
+        crate::catalog_ownership::record_owned_file(
+            tx,
+            edition_id,
+            None,
+            node_id,
+            file,
+            "下载任务校验入库",
+        )
+        .await?;
         return Ok(());
     };
 
-    let sha256 = file.sha256.to_ascii_lowercase();
-    let inserted_file_id = Uuid::new_v4();
-    let library_file_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO library_files \
-             (id, storage_backend, object_key, format, actual_size_bytes, sha256, verify_status, verified_at) \
-         VALUES ($1, 'NAS', $2, $3, $4, $5, '有效', now()) \
-         ON CONFLICT (sha256) DO UPDATE SET \
-             actual_size_bytes = EXCLUDED.actual_size_bytes, verify_status = '有效', \
-             verified_at = now(), updated_at = now() \
-         RETURNING id",
+    let holding_id = crate::catalog_ownership::record_owned_file(
+        tx,
+        edition_id,
+        source_asset_id,
+        node_id,
+        file,
+        "Worker校验入库",
     )
-    .bind(inserted_file_id)
-    .bind(&file.nas_relative_path)
-    .bind(file.format.to_ascii_lowercase())
-    .bind(file.size_bytes)
-    .bind(&sha256)
-    .fetch_one(&mut **tx)
-    .await?;
-
-    if let Some(node_id) = node_id {
-        let location_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO storage_locations \
-                 (id, node_id, root_key, backend, display_name, availability, last_seen_at) \
-             VALUES ($1, $2, 'worker_downloads', 'NAS', 'Worker 下载目录', '在线', now()) \
-             ON CONFLICT (node_id, root_key) DO UPDATE SET \
-                 availability = '在线', last_seen_at = now(), updated_at = now() \
-             RETURNING id",
-        )
-        .bind(Uuid::new_v4())
-        .bind(node_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO library_file_locations \
-                 (id, library_file_id, storage_location_id, object_key, actual_size_bytes, \
-                  verify_status, verified_at, last_seen_at) \
-             VALUES ($1, $2, $3, $4, $5, '有效', now(), now()) \
-             ON CONFLICT (storage_location_id, object_key) DO UPDATE SET \
-                 library_file_id = EXCLUDED.library_file_id, \
-                 actual_size_bytes = EXCLUDED.actual_size_bytes, verify_status = '有效', \
-                 verified_at = now(), last_seen_at = now(), updated_at = now()",
-        )
-        .bind(Uuid::new_v4())
-        .bind(library_file_id)
-        .bind(location_id)
-        .bind(&file.nas_relative_path)
-        .bind(file.size_bytes)
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    let holding_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO holdings \
-             (id, edition_id, library_file_id, source_asset_id, match_type, meets_strategy) \
-         VALUES ($1, $2, $3, $4, 'Worker校验入库', TRUE) \
-         ON CONFLICT (edition_id, library_file_id) DO UPDATE SET \
-             source_asset_id = COALESCE(EXCLUDED.source_asset_id, holdings.source_asset_id), \
-             meets_strategy = TRUE \
-         RETURNING id",
-    )
-    .bind(Uuid::new_v4())
-    .bind(edition_id)
-    .bind(library_file_id)
-    .bind(source_asset_id)
-    .fetch_one(&mut **tx)
     .await?;
 
     sqlx::query(

@@ -121,7 +121,7 @@ pub async fn get_overview(
     let (total_acc, available_accounts, pending_reg): (i64, i64, i64) = sqlx::query_as(
         "SELECT \
          count(*)::bigint, \
-         count(*) FILTER (WHERE status = '可用' AND lease_session_id IS NULL)::bigint, \
+         count(*) FILTER (WHERE status = '已注册' AND lease_session_id IS NULL AND daily_used < daily_limit)::bigint, \
          count(*) FILTER (WHERE status = '待注册')::bigint \
          FROM accounts",
     )

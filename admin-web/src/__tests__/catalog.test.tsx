@@ -6,7 +6,7 @@ import { CatalogSearchPage } from "../pages/CatalogSearchPage";
 import * as api from "../lib/api";
 import { ToastProvider } from "../context/ToastContext";
 
-describe("图书馆总库页面渲染与交互测试", () => {
+describe("我的书目总库页面渲染与交互测试", () => {
   it("总览页面正常渲染核心指标卡片", async () => {
     vi.spyOn(api, "getCatalogStats").mockResolvedValue({
       total_sources: 5,
@@ -38,7 +38,7 @@ describe("图书馆总库页面渲染与交互测试", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("图书馆总库与索引总览")).toBeDefined();
+      expect(screen.getByText("我的书目总库")).toBeDefined();
       expect(screen.getByText("18,908,445")).toBeDefined();
     });
   });

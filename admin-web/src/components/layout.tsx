@@ -138,7 +138,7 @@ export function AppLayout() {
           <img src="/favicon.png" alt="Logo" className="h-8 w-8 rounded-lg object-contain" />
           <div>
             <div className="text-sm font-bold text-slate-900">Drission Cloud</div>
-            <div className="text-[11px] text-slate-400">数字图书馆总库调度</div>
+            <div className="text-[11px] text-slate-400">书目总库与自动获取</div>
           </div>
         </div>
 

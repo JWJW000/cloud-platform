@@ -1273,6 +1273,8 @@ async fn execute_assigned_task(
                 .min(dynamic.stall_timeout_secs.max(30)) as u64,
         ),
         minimum_size_bytes: dynamic.minimum_file_bytes,
+        search_order: dynamic.search_order.clone(),
+        search_extensions: dynamic.search_extensions.clone(),
         attempt: assign.attempt,
     };
     let file_format = download_spec.book.format.clone();
@@ -2203,6 +2205,8 @@ mod tests {
             nas_relative_root: "文件".to_string(),
             minimum_free_gb: 10,
             minimum_file_bytes: 32 * 1024,
+            search_order: "bestmatch".to_string(),
+            search_extensions: Vec::new(),
             site_base: "https://books.internal.lan".to_string(),
             download_format: "pdf".to_string(),
             config_version: "v1".to_string(),
@@ -2708,7 +2712,7 @@ mod tests {
     fn auth_session_start_error_keeps_a_stable_master_marker() {
         let err = AutomationError::new(
             platform_domain::FailureClass::AuthFailed,
-            "login form is still visible after submit",
+            "Invalid email or password",
         );
         let reason = session_start_error(err).to_string();
         assert!(reason.starts_with("authentication failed:"));

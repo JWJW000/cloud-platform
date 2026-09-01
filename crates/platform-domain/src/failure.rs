@@ -181,13 +181,24 @@ pub fn classify_failure(reason: &str, quota_indicator: Option<(u32, u32)>) -> Fa
     ]) {
         return FailureClass::BookNotFound;
     }
+    // 这两类错误只能说明站点页面状态未能确认，不能证明账号密码错误。
+    // 旧版 Worker 会给它们加上 `authentication failed:` 前缀，因此必须在
+    // 通用认证标记之前截获，避免 Master 继续停用有效账号。
+    if hits(&[
+        "页面显示为已登录，但无法找到退出入口",
+        "login form is still visible after submit",
+        "登录提交后未确认成功，登录表单仍可见",
+    ]) {
+        return FailureClass::Retryable;
+    }
     if hits(&[
         "auth_failed",
         "authentication failed",
         "invalid password",
         "incorrect password",
-        "login validation error",
-        "login form is still visible after submit",
+        "invalid email or password",
+        "incorrect email or password",
+        "invalid credentials",
         "密码错误",
         "密码不正确",
         "登录失败",
@@ -256,7 +267,6 @@ mod tests {
     #[test]
     fn explicit_login_rejection_marks_account_and_ends_session() {
         for reason in [
-            "authentication failed: login form is still visible after submit",
             "login validation error: Invalid email or password",
             "登录失败：密码不正确",
         ] {
@@ -265,6 +275,23 @@ mod tests {
             assert_eq!(attribution.task_status, Some(TaskStatus::Pending));
             assert!(!attribution.consumes_retry);
             assert!(attribution.ends_session);
+        }
+    }
+
+    #[test]
+    fn ambiguous_login_page_state_never_disables_account() {
+        for reason in [
+            "authentication failed: login form is still visible after submit",
+            "会话异常退出：authentication failed: 页面显示为已登录，但无法找到退出入口核验当前账号，已拒绝复用该登录态",
+            "登录提交后未确认成功，登录表单仍可见",
+        ] {
+            let attribution = classify_failure(reason, None).attribution();
+            assert!(attribution.account_status.is_none(), "{reason}");
+            assert_ne!(
+                classify_failure(reason, None),
+                FailureClass::AuthFailed,
+                "{reason}"
+            );
         }
     }
 

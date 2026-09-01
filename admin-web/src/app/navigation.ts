@@ -27,10 +27,10 @@ export interface NavGroup {
 
 export const NAV_GROUPS: NavGroup[] = [
   {
-    groupName: "图书馆",
+    groupName: "我的图书",
     items: [
       { to: "/", label: "总览", icon: Gauge, end: true },
-      { to: "/library", label: "图书总库", icon: BookOpen },
+      { to: "/library", label: "我的书目总库", icon: BookOpen },
       { to: "/publishers", label: "出版社管理", icon: Building2 },
       { to: "/acquisitions", label: "获取任务", icon: DownloadCloud },
       { to: "/imports", label: "数据导入", icon: UploadCloud },

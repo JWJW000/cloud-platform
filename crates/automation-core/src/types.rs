@@ -105,6 +105,10 @@ pub struct DownloadSpec {
     /// 由调用方下发而不是引擎内置：站点返回的错误页大小随时会变，
     /// 这个下限属于运营参数，写死在代码里就没法在不发版的情况下调整。
     pub minimum_size_bytes: u64,
+    /// 搜索 URL 的 `order` 参数。
+    pub search_order: String,
+    /// 搜索 URL 的 `extensions[index]` 参数；空数组表示使用目标图书格式。
+    pub search_extensions: Vec<String>,
     /// 当前尝试次数。
     pub attempt: u32,
 }

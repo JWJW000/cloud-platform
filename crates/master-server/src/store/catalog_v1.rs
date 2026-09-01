@@ -499,6 +499,10 @@ pub struct CatalogStats {
     pub total_holdings: i64,
     /// 有效馆藏文件总数。
     pub total_library_files: i64,
+    /// 当前至少关联一份有效文件的版本数。
+    pub editions_with_files: i64,
+    /// 已拥有但当前没有有效文件的版本数。
+    pub editions_without_files: i64,
     /// 馆藏总字节数。
     pub total_library_bytes: i64,
     /// 已下载获取目标数。
@@ -834,6 +838,9 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
           (SELECT count(*) FROM editions)::bigint as total_editions,
           (SELECT count(*) FROM holdings)::bigint as total_holdings,
           (SELECT count(*) FROM library_files WHERE verify_status = '有效')::bigint as total_library_files,
+          (SELECT count(DISTINCT h.edition_id) FROM holdings h
+             JOIN library_files lf ON lf.id = h.library_file_id
+             WHERE h.meets_strategy AND lf.verify_status = '有效')::bigint as editions_with_files,
           (SELECT coalesce(sum(actual_size_bytes), 0) FROM library_files WHERE verify_status = '有效')::bigint as total_library_bytes,
           (SELECT count(*) FROM acquisition_targets WHERE status = '已下载')::bigint as acquired_targets,
           (SELECT count(*) FROM acquisition_targets WHERE status IN ('待下载', '排队中'))::bigint as pending_targets,
@@ -858,6 +865,10 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
             total_editions: r.try_get("total_editions").unwrap_or(0),
             total_holdings: r.try_get("total_holdings").unwrap_or(0),
             total_library_files: r.try_get("total_library_files").unwrap_or(0),
+            editions_with_files: r.try_get("editions_with_files").unwrap_or(0),
+            editions_without_files: (r.try_get::<i64, _>("total_editions").unwrap_or(0)
+                - r.try_get::<i64, _>("editions_with_files").unwrap_or(0))
+            .max(0),
             total_library_bytes: r.try_get("total_library_bytes").unwrap_or(0),
             acquired_targets: r.try_get("acquired_targets").unwrap_or(0),
             pending_targets: r.try_get("pending_targets").unwrap_or(0),
@@ -952,7 +963,9 @@ pub async fn search_editions(
              SELECT ec.edition_id AS id FROM contributors c JOIN edition_contributors ec ON ec.contributor_id = c.id WHERE c.name ILIKE $1 \
          ) \
          SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publisher_id, e.publish_year, e.language, \
-                coalesce(at.status, '待下载') as acq_status, w.resolution_status, e.updated_at, \
+                CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+                     THEN '总库已拥有' ELSE at.status END as acq_status, \
+                w.resolution_status, e.updated_at, \
                 wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
          FROM matched_ids m \
          JOIN editions e ON e.id = m.id \
@@ -961,8 +974,10 @@ pub async fn search_editions(
          LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
          LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
          WHERE ($2::text IS NULL \
-                OR ($2 = '__actionable__' AND coalesce(at.status, '待下载') NOT IN ('已下载', '已完成', '已取消')) \
-                OR coalesce(at.status, '待下载') = $2) \
+                OR ($2 = '__actionable__' AND at.status IN \
+                    ('待下载', '排队中', '已领取', '下载中', '校验中', '暂时失败', '来源无效', '人工确认')) \
+                OR CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+                        THEN '总库已拥有' ELSE at.status END = $2) \
            AND ($3::text IS NULL OR w.work_type = $3) \
            AND ($4::text IS NULL OR e.language = $4) \
            AND ($5::text IS NULL OR e.format_summary ILIKE $5) \
@@ -979,7 +994,9 @@ pub async fn search_editions(
     } else {
         // 无关键词搜索时：直接走 (updated_at, id) 覆盖索引与外键关联，1~2ms 响应
         "SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publisher_id, e.publish_year, e.language, \
-                coalesce(at.status, '待下载') as acq_status, w.resolution_status, e.updated_at, \
+                CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+                     THEN '总库已拥有' ELSE at.status END as acq_status, \
+                w.resolution_status, e.updated_at, \
                 wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
          FROM editions e \
          JOIN works w ON w.id = e.work_id \
@@ -987,8 +1004,10 @@ pub async fn search_editions(
          LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
          LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
          WHERE ($2::text IS NULL \
-                OR ($2 = '__actionable__' AND coalesce(at.status, '待下载') NOT IN ('已下载', '已完成', '已取消')) \
-                OR coalesce(at.status, '待下载') = $2) \
+                OR ($2 = '__actionable__' AND at.status IN \
+                    ('待下载', '排队中', '已领取', '下载中', '校验中', '暂时失败', '来源无效', '人工确认')) \
+                OR CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+                        THEN '总库已拥有' ELSE at.status END = $2) \
            AND ($3::text IS NULL OR w.work_type = $3) \
            AND ($4::text IS NULL OR e.language = $4) \
            AND ($5::text IS NULL OR e.format_summary ILIKE $5) \
@@ -1143,7 +1162,7 @@ pub async fn search_editions(
 /// 查询版本完整详情聚合。
 pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDetail> {
     let edition: EditionRow = sqlx::query_as(
-        "SELECT id, work_id, edition_title, language, publisher, publish_year, publish_date_text, \
+        "SELECT id, work_id, edition_title, language, publisher, publisher_id, publish_year, publish_date_text, \
                 edition_number, intro, format_summary, status, created_at, updated_at \
          FROM editions WHERE id = $1",
     )
@@ -1162,7 +1181,7 @@ pub async fn get_edition_detail(pool: &PgPool, id: Uuid) -> AppResult<EditionDet
     .await?;
 
     let sibling_editions: Vec<EditionRow> = sqlx::query_as(
-        "SELECT id, work_id, edition_title, language, publisher, publish_year, publish_date_text, \
+        "SELECT id, work_id, edition_title, language, publisher, publisher_id, publish_year, publish_date_text, \
                 edition_number, intro, format_summary, status, created_at, updated_at \
          FROM editions WHERE work_id = $1 AND id != $2 ORDER BY publish_year DESC NULLS LAST",
     )

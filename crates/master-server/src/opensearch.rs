@@ -172,9 +172,15 @@ impl OpenSearchClient {
         let mut filters = Vec::new();
         if let Some(value) = acquisition_status {
             if value == "__actionable__" {
-                filters.push(json!({"bool": {"must_not": {"terms": {
-                    "acquisition_status": ["已下载", "已完成", "已取消"]
-                }}}}));
+                filters.push(json!({"terms": {"acquisition_status": [
+                    "已领取", "下载中", "校验中", "暂时失败", "来源无效", "人工确认"
+                ]}}));
+            } else if value == "总库已拥有" {
+                // 兼容切换语义前已经建立的 OpenSearch 文档；旧的“待下载/排队中”
+                // 来自总库自动目标，并不代表用户导入的下载任务。
+                filters.push(json!({"terms": {"acquisition_status": [
+                    "总库已拥有", "待下载", "排队中", "暂不获取"
+                ]}}));
             } else {
                 filters.push(json!({"term": {"acquisition_status": value}}));
             }
@@ -267,11 +273,19 @@ impl OpenSearchClient {
         if !forward {
             items.reverse();
         }
+        let mut status_facets = std::collections::HashMap::<String, i64>::new();
+        for (status, count) in buckets(result.aggregations.as_ref(), "statuses") {
+            let normalized = match status.as_str() {
+                "待下载" | "排队中" | "暂不获取" => "总库已拥有",
+                _ => status.as_str(),
+            };
+            *status_facets.entry(normalized.to_string()).or_default() += count;
+        }
         Ok(OpenSearchPage {
             items,
             has_more,
             total: result.hits.total.value,
-            status_facets: buckets(result.aggregations.as_ref(), "statuses"),
+            status_facets: status_facets.into_iter().collect(),
             language_facets: buckets(result.aggregations.as_ref(), "languages"),
             format_facets: buckets(result.aggregations.as_ref(), "formats"),
             publisher_facets: buckets(result.aggregations.as_ref(), "publishers"),
@@ -467,6 +481,11 @@ struct SearchDocument {
 
 impl From<SearchDocument> for EditionSearchItem {
     fn from(doc: SearchDocument) -> Self {
+        let acquisition_status = match doc.acquisition_status.as_str() {
+            // 兼容语义切换前的存量索引；这些状态由旧版“总库自动建目标”产生。
+            "待下载" | "排队中" | "暂不获取" => "总库已拥有".to_string(),
+            _ => doc.acquisition_status,
+        };
         Self {
             id: doc.id,
             work_id: doc.work_id,
@@ -480,7 +499,7 @@ impl From<SearchDocument> for EditionSearchItem {
             identifiers: doc.identifiers,
             source_formats: doc.source_formats,
             holding_formats: doc.holding_formats,
-            acquisition_status: doc.acquisition_status,
+            acquisition_status,
             worker_name: doc.worker_name,
             acquisition_stage: doc.acquisition_stage,
             attempts: doc.attempts,
@@ -506,7 +525,8 @@ const DOCUMENT_SELECT: &str =
               WHERE rr.edition_id = e.id) AS source_formats, \
         ARRAY(SELECT DISTINCT lf.format FROM holdings h JOIN library_files lf ON lf.id = h.library_file_id \
               WHERE h.edition_id = e.id) AS holding_formats, \
-        coalesce(at.status, '待下载') AS acquisition_status, wn.name AS worker_name, \
+        CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
+             THEN '总库已拥有' ELSE at.status END AS acquisition_status, wn.name AS worker_name, \
         coalesce((SELECT x.stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1), '') AS acquisition_stage, \
         coalesce(at.attempts, 0) AS attempts, coalesce(at.max_attempts, 5) AS max_attempts, \
         at.next_attempt_at, at.last_error, w.resolution_status, e.updated_at \

@@ -64,16 +64,9 @@ export function OverviewPage() {
     return formatBytes(bytes);
   };
 
-  const totalAcq =
-    (stats?.acquired_targets || 0) +
-    (stats?.pending_targets || 0) +
-    (stats?.downloading_targets || 0) +
-    (stats?.failed_targets || 0) +
-    (stats?.needs_confirm_targets || 0);
-
-  const acqRate =
-    totalAcq > 0
-      ? (((stats?.acquired_targets || 0) / totalAcq) * 100).toFixed(1)
+  const fileArchiveRate =
+    (stats?.total_editions || 0) > 0
+      ? (((stats?.editions_with_files || 0) / (stats?.total_editions || 1)) * 100).toFixed(1)
       : "0.0";
 
   return (
@@ -81,9 +74,9 @@ export function OverviewPage() {
       {/* 顶栏标题与快捷入口 */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">数字图书馆总览</h1>
+          <h1 className="text-xl font-bold text-slate-900">图书资产总览</h1>
           <p className="text-xs text-slate-500">
-            全量规范图书总库、持续全局获取池、集群资源与运行健康状况
+            已拥有书目、下载任务、文件资产、集群资源与运行健康状况
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -111,30 +104,30 @@ export function OverviewPage() {
         </div>
       )}
 
-      {/* 总库补齐进度轨 */}
+      {/* 已拥有书目与文件归档概览 */}
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-blue-600" />
-            <h2 className="text-sm font-semibold text-slate-900">总库补齐进度轨</h2>
+            <h2 className="text-sm font-semibold text-slate-900">我的书目总库与文件归档</h2>
           </div>
           <div className="text-xs text-slate-500">
-            获取池覆盖率:{" "}
+            文件归档率:{" "}
             {loading && !stats ? (
               <Skeleton className="inline-block h-3 w-10 align-middle" />
             ) : (
-              <span className="font-bold text-blue-600">{acqRate}%</span>
+              <span className="font-bold text-blue-600">{fileArchiveRate}%</span>
             )}
           </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
-            <div className="text-[11px] font-medium text-slate-500">1. 书目总库</div>
+            <div className="text-[11px] font-medium text-slate-500">1. 拥有作品</div>
             <div className="mt-1 text-lg font-bold text-slate-900">
               {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_works?.toLocaleString() || 0)}
             </div>
-            <div className="text-[11px] text-slate-400">规范作品</div>
+            <div className="text-[11px] text-slate-400">我的书目总库</div>
           </div>
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
             <div className="text-[11px] font-medium text-slate-500">2. 来源记录</div>
@@ -160,16 +153,16 @@ export function OverviewPage() {
             </div>
           </div>
           <div className="rounded-lg bg-purple-50/50 p-3 border border-purple-100">
-            <div className="text-[11px] font-medium text-purple-700">5. 馆藏记录</div>
+            <div className="text-[11px] font-medium text-purple-700">5. 有文件版本</div>
             <div className="mt-1 text-lg font-bold text-purple-700">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_holdings?.toLocaleString() || 0)}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.editions_with_files?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-purple-500">SHA-256 完好</div>
           </div>
           <div className="rounded-lg bg-green-50/50 p-3 border border-green-100">
-            <div className="text-[11px] font-medium text-green-700">6. 已入总馆藏</div>
+            <div className="text-[11px] font-medium text-green-700">6. 仅书目版本</div>
             <div className="mt-1 text-lg font-bold text-green-700">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.acquired_targets?.toLocaleString() || 0)}
+              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.editions_without_files?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-green-500">
               {loading && !stats ? <Skeleton className="h-3 w-12" /> : formatSize(stats?.total_library_bytes || 0)}
@@ -191,7 +184,7 @@ export function OverviewPage() {
           <>
             <Card className="p-4 border-l-4 border-l-blue-500">
               <div className="flex items-center justify-between text-slate-500 text-xs">
-                <span className="font-medium text-slate-600">待下载书目池</span>
+                <span className="font-medium text-slate-600">导入任务待下载</span>
                 <Clock className="h-4 w-4 text-blue-500" />
               </div>
               <div className="mt-2 text-2xl font-bold text-blue-600">
@@ -204,14 +197,14 @@ export function OverviewPage() {
 
             <Card className="p-4 border-l-4 border-l-emerald-500">
               <div className="flex items-center justify-between text-slate-500 text-xs">
-                <span className="font-medium text-slate-600">总下载 / 已入馆</span>
+                <span className="font-medium text-slate-600">当前可用文件版本</span>
                 <CheckCircle2 className="h-4 w-4 text-emerald-500" />
               </div>
               <div className="mt-2 text-2xl font-bold text-emerald-600">
-                {stats?.acquired_targets?.toLocaleString() || 0}
+                {stats?.editions_with_files?.toLocaleString() || 0}
               </div>
               <div className="mt-1 text-xs text-slate-400">
-                实体馆藏 {formatSize(stats?.total_library_bytes || 0)}
+                NAS 文件资产 {formatSize(stats?.total_library_bytes || 0)}
               </div>
             </Card>
 

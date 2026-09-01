@@ -454,6 +454,10 @@ message NodeConfig {
   // 由 Master 下发而不是 Worker 本地配置：Master 记账时用同一个阈值复核证据，
   // 两端各读一份配置迟早会出现「Worker 认为合格、Master 判为过小」。
   uint64 minimum_file_bytes = 19;
+  // 下载搜索 URL 的 order 参数；旧 Master 未下发时 Worker 回退到 bestmatch。
+  string search_order = 20;
+  // 下载搜索 URL 的 extensions[index] 参数；空数组表示按任务目标格式自动生成。
+  repeated string search_extensions = 21;
 }
 
 message CreateSession {
@@ -768,4 +772,3 @@ message InventoryScanFinished {
   string error_message = 9;
   string finished_at = 10;
 }
-

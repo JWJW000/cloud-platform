@@ -1518,15 +1518,19 @@ fn fill_verification_digits(page: &ChromiumPage, code: &str) -> Result<(), Autom
 /// 因此只有出现明确的凭据字样才升级为认证失败。
 fn classify_form_error(message: &str) -> FailureClass {
     let lowered = message.to_lowercase();
-    const AUTH_MARKS: [&str; 8] = [
+    const AUTH_MARKS: [&str; 12] = [
         "密码错误",
         "密码不正确",
         "账户不存在",
         "账号不存在",
         "用户不存在",
-        "invalid",
-        "incorrect",
-        "not exist",
+        "invalid email or password",
+        "incorrect email or password",
+        "invalid password",
+        "incorrect password",
+        "invalid credentials",
+        "account does not exist",
+        "user does not exist",
     ];
     if AUTH_MARKS.iter().any(|mark| lowered.contains(mark)) {
         FailureClass::AuthFailed
@@ -1663,7 +1667,7 @@ async fn login_attempt(
     {
         let logout = first_page_element(page, LOGOUT_SELECTORS).ok_or_else(|| {
             AutomationError::new(
-                FailureClass::AuthFailed,
+                FailureClass::SiteUnavailable,
                 "页面显示为已登录，但无法找到退出入口核验当前账号，已拒绝复用该登录态",
             )
         })?;
@@ -1723,25 +1727,32 @@ async fn login_attempt(
     submit.click().map_err(|err| {
         AutomationError::new(FailureClass::Retryable, format!("点击登录按钮失败：{err}"))
     })?;
-    tokio::time::sleep(Duration::from_secs(3)).await;
 
-    if let Some(message) = first_page_element(page, LOGIN_ERROR)
-        .and_then(|el| el.text().ok())
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty())
-    {
-        return Err(AutomationError::new(
-            FailureClass::AuthFailed,
-            format!("login validation error: {message}"),
-        ));
-    }
-    if let Some(form) = first_page_element(page, LOGIN_FORM) {
-        if form.is_displayed().unwrap_or(false) {
+    let result_deadline = Instant::now() + LOGIN_TIMEOUT;
+    loop {
+        if let Some(message) = first_page_element(page, LOGIN_ERROR)
+            .and_then(|el| el.text().ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+        {
             return Err(AutomationError::new(
-                FailureClass::AuthFailed,
-                "login form is still visible after submit",
+                classify_form_error(&message),
+                format!("login validation error: {message}"),
             ));
         }
+        let form_visible = first_page_element(page, LOGIN_FORM)
+            .and_then(|form| form.is_displayed().ok())
+            .unwrap_or(false);
+        if !form_visible {
+            break;
+        }
+        if Instant::now() >= result_deadline {
+            return Err(AutomationError::new(
+                FailureClass::Retryable,
+                "登录提交后未确认成功，登录表单仍可见",
+            ));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
     }
     close_bonus_popup(page);
     Ok(())
@@ -1967,7 +1978,13 @@ impl AutomationEngine for RealAutomationEngine {
         }
 
         events.stage("搜索中");
-        let search_url = site::search_url(&site_base, &spec.book.title, &format);
+        let search_url = site::search_url(
+            &site_base,
+            &spec.book.title,
+            &spec.search_order,
+            &spec.search_extensions,
+            &format,
+        );
         self.navigate(&session.session_id, &search_url, cancel)
             .await?;
 
@@ -2160,13 +2177,17 @@ impl AutomationEngine for RealAutomationEngine {
                 let input_visible = first_page_element(&sess.page, VERIFY_INPUT)
                     .and_then(|input| input.is_displayed().ok())
                     .unwrap_or(false);
-                Ok(if input_visible {
-                    None
-                } else {
+                let success_confirmed = !input_visible
+                    && (first_page_element(&sess.page, BONUS_POPUP).is_some()
+                        || first_page_element(&sess.page, LOGOUT_SELECTORS).is_some()
+                        || js_flag(&sess.page, site::REGISTRATION_SUCCESS_SCRIPT));
+                Ok(if success_confirmed {
                     Some(RegistrationOutcome {
                         already_exists: false,
                         awaiting_verification: false,
                     })
+                } else {
+                    None
                 })
             })?;
             if let Some(outcome) = done {
@@ -2176,7 +2197,7 @@ impl AutomationEngine for RealAutomationEngine {
         }
         Err(AutomationError::new(
             FailureClass::Retryable,
-            "verification code rejected, code input still visible",
+            "验证码提交后未观察到明确的注册成功状态",
         ))
     }
 
@@ -2267,6 +2288,10 @@ mod tests {
             classify_form_error("系统繁忙，请稍后再试"),
             FailureClass::Retryable
         );
+        assert_eq!(
+            classify_form_error("Invalid CSRF token, please retry"),
+            FailureClass::Retryable
+        );
     }
 
     fn download_spec(root: &Path, stall_timeout: Duration) -> DownloadSpec {
@@ -2285,6 +2310,8 @@ mod tests {
             staging_dir: root.join("staging/task-任务1"),
             stall_timeout,
             minimum_size_bytes: 32 * 1024,
+            search_order: "bestmatch".to_string(),
+            search_extensions: Vec::new(),
             attempt: 1,
         }
     }

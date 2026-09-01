@@ -1337,6 +1337,14 @@ pub async fn nas_check_result(state: &AppState, check: &NasCheckReport<'_>) -> A
             Some(node_id),
         )
         .await?;
+        super::catalog_bridge::success_in_tx(
+            &mut tx,
+            task_id,
+            Uuid::nil(),
+            Some(node_id),
+            evidence,
+        )
+        .await?;
         sqlx::query(
             "UPDATE book_tasks SET status = $2, stage = $3, \
                  stage_version = stage_version + 1, nas_relative_path = $4, \

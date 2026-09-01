@@ -424,6 +424,12 @@ pub fn router(state: AppState) -> Router {
             "/api/settings/webhook/send",
             post(webhook::manual_send_webhook),
         )
+        // 下载站点搜索参数
+        .route(
+            "/api/settings/download-search",
+            get(settings::get_download_search_options)
+                .put(settings::update_download_search_options),
+        )
         // 出版社管理接口
         .route(
             "/api/publishers",

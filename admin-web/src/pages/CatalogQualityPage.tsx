@@ -74,13 +74,13 @@ export function CatalogQualityPage() {
 
   const handleMerge = async () => {
     if (!source || !target || !impact) return;
-    if (!window.confirm(`确认将《${impact.source.title}》合并到《${impact.target.title}》？此操作会重新挂接版本、来源与馆藏。`)) {
+    if (!window.confirm(`确认将《${impact.source.title}》合并到《${impact.target.title}》？此操作会重新挂接版本、来源与文件资产。`)) {
       return;
     }
     try {
       setMerging(true);
       await mergeCatalogWorks(source.work_id, target.work_id);
-      success("作品合并成功，版本、来源和馆藏已重新挂接");
+      success("作品合并成功，版本、来源和文件资产已重新挂接");
       setSource(null);
       setTarget(null);
       setImpact(null);
@@ -206,7 +206,7 @@ function ImpactCard({ label, item }: { label: string; item: MergeImpactItem }) {
     <div>
       <div className="text-xs font-semibold text-indigo-700">{label} · {item.title}</div>
       <div className="mt-2 flex gap-4 text-xs text-slate-600">
-        <span>版本 {item.editions}</span><span>来源 {item.source_records}</span><span>馆藏 {item.holdings}</span>
+        <span>版本 {item.editions}</span><span>来源 {item.source_records}</span><span>文件资产 {item.holdings}</span>
       </div>
     </div>
   );

@@ -223,7 +223,7 @@ export function PublisherDetailPage() {
         </Card>
 
         <Card className="p-4">
-          <div className="text-xs text-slate-500 font-medium">收录书目统计</div>
+          <div className="text-xs text-slate-500 font-medium">拥有书目统计</div>
           <div className="mt-2 text-2xl font-bold text-slate-900">
             {publisher.editions_count.toLocaleString()}
             <span className="text-xs font-normal text-slate-400 ml-1">个版本</span>
@@ -234,10 +234,10 @@ export function PublisherDetailPage() {
         </Card>
 
         <Card className="p-4">
-          <div className="text-xs text-slate-500 font-medium">馆藏文件与覆盖率</div>
+          <div className="text-xs text-slate-500 font-medium">可用文件与归档率</div>
           <div className="mt-2 text-2xl font-bold text-green-600">
             {publisher.acquired_count.toLocaleString()}
-            <span className="text-xs font-normal text-slate-400 ml-1">本已下载</span>
+            <span className="text-xs font-normal text-slate-400 ml-1">个版本有文件</span>
           </div>
           <div className="mt-2 flex items-center gap-2">
             <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden">
@@ -286,7 +286,7 @@ export function PublisherDetailPage() {
               <span>旗下出版书目列表 ({totalEditions.toLocaleString()} 本)</span>
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              可按获取状态过滤查看已下载馆藏与排队中图书
+              这里全部是已拥有书目；可筛选当前文件状态和主动补文件任务
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -298,7 +298,8 @@ export function PublisherDetailPage() {
               }}
               className="text-xs w-36"
             >
-              <option value="">全部获取状态</option>
+              <option value="">全部状态</option>
+              <option value="总库已拥有">仅书目 / 无主动任务</option>
               <option value="已下载">已下载</option>
               <option value="待下载">待下载</option>
               <option value="排队中">排队中</option>
@@ -314,7 +315,7 @@ export function PublisherDetailPage() {
         {editionsError && <ErrorBox message={editionsError} onRetry={reloadEditions} />}
 
         <Table
-          headers={["书名 / 版本", "作者", "出版年份", "ISBN / 标识符", "来源格式", "馆藏文件", "获取状态", "操作"]}
+          headers={["书名 / 版本", "作者", "出版年份", "ISBN / 标识符", "来源格式", "可用文件", "文件/任务状态", "操作"]}
           empty={!editionsLoading && editions.length === 0 ? <EmptyRow colSpan={8} text="该出版社下暂无匹配书目" /> : undefined}
         >
           {editionsLoading && !editionsData ? (

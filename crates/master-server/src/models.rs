@@ -701,6 +701,8 @@ pub struct ImportSummary {
     pub total_rows: usize,
     /// 新建图书数。
     pub new_books: usize,
+    /// 命中“我的书目总库”而跳过下载的行数。
+    pub already_owned: usize,
     /// 命中已有图书（全局去重生效）的行数。
     pub deduplicated: usize,
     /// 因文件已存在而直接判为已完成的任务数。

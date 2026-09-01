@@ -207,8 +207,8 @@ export function PublishersPage() {
               className="text-xs"
             >
               <option value="editions">按图书版本量降序</option>
-              <option value="acquired">按已下载馆藏降序</option>
-              <option value="holdings">按馆藏文件总数降序</option>
+              <option value="acquired">按有文件版本数降序</option>
+              <option value="holdings">按有效文件数降序</option>
               <option value="name">按名称字母排序</option>
             </Select>
           </div>
@@ -236,10 +236,10 @@ export function PublishersPage() {
       <Card>
         <CardHeader
           title={`全部出版社 (${total.toLocaleString()} 家)`}
-          description="点击出版社进入专属书目库，可查看该社所有收录图书及馆藏状态"
+          description="点击出版社进入专属书目库，可查看已经拥有的版本及其文件状态"
         />
         <Table
-          headers={["出版社名称", "国家/地区", "总作品数", "收录版本数", "已下载馆藏", "馆藏覆盖率", "操作"]}
+          headers={["出版社名称", "国家/地区", "拥有作品数", "拥有版本数", "有文件版本", "文件归档率", "操作"]}
           empty={!loading && items.length === 0 ? <EmptyRow colSpan={7} text="暂无出版社数据" /> : undefined}
         >
           {loading && !data ? (

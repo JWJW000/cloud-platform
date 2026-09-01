@@ -1614,7 +1614,15 @@ pub async fn send_node_config(
         .scheduler
         .session_max_duration_secs
         .min(u32::MAX as u64) as u32;
-    let msg = convert::node_config_message(node, &state.config, &layout_root, max_duration);
+    let search = match crate::download_search::load(&state.pool).await {
+        Ok(options) => options,
+        Err(error) => {
+            tracing::warn!(%error, "下载搜索参数读取失败，本次下发兼容默认值");
+            crate::download_search::DownloadSearchOptions::default()
+        }
+    };
+    let msg =
+        convert::node_config_message(node, &state.config, &search, &layout_root, max_duration);
     let _ = outbound.send(msg).await;
 }
 

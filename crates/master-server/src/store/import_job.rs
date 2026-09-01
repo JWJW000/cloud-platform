@@ -112,6 +112,22 @@ pub async fn mark_import_job_committed(
     Ok(())
 }
 
+/// 合并提交阶段产生的实际统计，供幂等重放返回完全相同的结果。
+pub async fn merge_import_job_summary(
+    executor: impl PgExecutor<'_>,
+    id: Uuid,
+    values: &serde_json::Value,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE import_jobs SET summary = summary || $2::jsonb, updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(values)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 /// 标记导入任务失败。
 pub async fn mark_import_job_failed(
     executor: impl PgExecutor<'_>,

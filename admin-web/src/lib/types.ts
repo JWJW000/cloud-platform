@@ -275,6 +275,11 @@ export interface Setting {
   value: unknown;
 }
 
+export interface DownloadSearchOptions {
+  order: string;
+  extensions: string[];
+}
+
 export interface Dict {
   account_status: string[];
   task_status: string[];
@@ -322,6 +327,7 @@ export interface CommitBooksRequest {
 
 export interface CommitBooksResponse {
   batch: Batch;
+  already_owned: number;
   deduplicated: number;
   already_ingested: number;
 }
@@ -560,6 +566,8 @@ export interface CatalogStats {
   total_chapters: number;
   total_holdings: number;
   total_library_files: number;
+  editions_with_files?: number;
+  editions_without_files?: number;
   total_library_bytes: number;
   acquired_targets: number;
   pending_targets: number;

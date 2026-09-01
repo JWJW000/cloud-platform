@@ -552,6 +552,18 @@ export async function sendWebhookManual(
   return api.post<import("./types").SendWebhookResponse>("/api/settings/webhook/send", data ?? {});
 }
 
+// ---------------------------------------------------------------- 下载搜索参数接口
+
+export async function getDownloadSearchOptions(): Promise<import("./types").DownloadSearchOptions> {
+  return api.get<import("./types").DownloadSearchOptions>("/api/settings/download-search");
+}
+
+export async function updateDownloadSearchOptions(
+  data: import("./types").DownloadSearchOptions,
+): Promise<import("./types").DownloadSearchOptions> {
+  return api.put<import("./types").DownloadSearchOptions>("/api/settings/download-search", data);
+}
+
 // ---------------------------------------------------------------- 出版社管理接口
 
 export async function listPublishers(params?: {
