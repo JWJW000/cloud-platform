@@ -1091,7 +1091,15 @@ pub async fn session_closed(
         SessionStatus::Failed => SessionStatus::Failed,
         _ => SessionStatus::Ended,
     };
-    crate::scheduler::allocate::close_session(state, session_id, status, reason).await
+    crate::scheduler::allocate::close_session(state, session_id, status, reason).await?;
+
+    // 释放账号、代理和槽位后立即补位。依赖下一次 Worker 心跳会产生最长一个
+    // 心跳周期的空窗；失败会话频繁时，释放速度会持续快于逐槽申请速度。
+    if let Err(err) = crate::scheduler::trigger_scheduler_sweep(state).await {
+        // 会话释放已经成功，补位失败不能让 SessionClosed 事件反复重放。
+        tracing::warn!(session_id = %session_id, error = %err, "会话已释放，但立即补位失败");
+    }
+    Ok(())
 }
 
 /// 代理检测结果落库（`ProxyCheckResult`）。

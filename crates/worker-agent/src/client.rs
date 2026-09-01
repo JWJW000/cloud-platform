@@ -507,7 +507,9 @@ impl Connection<'_> {
             );
             return true;
         }
-        if let Some(slot_index) = self.slots.find_idle_slot().await {
+        // 一次心跳为全部空闲槽位申请工作。Master 对每个具体槽位做事务级占用，
+        // 因此即使消息重放也不会重复分配；逐心跳只申请一个会让并发补位过慢。
+        for slot_index in self.slots.idle_slots().await {
             let work_req = pb::WorkRequest {
                 node_id: self.node_id.to_string(),
                 slot_index,

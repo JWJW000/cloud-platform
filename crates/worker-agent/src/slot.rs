@@ -342,16 +342,7 @@ impl SlotManager {
 
     /// 当前可领取会话的空闲槽位数。
     pub async fn available_slots(&self) -> u32 {
-        let limit = self.effective_limit();
-        let mut count = 0;
-        for slot in self.slots.iter().take(limit as usize) {
-            if slot.snapshot.read().await.status == SlotStatus::Idle
-                && !slot.paused.load(Ordering::SeqCst)
-            {
-                count += 1;
-            }
-        }
-        count
+        self.idle_slots().await.len() as u32
     }
 
     /// 本机拉起的槽位总数。
@@ -447,17 +438,26 @@ impl SlotManager {
         items
     }
 
-    /// 下一个可用空闲槽位序号。
-    pub async fn find_idle_slot(&self) -> Option<u32> {
+    /// 当前全部可领取会话的空闲槽位序号。
+    ///
+    /// 心跳必须一次上报所有空闲槽位；只取第一个会让五槽 Worker 每 15 秒才补一个，
+    /// 当登录或代理失败频繁时，补位速度会永久落后于会话退出速度。
+    pub async fn idle_slots(&self) -> Vec<u32> {
         let limit = self.effective_limit();
+        let mut idle = Vec::new();
         for slot in self.slots.iter().take(limit as usize) {
             if slot.snapshot.read().await.status == SlotStatus::Idle
                 && !slot.paused.load(Ordering::SeqCst)
             {
-                return Some(slot.index);
+                idle.push(slot.index);
             }
         }
-        None
+        idle
+    }
+
+    /// 下一个可用空闲槽位序号。
+    pub async fn find_idle_slot(&self) -> Option<u32> {
+        self.idle_slots().await.into_iter().next()
     }
 
     /// 下发 `CreateSession`。
@@ -2345,6 +2345,19 @@ mod tests {
         pretend_running(&slots, 1, "会话2", "任务2").await;
         // 槽位 2 存在但没被批准，不能顶上来
         assert_eq!(slots.find_idle_slot().await, None);
+    }
+
+    #[tokio::test]
+    async fn idle_slots_returns_every_approved_idle_slot_in_one_snapshot() {
+        let (slots, _bus_rx) = manager(3);
+
+        assert_eq!(slots.idle_slots().await, vec![0, 1, 2]);
+
+        slots.slots[1].paused.store(true, Ordering::SeqCst);
+        slots.slots[2].snapshot.write().await.status = SlotStatus::Running;
+
+        assert_eq!(slots.idle_slots().await, vec![0]);
+        assert_eq!(slots.available_slots().await, 1);
     }
 
     #[tokio::test]
