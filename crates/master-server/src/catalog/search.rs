@@ -28,6 +28,8 @@ pub struct CatalogSearchParams {
     pub language: Option<String>,
     /// 格式过滤（pdf/epub/azw3/mobi 等）。
     pub format: Option<String>,
+    /// 出版社过滤。
+    pub publisher: Option<String>,
     /// 作品消歧状态过滤（数据质量页使用）。
     pub resolution_status: Option<String>,
     /// 分页大小（默认 20，上限 100）。
@@ -69,6 +71,8 @@ pub struct CatalogSearchResponse {
     pub language_facets: Vec<FacetCount>,
     /// 格式分面。
     pub format_facets: Vec<FacetCount>,
+    /// 出版社分面。
+    pub publisher_facets: Vec<FacetCount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +200,11 @@ pub async fn search_catalog_with_opensearch(
                         .into_iter()
                         .map(|(key, count)| FacetCount { key, count })
                         .collect(),
+                    publisher_facets: page
+                        .publisher_facets
+                        .into_iter()
+                        .map(|(key, count)| FacetCount { key, count })
+                        .collect(),
                 });
             }
             Err(error) => {
@@ -303,6 +312,7 @@ pub async fn search_catalog_with_opensearch(
         status_facets,
         language_facets,
         format_facets: Vec::new(),
+        publisher_facets: Vec::new(),
     })
 }
 

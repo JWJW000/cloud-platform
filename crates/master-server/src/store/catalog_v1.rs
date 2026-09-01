@@ -188,6 +188,8 @@ pub struct EditionRow {
     pub language: String,
     /// 出版社。
     pub publisher: Option<String>,
+    /// 关联的规范出版社编号。
+    pub publisher_id: Option<Uuid>,
     /// 出版年份。
     pub publish_year: Option<i32>,
     /// 出版日期原始文本。
@@ -223,6 +225,50 @@ pub struct IdentifierRow {
     pub normalized_value: String,
     /// 是否有效。
     pub is_valid: bool,
+    /// 创建时间。
+    pub created_at: DateTime<Utc>,
+}
+
+/// 出版社主表行记录。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PublisherRow {
+    /// 出版社编号。
+    pub id: Uuid,
+    /// 规范名称。
+    pub name: String,
+    /// 规范化小写去标点名称。
+    pub normalized_name: String,
+    /// 国家/地区。
+    pub country: Option<String>,
+    /// 官网。
+    pub website: Option<String>,
+    /// 描述简介。
+    pub description: Option<String>,
+    /// 作品数。
+    pub works_count: i64,
+    /// 版本数。
+    pub editions_count: i64,
+    /// 馆藏数。
+    pub holdings_count: i64,
+    /// 已下载获取数。
+    pub acquired_count: i64,
+    /// 创建时间。
+    pub created_at: DateTime<Utc>,
+    /// 更新时间。
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 出版社别名表行记录。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PublisherAliasRow {
+    /// 别名编号。
+    pub id: Uuid,
+    /// 关联的出版社编号。
+    pub publisher_id: Uuid,
+    /// 别名文本。
+    pub alias_name: String,
+    /// 规范化别名。
+    pub normalized_alias: String,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
 }
@@ -494,6 +540,8 @@ pub struct EditionSearchItem {
     pub authors: Vec<String>,
     /// 出版社。
     pub publisher: Option<String>,
+    /// 关联的规范出版社编号。
+    pub publisher_id: Option<Uuid>,
     /// 出版年份。
     pub publish_year: Option<i32>,
     /// 语言。
@@ -851,6 +899,27 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
 
 // ============================================================ 检索与详情查询
 
+#[derive(sqlx::FromRow)]
+struct EditionSearchDbRow {
+    id: Uuid,
+    work_id: Uuid,
+    work_type: String,
+    edition_title: String,
+    publisher: Option<String>,
+    publisher_id: Option<Uuid>,
+    publish_year: Option<i32>,
+    language: String,
+    acq_status: String,
+    resolution_status: String,
+    updated_at: DateTime<Utc>,
+    name: Option<String>,
+    stage: Option<String>,
+    attempts: Option<i32>,
+    max_attempts: Option<i32>,
+    next_attempt_at: Option<DateTime<Utc>>,
+    last_error: Option<String>,
+}
+
 /// 检索版本列表（支持多维筛选与分页）。
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn search_editions(
@@ -882,7 +951,7 @@ pub async fn search_editions(
              UNION \
              SELECT ec.edition_id AS id FROM contributors c JOIN edition_contributors ec ON ec.contributor_id = c.id WHERE c.name ILIKE $1 \
          ) \
-         SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publish_year, e.language, \
+         SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publisher_id, e.publish_year, e.language, \
                 coalesce(at.status, '待下载') as acq_status, w.resolution_status, e.updated_at, \
                 wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
          FROM matched_ids m \
@@ -909,7 +978,7 @@ pub async fn search_editions(
          LIMIT $10"
     } else {
         // 无关键词搜索时：直接走 (updated_at, id) 覆盖索引与外键关联，1~2ms 响应
-        "SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publish_year, e.language, \
+        "SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publisher_id, e.publish_year, e.language, \
                 coalesce(at.status, '待下载') as acq_status, w.resolution_status, e.updated_at, \
                 wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
          FROM editions e \
@@ -937,24 +1006,7 @@ pub async fn search_editions(
 
     let kw_exact = keyword.map(|k| k.trim().to_string());
 
-    let mut rows: Vec<(
-        Uuid,
-        Uuid,
-        String,
-        String,
-        Option<String>,
-        Option<i32>,
-        String,
-        String,
-        String,
-        DateTime<Utc>,
-        Option<String>,
-        Option<String>,
-        Option<i32>,
-        Option<i32>,
-        Option<DateTime<Utc>>,
-        Option<String>,
-    )> = sqlx::query_as(sql)
+    let mut rows: Vec<EditionSearchDbRow> = sqlx::query_as(sql)
         .bind(kw_like)
         .bind(acquisition_status)
         .bind(work_type)
@@ -979,7 +1031,7 @@ pub async fn search_editions(
         return Ok((Vec::new(), false));
     }
 
-    let edition_ids: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+    let edition_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
 
     // 批量一次性查询所有作者 (避免 N*4 次循环子查询)
     let all_authors: Vec<(Uuid, String)> = sqlx::query_as(
@@ -1054,51 +1106,34 @@ pub async fn search_editions(
     }
 
     let mut items = Vec::with_capacity(rows.len());
-    for (
-        id,
-        work_id,
-        w_type,
-        title,
-        publisher,
-        publish_year,
-        lang,
-        acq_status,
-        res_status,
-        updated_at,
-        worker_name,
-        acquisition_stage,
-        attempts,
-        max_attempts,
-        next_attempt_at,
-        last_error,
-    ) in rows
-    {
-        let authors = authors_map.remove(&id).unwrap_or_default();
-        let identifiers = idents_map.remove(&id).unwrap_or_default();
-        let source_formats = src_fmt_map.remove(&id).unwrap_or_default();
-        let holding_formats = hld_fmt_map.remove(&id).unwrap_or_default();
+    for r in rows {
+        let authors = authors_map.remove(&r.id).unwrap_or_default();
+        let identifiers = idents_map.remove(&r.id).unwrap_or_default();
+        let source_formats = src_fmt_map.remove(&r.id).unwrap_or_default();
+        let holding_formats = hld_fmt_map.remove(&r.id).unwrap_or_default();
 
         items.push(EditionSearchItem {
-            id,
-            work_id,
-            work_type: w_type,
-            title,
+            id: r.id,
+            work_id: r.work_id,
+            work_type: r.work_type,
+            title: r.edition_title,
             authors,
-            publisher,
-            publish_year,
-            language: lang,
+            publisher: r.publisher,
+            publisher_id: r.publisher_id,
+            publish_year: r.publish_year,
+            language: r.language,
             identifiers,
             source_formats,
             holding_formats,
-            acquisition_status: acq_status,
-            worker_name,
-            acquisition_stage: acquisition_stage.unwrap_or_default(),
-            attempts: attempts.unwrap_or(0),
-            max_attempts: max_attempts.unwrap_or(5),
-            next_attempt_at,
-            last_error,
-            resolution_status: res_status,
-            updated_at,
+            acquisition_status: r.acq_status,
+            worker_name: r.name,
+            acquisition_stage: r.stage.unwrap_or_default(),
+            attempts: r.attempts.unwrap_or(0),
+            max_attempts: r.max_attempts.unwrap_or(5),
+            next_attempt_at: r.next_attempt_at,
+            last_error: r.last_error,
+            resolution_status: r.resolution_status,
+            updated_at: r.updated_at,
         });
     }
 

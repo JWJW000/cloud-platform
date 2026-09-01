@@ -277,16 +277,53 @@ pub async fn resolve_item(
     .execute(&mut **tx)
     .await?;
 
+    // 解析并绑定出版社主档（若存在）
+    let mut publisher_id: Option<Uuid> = None;
+    if let Some(ref pub_name) = item.raw_publisher {
+        let clean_pub = clean_text(pub_name);
+        if !clean_pub.is_empty() {
+            let norm_pub = crate::store::publishers::normalize_publisher_name(&clean_pub);
+            // 查别名表或主表
+            let found_pub: Option<Uuid> = sqlx::query_scalar(
+                "SELECT publisher_id FROM publisher_aliases WHERE normalized_alias = $1 \
+                 UNION \
+                 SELECT id FROM publishers WHERE normalized_name = $1 LIMIT 1",
+            )
+            .bind(&norm_pub)
+            .fetch_optional(&mut **tx)
+            .await?;
+
+            if let Some(pid) = found_pub {
+                publisher_id = Some(pid);
+            } else {
+                let new_pub_id = Uuid::new_v4();
+                let pid: Option<Uuid> = sqlx::query_scalar(
+                    "INSERT INTO publishers (id, name, normalized_name) \
+                     VALUES ($1, $2, $3) \
+                     ON CONFLICT (normalized_name) DO UPDATE SET name = EXCLUDED.name \
+                     RETURNING id",
+                )
+                .bind(new_pub_id)
+                .bind(&clean_pub)
+                .bind(&norm_pub)
+                .fetch_optional(&mut **tx)
+                .await?;
+                publisher_id = pid.or(Some(new_pub_id));
+            }
+        }
+    }
+
     // 创建 Edition
     sqlx::query(
-        "INSERT INTO editions (id, work_id, edition_title, language, publisher, publish_year, publish_date_text, intro, format_summary, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+        "INSERT INTO editions (id, work_id, edition_title, language, publisher, publisher_id, publish_year, publish_date_text, intro, format_summary, status) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
     )
     .bind(edition_id)
     .bind(work_id)
     .bind(&clean_title)
     .bind(&primary_lang)
     .bind(item.raw_publisher.as_deref())
+    .bind(publisher_id)
     .bind(pub_year)
     .bind(item.raw_year.as_deref())
     .bind(item.intro.as_deref())

@@ -20,6 +20,7 @@ pub mod manual_actions;
 pub mod outlook_accounts;
 pub mod overview;
 pub mod proxies;
+pub mod publishers;
 pub mod sessions;
 pub mod settings;
 pub mod static_files;
@@ -422,6 +423,31 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/settings/webhook/send",
             post(webhook::manual_send_webhook),
+        )
+        // 出版社管理接口
+        .route(
+            "/api/publishers",
+            get(publishers::list_publishers_handler).post(publishers::create_publisher_handler),
+        )
+        .route(
+            "/api/publishers/merge",
+            post(publishers::merge_publishers_handler),
+        )
+        .route(
+            "/api/publishers/sync-from-editions",
+            post(publishers::sync_publishers_handler),
+        )
+        .route(
+            "/api/publishers/:id",
+            get(publishers::get_publisher_handler).put(publishers::update_publisher_handler),
+        )
+        .route(
+            "/api/publishers/:id/aliases",
+            post(publishers::add_alias_handler),
+        )
+        .route(
+            "/api/publishers/:id/editions",
+            get(publishers::list_publisher_editions_handler),
         )
         // 系统设置与字典
         .route("/api/settings", get(settings::list_settings))

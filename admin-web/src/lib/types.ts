@@ -581,6 +581,7 @@ export interface EditionSearchItem {
   title: string;
   authors: string[];
   publisher: string | null;
+  publisher_id?: string | null;
   publish_year: number | null;
   language: string;
   identifiers: string[];
@@ -612,6 +613,51 @@ export interface CatalogSearchResponse {
   status_facets: FacetCount[];
   language_facets: FacetCount[];
   format_facets: FacetCount[];
+  publisher_facets?: FacetCount[];
+}
+
+// ---------------------------------------------------------------- 出版社管理
+
+export interface Publisher {
+  id: string;
+  name: string;
+  normalized_name: string;
+  country: string | null;
+  website: string | null;
+  description: string | null;
+  works_count: number;
+  editions_count: number;
+  holdings_count: number;
+  acquired_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PublisherAlias {
+  id: string;
+  publisher_id: string;
+  alias_name: string;
+  normalized_alias: string;
+  created_at: string;
+}
+
+export interface PublisherDetailResponse {
+  publisher: Publisher;
+  aliases: PublisherAlias[];
+}
+
+export interface PublisherListResponse {
+  items: Publisher[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface PublisherEditionsResponse {
+  items: EditionSearchItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface MailProviderConfig {
@@ -703,6 +749,7 @@ export interface EditionRow {
   edition_title: string;
   language: string;
   publisher: string | null;
+  publisher_id?: string | null;
   publish_year: number | null;
   publish_date_text: string | null;
   edition_number: string | null;

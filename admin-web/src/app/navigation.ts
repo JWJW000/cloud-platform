@@ -1,6 +1,7 @@
 import {
   Gauge,
   BookOpen,
+  Building2,
   DownloadCloud,
   UploadCloud,
   Users,
@@ -30,6 +31,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/", label: "总览", icon: Gauge, end: true },
       { to: "/library", label: "图书总库", icon: BookOpen },
+      { to: "/publishers", label: "出版社管理", icon: Building2 },
       { to: "/acquisitions", label: "获取任务", icon: DownloadCloud },
       { to: "/imports", label: "数据导入", icon: UploadCloud },
     ],

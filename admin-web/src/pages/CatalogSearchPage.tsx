@@ -288,9 +288,18 @@ export function CatalogSearchPage() {
                         </span>
                         <span>
                           出版社：
-                          <strong className="text-slate-800">
-                            {item.publisher || "未知"}
-                          </strong>
+                          {item.publisher_id ? (
+                            <Link
+                              to={`/publishers/${item.publisher_id}`}
+                              className="font-semibold text-blue-600 hover:underline ml-1"
+                            >
+                              {item.publisher}
+                            </Link>
+                          ) : (
+                            <strong className="text-slate-800 ml-1">
+                              {item.publisher || "未知"}
+                            </strong>
+                          )}
                         </span>
                         {item.publish_year && (
                           <span>

@@ -11,9 +11,9 @@ function LocationProbe() {
 }
 
 describe("权威导航与兼容路由", () => {
-  it("定义 8 个一级入口并只向超级管理员显示系统管理", () => {
+  it("定义 9 个一级入口并只向超级管理员显示系统管理", () => {
     const items = NAV_GROUPS.flatMap((group) => group.items);
-    expect(items).toHaveLength(8);
+    expect(items).toHaveLength(9);
     const system = items.find((item) => item.to === "/system/logs");
     expect(system?.minRole).toBe("超级管理员");
     expect(isRoleAtLeast("任务管理员", system!.minRole!)).toBe(false);

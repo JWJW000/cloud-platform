@@ -116,7 +116,16 @@ export function CatalogDetailPage() {
               </div>
               <div>
                 <span className="text-slate-400">出版者：</span>
-                <span className="font-medium text-slate-800">{edition.publisher || "未提供"}</span>
+                {edition.publisher_id ? (
+                  <Link
+                    to={`/publishers/${edition.publisher_id}`}
+                    className="font-semibold text-blue-600 hover:underline"
+                  >
+                    {edition.publisher}
+                  </Link>
+                ) : (
+                  <span className="font-medium text-slate-800">{edition.publisher || "未提供"}</span>
+                )}
               </div>
               <div>
                 <span className="text-slate-400">出版年份/日期：</span>

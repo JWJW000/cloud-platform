@@ -19,6 +19,7 @@ pub mod inventory;
 pub mod mail_provider;
 pub mod manual_action;
 pub mod node;
+pub mod publishers;
 pub mod registration;
 pub mod registration_request;
 pub mod resource;

@@ -9,6 +9,8 @@ import { Spinner } from "./components/ui";
 import { OverviewPage } from "./features/overview/OverviewPage";
 import { CatalogSearchPage } from "./pages/CatalogSearchPage";
 import { CatalogDetailPage } from "./pages/CatalogDetailPage";
+import { PublishersPage } from "./pages/PublishersPage";
+import { PublisherDetailPage } from "./pages/PublisherDetailPage";
 import { CatalogAcquisitionsPage } from "./pages/CatalogAcquisitionsPage";
 import { CatalogImportsPage } from "./pages/CatalogImportsPage";
 import { InventoryScansPage } from "./features/catalog/InventoryScansPage";
@@ -69,6 +71,8 @@ export function App() {
               <Route index element={<OverviewPage />} />
               <Route path="/library" element={<CatalogSearchPage />} />
               <Route path="/library/editions/:id" element={<CatalogDetailPage />} />
+              <Route path="/publishers" element={<PublishersPage />} />
+              <Route path="/publishers/:id" element={<PublisherDetailPage />} />
               <Route path="/acquisitions" element={<CatalogAcquisitionsPage />} />
               <Route path="/imports" element={<CatalogImportsPage />} />
               <Route path="/inventory-scans" element={<InventoryScansPage />} />

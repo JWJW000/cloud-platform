@@ -18,7 +18,7 @@ import { AppLayout } from "../components/layout";
 import { EmptyRow, Table } from "../components/ui";
 
 describe("移动布局与表格 DOM", () => {
-  it("移动端提供有名称的抽屉菜单并包含 8 个入口", async () => {
+  it("移动端提供有名称的抽屉菜单并包含 9 个入口", async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -34,7 +34,7 @@ describe("移动布局与表格 DOM", () => {
     await user.click(open);
     const dialog = screen.getByRole("dialog", { name: "导航菜单" });
     expect(dialog).toBeInTheDocument();
-    expect(dialog.querySelectorAll("a")).toHaveLength(8);
+    expect(dialog.querySelectorAll("a")).toHaveLength(9);
     await user.click(screen.getByRole("button", { name: "关闭导航菜单" }));
     expect(screen.queryByRole("dialog", { name: "导航菜单" })).not.toBeInTheDocument();
     expect(open).toHaveFocus();

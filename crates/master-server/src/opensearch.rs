@@ -31,6 +31,8 @@ pub struct OpenSearchPage {
     pub language_facets: Vec<(String, i64)>,
     /// 文件格式分面。
     pub format_facets: Vec<(String, i64)>,
+    /// 出版社分面。
+    pub publisher_facets: Vec<(String, i64)>,
 }
 
 /// OpenSearch HTTP 客户端。URL 和索引名只来自服务端配置，不接受请求参数覆盖。
@@ -228,7 +230,8 @@ impl OpenSearchClient {
             "aggs": {
                 "statuses": {"terms": {"field": "acquisition_status", "size": 20}},
                 "languages": {"terms": {"field": "language", "size": 30}},
-                "formats": {"terms": {"field": "holding_formats", "size": 30}}
+                "formats": {"terms": {"field": "holding_formats", "size": 30}},
+                "publishers": {"terms": {"field": "publisher_exact", "size": 20}}
             }
         });
         if let (Some(updated_at), Some(id)) = (cursor_updated_at, cursor_id) {
@@ -271,6 +274,7 @@ impl OpenSearchClient {
             status_facets: buckets(result.aggregations.as_ref(), "statuses"),
             language_facets: buckets(result.aggregations.as_ref(), "languages"),
             format_facets: buckets(result.aggregations.as_ref(), "formats"),
+            publisher_facets: buckets(result.aggregations.as_ref(), "publishers"),
         })
     }
 
@@ -284,7 +288,11 @@ impl OpenSearchClient {
                 &json!({"index": {"_id": document.id}}),
             )?);
             body.push('\n');
-            body.push_str(&serde_json::to_string(document)?);
+            let mut doc_val = serde_json::to_value(document)?;
+            if let Some(ref pub_str) = document.publisher {
+                doc_val["publisher_exact"] = serde_json::Value::String(pub_str.clone());
+            }
+            body.push_str(&serde_json::to_string(&doc_val)?);
             body.push('\n');
         }
         let response = self
@@ -439,6 +447,7 @@ struct SearchDocument {
     title: String,
     authors: Vec<String>,
     publisher: Option<String>,
+    publisher_id: Option<Uuid>,
     publish_year: Option<i32>,
     language: String,
     identifiers: Vec<String>,
@@ -465,6 +474,7 @@ impl From<SearchDocument> for EditionSearchItem {
             title: doc.title,
             authors: doc.authors,
             publisher: doc.publisher,
+            publisher_id: doc.publisher_id,
             publish_year: doc.publish_year,
             language: doc.language,
             identifiers: doc.identifiers,
@@ -487,7 +497,7 @@ const DOCUMENT_SELECT: &str =
     "SELECT e.id, e.work_id, w.work_type, e.edition_title, \
         ARRAY(SELECT c.name FROM edition_contributors ec JOIN contributors c ON c.id = ec.contributor_id \
               WHERE ec.edition_id = e.id ORDER BY ec.sort_order) AS authors, \
-        e.publisher, e.publish_year, e.language, \
+        e.publisher, e.publisher_id, e.publish_year, e.language, \
         ARRAY(SELECT i.normalized_value FROM identifiers i \
               WHERE i.object_type = 'edition' AND i.object_id = e.id AND i.is_valid ORDER BY i.created_at LIMIT 20) AS identifiers, \
         ARRAY(SELECT i.normalized_value FROM identifiers i \
@@ -539,6 +549,8 @@ fn index_mapping() -> Value {
                 "title": {"type": "wildcard"},
                 "authors": {"type": "wildcard"},
                 "publisher": {"type": "wildcard"},
+                "publisher_exact": {"type": "keyword", "ignore_above": 256},
+                "publisher_id": {"type": "keyword"},
                 "publish_year": {"type": "integer"},
                 "language": {"type": "keyword"},
                 "identifiers": {"type": "wildcard"},

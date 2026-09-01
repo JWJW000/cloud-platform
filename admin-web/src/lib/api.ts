@@ -551,3 +551,62 @@ export async function sendWebhookManual(
 ): Promise<import("./types").SendWebhookResponse> {
   return api.post<import("./types").SendWebhookResponse>("/api/settings/webhook/send", data ?? {});
 }
+
+// ---------------------------------------------------------------- 出版社管理接口
+
+export async function listPublishers(params?: {
+  query?: string;
+  sort_by?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<import("./types").PublisherListResponse> {
+  return api.get<import("./types").PublisherListResponse>("/api/publishers", params);
+}
+
+export async function getPublisher(id: string): Promise<import("./types").PublisherDetailResponse> {
+  return api.get<import("./types").PublisherDetailResponse>(`/api/publishers/${id}`);
+}
+
+export async function createPublisher(data: {
+  name: string;
+  country?: string;
+}): Promise<import("./types").Publisher> {
+  return api.post<import("./types").Publisher>("/api/publishers", data);
+}
+
+export async function updatePublisher(
+  id: string,
+  data: {
+    name: string;
+    country?: string;
+    website?: string;
+    description?: string;
+  }
+): Promise<import("./types").Publisher> {
+  return api.put<import("./types").Publisher>(`/api/publishers/${id}`, data);
+}
+
+export async function addPublisherAlias(
+  id: string,
+  alias_name: string
+): Promise<import("./types").PublisherAlias> {
+  return api.post<import("./types").PublisherAlias>(`/api/publishers/${id}/aliases`, { alias_name });
+}
+
+export async function mergePublishers(
+  source_id: string,
+  target_id: string
+): Promise<{ success: boolean; message: string }> {
+  return api.post<{ success: boolean; message: string }>("/api/publishers/merge", { source_id, target_id });
+}
+
+export async function listPublisherEditions(
+  id: string,
+  params?: { status?: string; limit?: number; offset?: number }
+): Promise<import("./types").PublisherEditionsResponse> {
+  return api.get<import("./types").PublisherEditionsResponse>(`/api/publishers/${id}/editions`, params);
+}
+
+export async function syncPublishersFromEditions(): Promise<{ success: boolean; message: string }> {
+  return api.post<{ success: boolean; message: string }>("/api/publishers/sync-from-editions");
+}
