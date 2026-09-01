@@ -47,7 +47,7 @@ pub async fn handle_work_request(
         .filter_map(|s| s.parse::<TaskType>().ok())
         .collect();
 
-    let chosen_type = select_best_task_type(state, node_id, &node, &supported).await?;
+    let chosen_type = select_best_task_type(state, &node, &supported).await?;
     let Some(task_type) = chosen_type else {
         tracing::debug!(node_id = %node_id, slot = slot_index, "当前无待执行任务或能力不匹配");
         return Ok(());
@@ -127,7 +127,6 @@ pub async fn trigger_scheduler_sweep(state: &AppState) -> AppResult<()> {
 /// Master 评估各队列并选择最优先的工作类型。
 async fn select_best_task_type(
     state: &AppState,
-    node_id: Uuid,
     node: &crate::models::WorkerNode,
     supported: &[TaskType],
 ) -> AppResult<Option<TaskType>> {
@@ -170,35 +169,23 @@ async fn select_best_task_type(
 
     // 2. 账号注册队列评估
     if supported.contains(&TaskType::AccountRegister) {
-        // 检查该节点当前账号注册会话数是否超标
-        let running_reg_slots: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM execution_sessions WHERE node_id = $1 AND task_type = $2 AND ended_at IS NULL",
+        let reg_stat: Option<(i64, i32)> = sqlx::query_as(
+            "SELECT count(*), COALESCE(max(b.priority), 0) \
+             FROM account_registration_tasks t \
+             JOIN account_registration_batches b ON b.id = t.batch_id \
+             WHERE t.status IN ('待处理', '正在重试') AND t.next_attempt_at <= now() \
+               AND t.cancel_requested = FALSE AND t.attempts < t.max_attempts \
+               AND b.status = '执行中'",
         )
-        .bind(node_id)
-        .bind(TaskType::AccountRegister.as_str())
-        .fetch_one(&state.pool)
+        .fetch_optional(&state.pool)
         .await?;
-        let max_reg_slots = (node.max_slots / 2).max(1) as i64;
 
-        if running_reg_slots < max_reg_slots {
-            let reg_stat: Option<(i64, i32)> = sqlx::query_as(
-                "SELECT count(*), COALESCE(max(b.priority), 0) \
-                 FROM account_registration_tasks t \
-                 JOIN account_registration_batches b ON b.id = t.batch_id \
-                 WHERE t.status IN ('待处理', '正在重试') AND t.next_attempt_at <= now() \
-                   AND t.cancel_requested = FALSE AND t.attempts < t.max_attempts \
-                   AND b.status = '执行中'",
-            )
-            .fetch_optional(&state.pool)
-            .await?;
-
-            if let Some((count, max_priority)) = reg_stat {
-                if count > 0 {
-                    candidates.push(QueueCandidate {
-                        task_type: TaskType::AccountRegister,
-                        effective_priority: (max_priority as i64) * 10 + 5,
-                    });
-                }
+        if let Some((count, max_priority)) = reg_stat {
+            if count > 0 {
+                candidates.push(QueueCandidate {
+                    task_type: TaskType::AccountRegister,
+                    effective_priority: (max_priority as i64) * 10 + 5,
+                });
             }
         }
     }

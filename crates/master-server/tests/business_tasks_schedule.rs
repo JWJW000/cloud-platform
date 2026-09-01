@@ -141,6 +141,121 @@ async fn 图书任务首次执行绑定代理且重试固定同一代理() {
 }
 
 #[tokio::test]
+async fn 账号注册可以使用节点批准的全部槽位() {
+    let db = require_db!();
+
+    let mut conn = db.pool.acquire().await.unwrap();
+    let node = store::node::upsert_node(
+        &mut conn,
+        "注册全槽位测试节点",
+        "registration-full-slots-host",
+        "Linux",
+        "1.0",
+        "1.0",
+        5,
+        "registration_full_slots_token",
+    )
+    .await
+    .unwrap();
+    store::node::ensure_slots(&mut conn, node.id, 5)
+        .await
+        .unwrap();
+    drop(conn);
+    store::node::approve_node(&db.pool, node.id, None)
+        .await
+        .unwrap();
+    store::node::set_node_status(&db.pool, node.id, WorkerStatus::Online)
+        .await
+        .unwrap();
+
+    let cipher = master_server::security::FieldCipher::from_base64(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    )
+    .unwrap();
+    let batch = store::account_registration::create_batch(
+        &db.pool,
+        &store::account_registration::NewAccountRegistrationBatch {
+            name: "注册全槽位测试批次".to_string(),
+            source_file: None,
+            priority: 5,
+            created_by: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    for slot_index in 0..5 {
+        let account = store::resource::create_account(
+            &db.pool,
+            &format!("full-slot-{slot_index}@test.com"),
+            &cipher.encrypt("password").unwrap(),
+            &format!("full-slot-{slot_index}"),
+            10,
+            AccountStatus::PendingRegistration,
+        )
+        .await
+        .unwrap();
+        store::account_registration::create_task(&db.pool, batch.id, account.id, 5)
+            .await
+            .unwrap();
+
+        let proxy = store::resource::upsert_proxy(
+            &db.pool,
+            "Webshare",
+            None,
+            &format!("full-slot-proxy-{slot_index}"),
+            "http",
+            &format!("10.20.0.{}", slot_index + 1),
+            8080,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        store::resource::set_proxy_status(&db.pool, proxy.id, ProxyStatus::Available, None)
+            .await
+            .unwrap();
+    }
+
+    store::account_registration::update_batch_status(
+        &db.pool,
+        batch.id,
+        BatchStatus::NotStarted,
+        BatchStatus::Running,
+    )
+    .await
+    .unwrap();
+
+    let state = db.create_test_state();
+    for slot_index in 0..5 {
+        let outcome =
+            allocate_session(&state, node.id, TaskType::AccountRegister, Some(slot_index))
+                .await
+                .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                master_server::scheduler::AllocationOutcome::Granted(_)
+            ),
+            "第 {slot_index} 个注册槽位应分配成功，实际得到 {outcome:?}"
+        );
+    }
+
+    let running_registration_sessions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM execution_sessions \
+         WHERE node_id = $1 AND task_type = $2 AND ended_at IS NULL",
+    )
+    .bind(node.id)
+    .bind(TaskType::AccountRegister.as_str())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(running_registration_sessions, 5);
+
+    db.teardown().await;
+}
+
+#[tokio::test]
 async fn 账号注册批次任务分配与事务原子状态更新() {
     let db = require_db!();
 

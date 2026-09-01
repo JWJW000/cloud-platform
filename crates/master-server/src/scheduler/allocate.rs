@@ -173,23 +173,6 @@ pub async fn allocate_session(
         ));
     }
 
-    if task_type == TaskType::AccountRegister {
-        let running_reg_slots: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM execution_sessions WHERE node_id = $1 AND task_type = $2 AND ended_at IS NULL",
-        )
-        .bind(node_id)
-        .bind(TaskType::AccountRegister.as_str())
-        .fetch_one(&state.pool)
-        .await?;
-        let max_reg_slots = (node.max_slots / 2).max(1) as i64;
-        if running_reg_slots >= max_reg_slots {
-            return Ok(unavailable(
-                format!("节点账号注册槽位已达上限 ({running_reg_slots}/{max_reg_slots})"),
-                15,
-            ));
-        }
-    }
-
     let (account_need, proxy_need) = needs_of(task_type);
     let mut tx = state.pool.begin().await?;
 
