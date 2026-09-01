@@ -45,6 +45,20 @@ async fn 全迁移_幂等_约束生效() {
             .unwrap();
     assert_eq!(global_download_paused, serde_json::json!(false));
 
+    let publisher_browse_index: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_indexes \
+         WHERE schemaname = current_schema() \
+           AND tablename = 'editions' \
+           AND indexname = 'idx_editions_publisher_browse'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        publisher_browse_index, 1,
+        "出版社专属书库必须具备稳定分页复合索引"
+    );
+
     // 2. 重复执行迁移：幂等，不报错（sqlx 按版本记录跳过）
     master_server::store::run_migrations(&db.pool)
         .await

@@ -424,16 +424,26 @@ pub async fn list_publisher_editions(
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
 
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM editions e \
-         LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-         WHERE (e.publisher_id = $1 OR e.publisher = (SELECT name FROM publishers WHERE id = $1)) \
-           AND ($2::text IS NULL OR coalesce(at.status, '待下载') = $2)",
-    )
-    .bind(publisher_id)
-    .bind(status)
-    .fetch_one(pool)
-    .await?;
+    // 无状态筛选是详情页首屏的主要路径，直接复用 publishers 上维护的物化统计，
+    // 避免每次翻页都扫描该出版社的全部 editions。带筛选时仍返回精确计数。
+    let total: i64 = if status.is_none() {
+        sqlx::query_scalar("SELECT editions_count FROM publishers WHERE id = $1")
+            .bind(publisher_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0)
+    } else {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM editions e \
+             LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
+             WHERE e.publisher_id = $1 \
+               AND coalesce(at.status, '待下载') = $2",
+        )
+        .bind(publisher_id)
+        .bind(status)
+        .fetch_one(pool)
+        .await?
+    };
 
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
@@ -462,9 +472,9 @@ pub async fn list_publisher_editions(
          LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
          LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
          LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
-         WHERE (e.publisher_id = $1 OR e.publisher = (SELECT name FROM publishers WHERE id = $1)) \
+         WHERE e.publisher_id = $1 \
            AND ($2::text IS NULL OR coalesce(at.status, '待下载') = $2) \
-         ORDER BY e.publish_year DESC NULLS LAST, e.updated_at DESC \
+         ORDER BY e.publish_year DESC NULLS LAST, e.updated_at DESC, e.id DESC \
          LIMIT $3 OFFSET $4",
     )
     .bind(publisher_id)
