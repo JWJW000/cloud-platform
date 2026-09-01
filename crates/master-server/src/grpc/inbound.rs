@@ -832,8 +832,11 @@ async fn handle_session_ready(
                 "SELECT t.id, t.attempts, t.stage_version \
                  FROM account_registration_tasks t \
                  JOIN account_registration_batches b ON b.id = t.batch_id \
-                 WHERE t.account_id = $1 AND b.status = '执行中' AND t.status = '待处理' \
-                 ORDER BY b.priority DESC, t.created_at \
+                 WHERE t.account_id = $1 AND b.status = '执行中' \
+                   AND t.status IN ('待处理', '正在重试') \
+                   AND t.next_attempt_at <= now() \
+                   AND t.cancel_requested = FALSE AND t.attempts < t.max_attempts \
+                 ORDER BY b.priority DESC, t.priority DESC, t.created_at \
                  FOR UPDATE OF t SKIP LOCKED LIMIT 1",
             )
             .bind(account_id)

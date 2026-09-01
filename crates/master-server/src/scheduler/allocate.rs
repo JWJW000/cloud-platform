@@ -382,21 +382,39 @@ async fn claim_account(
     tx: &mut sqlx::PgConnection,
     need: AccountNeed,
 ) -> AppResult<Option<ClaimedAccount>> {
-    let (status, require_quota) = match need {
-        AccountNeed::ToRegister => (AccountStatus::PendingRegistration, false),
-        _ => (AccountStatus::Registered, true),
+    let row = match need {
+        AccountNeed::ToRegister => {
+            // 注册会话必须从“当前确实存在可领取任务”的账号中选择。只按账号状态挑选
+            // 会选中仍处于退避期、已取消或批次未运行的账号，浏览器启动后 Master
+            // 找不到对应任务，Worker 只能等待 30 秒后关闭。
+            sqlx::query_as::<_, ClaimedAccount>(
+                "SELECT a.id, a.email, a.nickname, a.password_cipher, a.daily_used, a.daily_limit \
+                 FROM accounts a \
+                 JOIN account_registration_tasks t ON t.account_id = a.id \
+                 JOIN account_registration_batches b ON b.id = t.batch_id \
+                 WHERE a.status = $1 AND a.lease_session_id IS NULL \
+                   AND t.status IN ('待处理', '正在重试') \
+                   AND t.next_attempt_at <= now() \
+                   AND t.cancel_requested = FALSE AND t.attempts < t.max_attempts \
+                   AND b.status = '执行中' \
+                 ORDER BY b.priority DESC, t.priority DESC, t.created_at, a.created_at \
+                 FOR UPDATE OF a SKIP LOCKED LIMIT 1",
+            )
+            .bind(AccountStatus::PendingRegistration.as_str())
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+        AccountNeed::Usable => sqlx::query_as::<_, ClaimedAccount>(
+            "SELECT id, email, nickname, password_cipher, daily_used, daily_limit FROM accounts \
+             WHERE status = $1 AND lease_session_id IS NULL AND daily_used < daily_limit \
+             ORDER BY daily_used, created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 1",
+        )
+        .bind(AccountStatus::Registered.as_str())
+        .fetch_optional(&mut *tx)
+        .await?,
+        AccountNeed::None => None,
     };
-    let row = sqlx::query_as::<_, ClaimedAccount>(
-        "SELECT id, email, nickname, password_cipher, daily_used, daily_limit FROM accounts \
-         WHERE status = $1 AND lease_session_id IS NULL \
-           AND (NOT $2 OR daily_used < daily_limit) \
-         ORDER BY daily_used, created_at \
-         FOR UPDATE SKIP LOCKED LIMIT 1",
-    )
-    .bind(status.as_str())
-    .bind(require_quota)
-    .fetch_optional(&mut *tx)
-    .await?;
     Ok(row)
 }
 

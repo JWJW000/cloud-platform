@@ -348,3 +348,166 @@ async fn 账号注册批次任务分配与事务原子状态更新() {
 
     db.teardown().await;
 }
+
+#[tokio::test]
+async fn 注册会话只领取当前可执行任务对应的账号() {
+    let db = require_db!();
+
+    let mut conn = db.pool.acquire().await.unwrap();
+    let node = store::node::upsert_node(
+        &mut conn,
+        "注册退避测试节点",
+        "host",
+        "Linux",
+        "1.0",
+        "1.0",
+        2,
+        "token_hash",
+    )
+    .await
+    .unwrap();
+    store::node::ensure_slots(&mut conn, node.id, 2)
+        .await
+        .unwrap();
+    drop(conn);
+    store::node::approve_node(&db.pool, node.id, None)
+        .await
+        .unwrap();
+    store::node::set_node_status(&db.pool, node.id, WorkerStatus::Online)
+        .await
+        .unwrap();
+
+    let cipher = master_server::security::FieldCipher::from_base64(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    )
+    .unwrap();
+    let retrying_account = store::resource::create_account(
+        &db.pool,
+        "retrying@test.com",
+        &cipher.encrypt("valid-password-1").unwrap(),
+        "retrying",
+        10,
+        AccountStatus::PendingRegistration,
+    )
+    .await
+    .unwrap();
+    let pending_account = store::resource::create_account(
+        &db.pool,
+        "pending@test.com",
+        &cipher.encrypt("valid-password-2").unwrap(),
+        "pending",
+        10,
+        AccountStatus::PendingRegistration,
+    )
+    .await
+    .unwrap();
+
+    let proxy = store::resource::upsert_proxy(
+        &db.pool,
+        "Webshare",
+        None,
+        "registration-proxy",
+        "http",
+        "10.0.0.9",
+        8080,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE proxies SET status = '可用', exit_ip = '203.0.113.9', last_checked_at = now() WHERE id = $1",
+    )
+    .bind(proxy.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let batch = store::account_registration::create_batch(
+        &db.pool,
+        &store::account_registration::NewAccountRegistrationBatch {
+            name: "注册退避批次".to_string(),
+            source_file: None,
+            priority: 5,
+            created_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let retrying_task =
+        store::account_registration::create_task(&db.pool, batch.id, retrying_account.id, 10)
+            .await
+            .unwrap();
+    let pending_task =
+        store::account_registration::create_task(&db.pool, batch.id, pending_account.id, 1)
+            .await
+            .unwrap();
+    store::account_registration::update_batch_status(
+        &db.pool,
+        batch.id,
+        BatchStatus::NotStarted,
+        BatchStatus::Running,
+    )
+    .await
+    .unwrap();
+
+    // 高优先级任务仍处于退避期时，不能先为它打开一个最终拿不到任务的浏览器。
+    sqlx::query(
+        "UPDATE account_registration_tasks SET status = '正在重试', attempts = 1, \
+         next_attempt_at = now() + interval '1 hour' WHERE id = $1",
+    )
+    .bind(retrying_task)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let state = db.create_test_state();
+    let first = allocate_session(&state, node.id, TaskType::AccountRegister, Some(0))
+        .await
+        .unwrap();
+    let first = match first {
+        master_server::scheduler::AllocationOutcome::Granted(grant) => grant,
+        other => panic!("预期领取待处理注册账号，实际得到 {other:?}"),
+    };
+    assert_eq!(
+        first.account.as_ref().unwrap().account_id,
+        pending_account.id,
+        "退避期账号不得被注册会话提前领取"
+    );
+    master_server::scheduler::allocate::close_session(
+        &state,
+        first.session_id,
+        platform_domain::SessionStatus::Ended,
+        "测试释放",
+    )
+    .await
+    .unwrap();
+
+    // 移除普通待处理任务，并让重试任务到期；此时重试账号应能直接重新领取。
+    sqlx::query("UPDATE account_registration_tasks SET status = '已取消' WHERE id = $1")
+        .bind(pending_task)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE account_registration_tasks SET next_attempt_at = now() - interval '1 second' WHERE id = $1",
+    )
+    .bind(retrying_task)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let second = allocate_session(&state, node.id, TaskType::AccountRegister, Some(0))
+        .await
+        .unwrap();
+    let second = match second {
+        master_server::scheduler::AllocationOutcome::Granted(grant) => grant,
+        other => panic!("预期重新领取到期重试账号，实际得到 {other:?}"),
+    };
+    assert_eq!(
+        second.account.as_ref().unwrap().account_id,
+        retrying_account.id
+    );
+
+    db.teardown().await;
+}

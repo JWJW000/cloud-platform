@@ -185,7 +185,7 @@ async fn select_best_task_type(
                 "SELECT count(*), COALESCE(max(b.priority), 0) \
                  FROM account_registration_tasks t \
                  JOIN account_registration_batches b ON b.id = t.batch_id \
-                 WHERE t.status = '待处理' AND t.next_attempt_at <= now() \
+                 WHERE t.status IN ('待处理', '正在重试') AND t.next_attempt_at <= now() \
                    AND t.cancel_requested = FALSE AND t.attempts < t.max_attempts \
                    AND b.status = '执行中'",
             )
@@ -225,15 +225,16 @@ async fn select_best_task_type(
             .fetch_one(&state.pool)
             .await?;
 
-            let priority = if fresh_available_count < 5 {
-                100 // 优先检测以补充可用代理池
-            } else {
-                1 // 较低优先级背景复检
-            };
+            // 没有形成最小健康代理池时必须先检测代理。这里不能只给一个普通数字
+            // 优先级：高优先级注册批次可能超过它，随后又因没有健康代理而分配失败，
+            // 形成“注册抢占代理检测、注册又拿不到代理”的活锁。
+            if fresh_available_count < 5 {
+                return Ok(Some(TaskType::ProxyCheck));
+            }
 
             candidates.push(QueueCandidate {
                 task_type: TaskType::ProxyCheck,
-                effective_priority: priority,
+                effective_priority: 1,
             });
         }
     }

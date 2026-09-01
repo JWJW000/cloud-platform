@@ -316,11 +316,7 @@ pub async fn add_publisher_alias(
 }
 
 /// 合并两家出版社（将 source_id 及其别名/图书全部合并到 target_id 并删除 source_id）。
-pub async fn merge_publishers(
-    pool: &PgPool,
-    source_id: Uuid,
-    target_id: Uuid,
-) -> AppResult<()> {
+pub async fn merge_publishers(pool: &PgPool, source_id: Uuid, target_id: Uuid) -> AppResult<()> {
     if source_id == target_id {
         return Err(AppError::bad("不能合并同一个出版社"));
     }
@@ -439,6 +435,7 @@ pub async fn list_publisher_editions(
     .fetch_one(pool)
     .await?;
 
+    #[allow(clippy::type_complexity)]
     let rows: Vec<(
         Uuid,
         Uuid,
