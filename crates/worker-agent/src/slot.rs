@@ -22,9 +22,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use automation_core::{
-    AccountCredential, AutomationEngine, AutomationEvent, BookTarget, BrowserCommand,
-    BrowserExecutor, BrowserResult, CancelToken, DownloadSpec, RealAutomationEngine, SessionHandle,
-    SessionSpec, SimulatedEngine, ThreadBrowserExecutor,
+    AccountCredential, AutomationEngine, AutomationError, AutomationEvent, BookTarget,
+    BrowserCommand, BrowserExecutor, BrowserResult, CancelToken, DownloadSpec,
+    RealAutomationEngine, SessionHandle, SessionSpec, SimulatedEngine, ThreadBrowserExecutor,
 };
 use platform_domain::{ExecutionResult, SessionStatus, SlotStatus};
 use platform_proto::v1 as pb;
@@ -46,6 +46,17 @@ const BROWSER_DEBUG_PORT_BASE: u16 = 9300;
 const BROWSER_START_BACKOFF_BASE_SECS: u64 = 30;
 const BROWSER_START_BACKOFF_MAX_SECS: u64 = 120;
 const PROXY_TUNNEL_BACKOFF: Duration = Duration::from_secs(30);
+
+/// `SessionClosed` 协议目前只携带文本原因，不能直接传输 `FailureClass`。
+/// 给认证失败加稳定标记，避免结构化错误经过 `anyhow` 后退化成普通可重试失败，
+/// 导致 Master 再次分配同一个坏账号。
+fn session_start_error(err: AutomationError) -> anyhow::Error {
+    if err.class == platform_domain::FailureClass::AuthFailed {
+        anyhow::anyhow!("authentication failed: {}", err.reason)
+    } else {
+        anyhow::anyhow!(err.reason)
+    }
+}
 
 fn browser_debug_port(slot_index: u32) -> Result<u16> {
     let offset = u16::try_from(slot_index)
@@ -1047,7 +1058,8 @@ async fn execute_download_session(
     let max_duration = spec.max_duration;
     let open_res = executor
         .execute(BrowserCommand::OpenSession { spec })
-        .await?;
+        .await
+        .map_err(session_start_error)?;
     let session_handle = match open_res {
         BrowserResult::SessionOpened(handle) => handle,
         _ => anyhow::bail!("打开浏览器会话返回了非预期的结果类型"),
@@ -2676,6 +2688,20 @@ mod tests {
         assert_eq!(
             platform_domain::classify_failure(reason, None),
             platform_domain::FailureClass::ProxyFailure
+        );
+    }
+
+    #[test]
+    fn auth_session_start_error_keeps_a_stable_master_marker() {
+        let err = AutomationError::new(
+            platform_domain::FailureClass::AuthFailed,
+            "login form is still visible after submit",
+        );
+        let reason = session_start_error(err).to_string();
+        assert!(reason.starts_with("authentication failed:"));
+        assert_eq!(
+            platform_domain::classify_failure(&reason, None),
+            platform_domain::FailureClass::AuthFailed
         );
     }
 }

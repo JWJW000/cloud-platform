@@ -1636,29 +1636,16 @@ async fn navigate_page(page: &ChromiumPage, url: &str) -> Result<(), AutomationE
     ))
 }
 
-/// 登录站点：首页弹窗 `#loginForm`，瞬时拒绝最多 3 次并刷新挑战 token。
+/// 登录站点：首页弹窗 `#loginForm`。
+///
+/// 明确的认证失败不能在同一账号上重试：密码不会因刷新页面而变正确，重复提交
+/// 只会触发站点风控。调用方会结束会话，由 Master 标记账号并切换下一个账号。
 async fn login_site(
     page: &ChromiumPage,
     site_base: &str,
     account: &AccountCredential,
 ) -> Result<(), AutomationError> {
-    const MAX_LOGIN_ATTEMPTS: usize = 3;
-    let mut last_auth: Option<AutomationError> = None;
-    for attempt in 1..=MAX_LOGIN_ATTEMPTS {
-        match login_attempt(page, site_base, account).await {
-            Ok(()) => return Ok(()),
-            Err(err) if err.class == FailureClass::AuthFailed => {
-                last_auth = Some(err);
-                if attempt < MAX_LOGIN_ATTEMPTS {
-                    tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
-                }
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    Err(last_auth.unwrap_or_else(|| {
-        AutomationError::new(FailureClass::AuthFailed, "login failed after retries")
-    }))
+    login_attempt(page, site_base, account).await
 }
 
 async fn login_attempt(

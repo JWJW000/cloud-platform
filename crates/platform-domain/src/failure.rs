@@ -182,8 +182,14 @@ pub fn classify_failure(reason: &str, quota_indicator: Option<(u32, u32)>) -> Fa
         return FailureClass::BookNotFound;
     }
     if hits(&[
+        "auth_failed",
         "authentication failed",
         "invalid password",
+        "incorrect password",
+        "login validation error",
+        "login form is still visible after submit",
+        "密码错误",
+        "密码不正确",
         "登录失败",
         "凭据",
     ]) {
@@ -245,6 +251,21 @@ mod tests {
         assert!(!attribution.consumes_retry);
         assert_eq!(attribution.proxy_status, Some(ProxyStatus::Error));
         assert_eq!(attribution.task_status, Some(TaskStatus::Pending));
+    }
+
+    #[test]
+    fn explicit_login_rejection_marks_account_and_ends_session() {
+        for reason in [
+            "authentication failed: login form is still visible after submit",
+            "login validation error: Invalid email or password",
+            "登录失败：密码不正确",
+        ] {
+            let attribution = classify_failure(reason, None).attribution();
+            assert_eq!(attribution.account_status, Some(AccountStatus::LoginFailed));
+            assert_eq!(attribution.task_status, Some(TaskStatus::Pending));
+            assert!(!attribution.consumes_retry);
+            assert!(attribution.ends_session);
+        }
     }
 
     #[test]
