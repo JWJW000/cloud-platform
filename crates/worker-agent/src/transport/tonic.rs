@@ -249,7 +249,15 @@ fn sanitize_connection_error(raw: &str) -> String {
 
 fn map_grpc_status(status: Status) -> ConnectError {
     match status.code() {
-        Code::Unavailable => ConnectError::Network {
+        // tonic/h2 会把连接被对端重置、读 body 失败等瞬时传输故障包装成
+        // Unknown 或 Internal。它们和 Unavailable 一样必须进入退避重连，
+        // 不能升级成 Fatal 让整个 Worker 进程退出。
+        Code::Unavailable
+        | Code::Unknown
+        | Code::Internal
+        | Code::Cancelled
+        | Code::DeadlineExceeded
+        | Code::Aborted => ConnectError::Network {
             retry_after: None,
             detail: sanitize_connection_error(status.message()),
         },
@@ -292,5 +300,44 @@ mod tests {
             ConnectError::Network { detail, .. } => assert_eq!(detail.chars().count(), 512),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn transient_grpc_and_h2_statuses_are_retryable_network_errors() {
+        for code in [
+            Code::Unavailable,
+            Code::Unknown,
+            Code::Internal,
+            Code::Cancelled,
+            Code::DeadlineExceeded,
+            Code::Aborted,
+        ] {
+            let mapped = map_grpc_status(Status::new(
+                code,
+                "h2 protocol error: error reading a body from connection",
+            ));
+            match mapped {
+                ConnectError::Network { detail, .. } => {
+                    assert!(detail.contains("h2 protocol error"), "{code:?}");
+                }
+                other => panic!("{code:?} must retry, got {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn non_transport_grpc_statuses_keep_their_domain_meaning() {
+        assert!(matches!(
+            map_grpc_status(Status::permission_denied("disabled")),
+            ConnectError::Rejected { .. }
+        ));
+        assert!(matches!(
+            map_grpc_status(Status::unauthenticated("bad certificate")),
+            ConnectError::Unauthorized { .. }
+        ));
+        assert!(matches!(
+            map_grpc_status(Status::unimplemented("old master")),
+            ConnectError::ProtocolMismatch
+        ));
     }
 }
