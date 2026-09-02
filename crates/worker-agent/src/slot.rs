@@ -66,6 +66,10 @@ fn browser_debug_port(slot_index: u32) -> Result<u16> {
         .ok_or_else(|| anyhow::anyhow!("槽位序号 {slot_index} 无法映射浏览器调试端口"))
 }
 
+fn download_profile_dir(data_dir: &std::path::Path, slot_index: u32) -> std::path::PathBuf {
+    data_dir.join(format!("profiles/slot-{slot_index}"))
+}
+
 fn is_browser_start_failure(reason: &str) -> bool {
     reason.contains("启动 Chrome 进程失败")
         || reason.contains("启动浏览器进程失败")
@@ -683,6 +687,13 @@ async fn run_slot_worker(
 ) {
     tracing::info!(slot = shared.index, "槽位协程已启动");
     let mut consecutive_browser_start_failures = 0u32;
+    // 浏览器线程和真实自动化引擎由槽位长期持有。Master 会话结束后页面可以停放，
+    // 下一账号继续复用同一 Chrome；这与桌面客户端的 Worker 生命周期一致。
+    let browser_executor: Arc<dyn BrowserExecutor> = if config.execution.simulated {
+        Arc::new(automation_core::MockBrowserExecutor::new())
+    } else {
+        Arc::new(ThreadBrowserExecutor::spawn(shared.index))
+    };
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -704,6 +715,7 @@ async fn run_slot_worker(
                     &config_state,
                     &outbox,
                     &bus,
+                    browser_executor.clone(),
                 )
                 .await;
 
@@ -800,6 +812,9 @@ async fn run_slot_worker(
                 *lock(&shared.current) = None;
             }
             SlotCommand::Pause => {
+                let _ = browser_executor
+                    .execute(BrowserCommand::CloseAllSessions)
+                    .await;
                 let mut snap = shared.snapshot.write().await;
                 if snap.status == SlotStatus::Idle {
                     snap.status = SlotStatus::Deactivated;
@@ -841,9 +856,14 @@ async fn run_slot_worker(
             SlotCommand::ContinueManualAction(_) => {}
         }
     }
+
+    let _ = browser_executor
+        .execute(BrowserCommand::CloseAllSessions)
+        .await;
 }
 
 /// 会话生命周期入口：按任务类型严格分流。
+#[allow(clippy::too_many_arguments)]
 async fn execute_session_loop(
     shared: &SlotShared,
     session: pb::CreateSession,
@@ -852,12 +872,28 @@ async fn execute_session_loop(
     config_state: &Arc<ConfigState>,
     outbox: &LocalStore,
     bus: &OutboundEventBus,
+    browser_executor: Arc<dyn BrowserExecutor>,
 ) -> Result<u32> {
     match session.task_type.as_str() {
         "图书下载" => {
-            execute_download_session(shared, session, rx, config, config_state, outbox, bus).await
+            execute_download_session(
+                shared,
+                session,
+                rx,
+                config,
+                config_state,
+                outbox,
+                bus,
+                browser_executor,
+            )
+            .await
         }
         "账号注册" => {
+            // 注册流程仍使用一次性、会话隔离的浏览器。先回收下载浏览器，避免它
+            // 占用本槽位调试端口。
+            let _ = browser_executor
+                .execute(BrowserCommand::CloseAllSessions)
+                .await;
             execute_registration_session(shared, session, rx, config, config_state, outbox, bus)
                 .await
         }
@@ -962,6 +998,7 @@ async fn execute_proxy_check_session(
 }
 
 /// 图书下载会话：建立会话（登录） → 连续领书 → 入库 → 收尾。
+#[allow(clippy::too_many_arguments)]
 async fn execute_download_session(
     shared: &SlotShared,
     session: pb::CreateSession,
@@ -970,6 +1007,7 @@ async fn execute_download_session(
     config_state: &Arc<ConfigState>,
     outbox: &LocalStore,
     bus: &OutboundEventBus,
+    executor: Arc<dyn BrowserExecutor>,
 ) -> Result<u32> {
     let snapshot_cfg = config_state.snapshot();
     let session_id = session.session_id.clone();
@@ -1059,10 +1097,7 @@ async fn execute_download_session(
         browser_path: None,
         headless: config.execution.headless,
         browser_debug_port: browser_debug_port(shared.index)?,
-        profile_dir: config
-            .storage
-            .data_dir
-            .join(format!("profiles/session-{session_id}")),
+        profile_dir: download_profile_dir(&config.storage.data_dir, shared.index),
         staging_root: config.storage.data_dir.join("staging"),
         proxy_endpoint,
         account: AccountCredential {
@@ -1084,13 +1119,9 @@ async fn execute_download_session(
         ),
     };
 
-    // 2. 独立 OS 线程 BrowserExecutor：彻底解耦 Tokio 异步运行时与同步 Chromium 调用
-    let executor: Arc<dyn BrowserExecutor> = if config.execution.simulated {
+    if config.execution.simulated {
         tracing::warn!(session_id = %session_id, "本会话使用模拟引擎，结果不可用于生产验收");
-        Arc::new(automation_core::MockBrowserExecutor::new())
-    } else {
-        Arc::new(ThreadBrowserExecutor::spawn(shared.index))
-    };
+    }
 
     let max_duration = spec.max_duration;
     let open_res = executor
@@ -1178,12 +1209,15 @@ async fn execute_download_session(
         }
     }
 
-    // 5. 收尾：先关闭浏览器会话，再终止 GOST 代理进程
-    let _ = executor
-        .execute(BrowserCommand::CloseSession {
-            handle: session_handle,
-        })
-        .await;
+    // 5. 正常结束只关闭 GOST，把 Chrome 停放在槽位中供下一账号复用。
+    // 管理员暂停时则立即关闭，避免暂停后仍残留浏览器窗口。
+    if shared.paused.load(Ordering::SeqCst) {
+        let _ = executor
+            .execute(BrowserCommand::CloseSession {
+                handle: session_handle,
+            })
+            .await;
+    }
     if let Some(mut proxy) = proxy_handle.take() {
         proxy.shutdown().await;
     }
@@ -2706,6 +2740,13 @@ mod tests {
             5
         );
         assert!(ports.iter().all(|port| !(19001..=19064).contains(port)));
+    }
+
+    #[test]
+    fn download_profiles_are_stable_and_isolated_per_slot() {
+        let root = std::path::Path::new("worker-data");
+        assert_eq!(download_profile_dir(root, 0), root.join("profiles/slot-0"));
+        assert_ne!(download_profile_dir(root, 0), download_profile_dir(root, 1));
     }
 
     #[test]

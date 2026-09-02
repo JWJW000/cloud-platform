@@ -56,6 +56,7 @@ impl BrowserExecutor for MockBrowserExecutor {
             )),
             BrowserCommand::ExportCookies => Ok(BrowserResult::Cookies(Vec::new())),
             BrowserCommand::CloseSession { .. } => Ok(BrowserResult::Closed),
+            BrowserCommand::CloseAllSessions => Ok(BrowserResult::Closed),
         }
     }
 }

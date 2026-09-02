@@ -44,6 +44,8 @@ pub enum BrowserCommand {
     ExportCookies,
     /// 关闭指定会话并退出浏览器。
     CloseSession { handle: SessionHandle },
+    /// 关闭本槽位持有的全部浏览器会话。
+    CloseAllSessions,
 }
 
 /// 浏览器执行结果。

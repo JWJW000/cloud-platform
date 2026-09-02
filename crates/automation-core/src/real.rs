@@ -93,6 +93,72 @@ const BONUS_POPUP: &str = ".btnCloseRegBonusPopup";
 const LOGOUT_SELECTORS: &str =
     "a[data-action='logout'], [data-action='logout'], a[href*='/logout'], .logout-link, #logout-link";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginPageState {
+    LoginAvailable,
+    Authenticated,
+    Unknown,
+}
+
+fn classify_login_page_state(
+    has_login_link: bool,
+    has_login_form: bool,
+    has_logout: bool,
+) -> LoginPageState {
+    // 退出入口是唯一能够证明浏览器里已有账号的信号。首页因为代理慢、首屏脚本
+    // 尚未执行而暂时没有登录控件时，绝不能反向推导成“已经登录”。
+    if has_logout {
+        LoginPageState::Authenticated
+    } else if has_login_link || has_login_form {
+        LoginPageState::LoginAvailable
+    } else {
+        LoginPageState::Unknown
+    }
+}
+
+fn observe_login_page_state(page: &ChromiumPage) -> LoginPageState {
+    classify_login_page_state(
+        first_page_element(page, LOGIN_LINK).is_some(),
+        first_page_element(page, LOGIN_FORM).is_some(),
+        first_page_element(page, LOGOUT_SELECTORS).is_some(),
+    )
+}
+
+async fn wait_for_login_page_state(
+    page: &ChromiumPage,
+    root: &str,
+) -> Result<LoginPageState, AutomationError> {
+    const RELOAD_AT: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(9)];
+    let started = Instant::now();
+    let deadline = started + LOGIN_TIMEOUT;
+    let mut reload_index = 0usize;
+
+    loop {
+        let state = observe_login_page_state(page);
+        if state != LoginPageState::Unknown {
+            return Ok(state);
+        }
+
+        let elapsed = started.elapsed();
+        if reload_index < RELOAD_AT.len() && elapsed >= RELOAD_AT[reload_index] {
+            tracing::warn!(
+                attempt = reload_index + 1,
+                "首页暂未出现登录或退出控件，重新加载后继续识别登录状态"
+            );
+            navigate_page(page, root).await?;
+            reload_index += 1;
+            continue;
+        }
+        if Instant::now() >= deadline {
+            return Err(AutomationError::new(
+                FailureClass::SiteUnavailable,
+                "首页在等待并重新加载后仍无法识别登录状态",
+            ));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// `ChromiumPage` 本身 Drop 不会关浏览器进程（桌面版因此包了 `WorkerPage`）。
 /// 登录失败若直接 `return Err`，Chrome 窗口会留下来，Master 立刻再开下一会话，
 /// 5 个槽位限制挡不住窗口堆积。
@@ -212,6 +278,104 @@ impl RealAutomationEngine {
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// 优先复用本执行线程中同一槽位的浏览器进程。
+    ///
+    /// Worker 的本机代理地址在槽位生命周期内固定；上游代理由 GOST 在该地址后方
+    /// 切换，因此 Chrome 无需随每个 Master 会话重启。复用时仍会走 `login_site`，
+    /// 它会先退出旧账号再登录新账号，不会复用无法核验的账号 Cookie。
+    pub async fn open_or_reuse_session(
+        &self,
+        spec: &SessionSpec,
+    ) -> Result<SessionHandle, AutomationError> {
+        let site_base = validate_site_base(&spec.site_base)?;
+        let download_format = normalize_format(&spec.download_format)?;
+        if spec.account.email.trim().is_empty() || spec.account.password.is_empty() {
+            return Err(AutomationError::new(
+                FailureClass::Fatal,
+                "会话账号缺少邮箱或密码，拒绝打开真实会话",
+            ));
+        }
+        let browser_path = detect_browser(
+            spec.browser_path
+                .as_ref()
+                .and_then(|path| path.to_str())
+                .unwrap_or("auto"),
+        )
+        .map_err(|error| AutomationError::new(FailureClass::Fatal, error.to_string()))?;
+
+        let reusable = {
+            let mut guard = match self.sessions.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let reusable_id = guard
+                .iter()
+                .find(|(_, session)| {
+                    session._process.profile_dir == spec.profile_dir
+                        && session.proxy_endpoint == spec.proxy_endpoint
+                })
+                .map(|(id, _)| id.clone());
+            let reusable = reusable_id.and_then(|id| guard.remove(&id));
+            // 每个 BrowserExecutor 只服务一个槽位。若残留了不兼容的旧会话，
+            // 立即释放，避免同一调试端口再启动第二个 Chrome。
+            let stale: Vec<_> = guard.drain().map(|(_, session)| session).collect();
+            drop(guard);
+            drop(stale);
+            reusable
+        };
+
+        let Some(mut session) = reusable else {
+            return self.open_session(spec).await;
+        };
+
+        if spec.auto_login {
+            login_site(
+                &session.page,
+                &site_base,
+                &spec.account,
+                spec.login_mail_provider.as_deref(),
+            )
+            .await?;
+        }
+        session.site_base = site_base;
+        session.proxy_endpoint = spec.proxy_endpoint.clone();
+        session.download_format = download_format;
+        session.download_dir = None;
+
+        let mut guard = match self.sessions.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.insert(spec.session_id.clone(), session);
+        tracing::info!(
+            session_id = %spec.session_id,
+            profile = %spec.profile_dir.display(),
+            "已复用槽位浏览器进程并切换到新会话账号"
+        );
+        Ok(SessionHandle {
+            session_id: spec.session_id.clone(),
+            browser_path,
+            profile_dir: spec.profile_dir.clone(),
+        })
+    }
+
+    /// 显式关闭本执行线程持有的全部浏览器，用于暂停和切换到注册任务。
+    pub async fn close_all_sessions(&self) {
+        let sessions = {
+            let mut guard = match self.sessions.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard
+                .drain()
+                .map(|(_, session)| session)
+                .collect::<Vec<_>>()
+        };
+        for mut session in sessions {
+            session.page.close_browser();
         }
     }
 
@@ -1835,14 +1999,9 @@ async fn login_attempt(
 
     // 新会话即使遇到已有 Cookie，也必须退出后按 Master 下发的账号重新登录。
     // 直接复用“已登录”状态无法证明当前页面属于本会话账号，会造成跨槽位串号。
-    if first_page_element(page, LOGIN_LINK).is_none()
-        && first_page_element(page, LOGIN_FORM).is_none()
-    {
+    if wait_for_login_page_state(page, &root).await? == LoginPageState::Authenticated {
         let logout = first_page_element(page, LOGOUT_SELECTORS).ok_or_else(|| {
-            AutomationError::new(
-                FailureClass::SiteUnavailable,
-                "页面显示为已登录，但无法找到退出入口核验当前账号，已拒绝复用该登录态",
-            )
+            AutomationError::new(FailureClass::Retryable, "退出入口在点击前消失，请重试")
         })?;
         logout.click().map_err(|err| {
             AutomationError::new(
@@ -1851,13 +2010,13 @@ async fn login_attempt(
             )
         })?;
         tokio::time::sleep(Duration::from_secs(1)).await;
-        page.get(&root).map_err(|err| {
-            AutomationError::new(
-                FailureClass::SiteUnavailable,
-                format!("退出既有账号后重新打开首页失败：{err}"),
-            )
-        })?;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        navigate_page(page, &root).await?;
+        if wait_for_login_page_state(page, &root).await? == LoginPageState::Authenticated {
+            return Err(AutomationError::new(
+                FailureClass::Retryable,
+                "退出既有账号后页面仍显示为已登录",
+            ));
+        }
     }
 
     let deadline = Instant::now() + LOGIN_TIMEOUT;
@@ -2483,6 +2642,26 @@ mod tests {
         assert_eq!(
             PASSWORD_RECOVERY_SUBMIT,
             "form#passwordrecovery_form > button.btn"
+        );
+    }
+
+    #[test]
+    fn absence_of_login_controls_is_unknown_not_authenticated() {
+        assert_eq!(
+            classify_login_page_state(false, false, false),
+            LoginPageState::Unknown
+        );
+        assert_eq!(
+            classify_login_page_state(true, false, false),
+            LoginPageState::LoginAvailable
+        );
+        assert_eq!(
+            classify_login_page_state(false, true, false),
+            LoginPageState::LoginAvailable
+        );
+        assert_eq!(
+            classify_login_page_state(false, false, true),
+            LoginPageState::Authenticated
         );
     }
 

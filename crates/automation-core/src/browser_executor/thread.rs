@@ -42,7 +42,7 @@ impl ThreadBrowserExecutor {
                     while let Some((cmd, reply_tx)) = cmd_rx.recv().await {
                         let res = match cmd {
                             BrowserCommand::OpenSession { spec } => engine
-                                .open_session(&spec)
+                                .open_or_reuse_session(&spec)
                                 .await
                                 .map(BrowserResult::SessionOpened),
                             BrowserCommand::DownloadBook {
@@ -78,6 +78,10 @@ impl ThreadBrowserExecutor {
                             }
                             BrowserCommand::CloseSession { handle } => {
                                 let _ = engine.close_session(&handle).await;
+                                Ok(BrowserResult::Closed)
+                            }
+                            BrowserCommand::CloseAllSessions => {
+                                engine.close_all_sessions().await;
                                 Ok(BrowserResult::Closed)
                             }
                         };

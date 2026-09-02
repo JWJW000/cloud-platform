@@ -39,7 +39,8 @@ pub struct SessionSpec {
     /// 多槽位不得共享该端口；否则浏览器库会连接到其他槽位已经启动的 Chrome，
     /// 造成账号 Cookie、Profile 与代理全部串用。
     pub browser_debug_port: u16,
-    /// 会话专属 Profile 目录 `profiles/session-{会话编号}`。
+    /// 浏览器 Profile 目录。下载任务通常按槽位复用 `profiles/slot-{槽位序号}`；
+    /// 注册任务仍使用 `profiles/session-{会话编号}` 隔离。
     pub profile_dir: PathBuf,
     /// 本机下载暂存目录 `staging/task-{任务编号}` 的父目录。
     pub staging_root: PathBuf,
