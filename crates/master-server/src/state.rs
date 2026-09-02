@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use platform_proto::MasterMessage;
 use sqlx::PgPool;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use uuid::Uuid;
 
 use crate::config::{MasterConfig, SchedulerConfig};
@@ -250,6 +250,8 @@ pub struct AppState {
     pub search: Option<OpenSearchClient>,
     /// 书目统计内存快照缓存（(获取时间戳秒, CatalogStats)）
     pub catalog_stats_cache: Arc<Mutex<Option<(u64, crate::store::catalog_v1::CatalogStats)>>>,
+    /// 书目统计刷新单飞锁，避免启动预热、定时任务和 HTTP 请求并发执行全表统计。
+    pub catalog_stats_refresh_lock: Arc<AsyncMutex<()>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -297,6 +299,7 @@ impl AppState {
             links: NodeLinks::new(),
             search,
             catalog_stats_cache: Arc::new(Mutex::new(None)),
+            catalog_stats_refresh_lock: Arc::new(AsyncMutex::new(())),
         })
     }
 

@@ -706,6 +706,30 @@ async fn handle_heartbeat(
                         .await;
 
                         if reg_res.as_ref().map(|r| r.rows_affected()).unwrap_or(0) == 0 {
+                            // Worker 会把 SQLite 中尚未收到 ACK 的结果继续带在心跳里。
+                            // 此时任务可能已经成功/失败落库，只是 ACK 与下一次心跳在网络上
+                            // 交错。终态执行不需要续租，更不能被误判成失效租约后反向取消。
+                            let already_finished: bool = sqlx::query_scalar(
+                                "SELECT EXISTS ( \
+                                     SELECT 1 FROM task_executions \
+                                     WHERE id = $1 AND finished_at IS NOT NULL \
+                                 ) OR EXISTS ( \
+                                     SELECT 1 FROM acquisition_executions \
+                                     WHERE id = $1 AND finished_at IS NOT NULL \
+                                 )",
+                            )
+                            .bind(exec_id)
+                            .fetch_one(&state.pool)
+                            .await
+                            .unwrap_or(false);
+                            if already_finished {
+                                tracing::debug!(
+                                    task_id = %task_id,
+                                    execution_id = %exec_id,
+                                    "忽略等待结果 ACK 的终态执行心跳"
+                                );
+                                continue;
+                            }
                             tracing::warn!(
                                 task_id = %task_id,
                                 execution_id = %exec_id,

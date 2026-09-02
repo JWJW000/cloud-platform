@@ -227,6 +227,8 @@ pub async fn list_server_manifests_handler(
 }
 
 /// GET /api/catalog/stats
+const CATALOG_STATS_CACHE_TTL_SECS: u64 = 300;
+
 pub async fn get_stats(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
@@ -236,11 +238,12 @@ pub async fn get_stats(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // 1. 命中 120 秒内存缓存则直接 1ms 返回
+    // 1. 命中 5 分钟内存缓存则直接返回。百万级总库的精确全表统计成本较高，
+    // 页面指标允许分钟级延迟，不能为了每次打开页面长期占满 PostgreSQL。
     {
         if let Ok(guard) = state.catalog_stats_cache.lock() {
             if let Some((ts, cached)) = guard.as_ref() {
-                if now.saturating_sub(*ts) < 120 {
+                if now.saturating_sub(*ts) < CATALOG_STATS_CACHE_TTL_SECS {
                     return Ok(Json(cached.clone()));
                 }
             }
@@ -257,7 +260,21 @@ pub async fn get_stats(
     if let Some(stale) = has_stale {
         let pool = state.pool.clone();
         let cache = state.catalog_stats_cache.clone();
+        let refresh_lock = state.catalog_stats_refresh_lock.clone();
         tokio::spawn(async move {
+            let _refresh_guard = refresh_lock.lock().await;
+            let refresh_now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if cache
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|(ts, _)| *ts))
+                .is_some_and(|ts| refresh_now.saturating_sub(ts) < CATALOG_STATS_CACHE_TTL_SECS)
+            {
+                return;
+            }
             if let Ok(fresh) = get_catalog_stats(&pool).await {
                 let ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -271,7 +288,14 @@ pub async fn get_stats(
         return Ok(Json(stale));
     }
 
-    // 3. 首次完全无缓存时同步计算一次
+    // 3. 首次完全无缓存时只允许一个计算者；若启动预热已经在执行，请求等待同一份结果，
+    // 不再并发发起第二条 30 秒全表统计。
+    let _refresh_guard = state.catalog_stats_refresh_lock.lock().await;
+    if let Ok(guard) = state.catalog_stats_cache.lock() {
+        if let Some((_, cached)) = guard.as_ref() {
+            return Ok(Json(cached.clone()));
+        }
+    }
     let stats = get_catalog_stats(&state.pool).await?;
 
     if let Ok(mut guard) = state.catalog_stats_cache.lock() {

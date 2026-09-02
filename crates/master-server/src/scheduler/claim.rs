@@ -168,10 +168,15 @@ pub async fn claim_next_task(
             retry_after_secs: 20,
         }));
     }
-    // 总库是唯一持续任务池。按需物化一个目标到现有 Worker 状态机，避免一次性
-    // 为数万条目标复制任务，同时保持旧 Worker 协议与断线恢复逻辑不变。
-    super::catalog_bridge::materialize_next_target(&mut tx).await?;
-    let Some(candidate) = lock_candidate(&mut tx, proxy_id).await? else {
+    // 先领取已经物化的镜像任务。旧实现每领取一本书前都会先扫描
+    // acquisition_targets 并对 book_tasks 做反连接；当数万条目标都已经物化时，
+    // 这条必然返回空的查询仍会消耗数秒并打满 PostgreSQL。只有现有队列确实为空
+    // 时，才按需物化一个总库目标并重试领取。
+    let mut candidate = lock_candidate(&mut tx, proxy_id).await?;
+    if candidate.is_none() && super::catalog_bridge::materialize_next_target(&mut tx).await? {
+        candidate = lock_candidate(&mut tx, proxy_id).await?;
+    }
+    let Some(candidate) = candidate else {
         tx.rollback().await?;
         return Ok(ClaimOutcome::Unavailable(Unavailable {
             reason: "没有待处理的图书任务".to_string(),

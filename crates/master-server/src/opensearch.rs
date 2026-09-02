@@ -3,6 +3,7 @@
 //! PostgreSQL 始终是事实源；本模块只维护可删除、可全量重建的搜索副本。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +41,7 @@ pub struct OpenSearchPage {
 pub struct OpenSearchClient {
     config: Arc<OpenSearchConfig>,
     client: reqwest::Client,
+    mapping_ready: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for OpenSearchClient {
@@ -63,6 +65,7 @@ impl OpenSearchClient {
         Ok(Self {
             config: Arc::new(config),
             client,
+            mapping_ready: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -84,8 +87,11 @@ impl OpenSearchClient {
         }
     }
 
-    /// 创建索引及字段映射；索引已存在时不修改现有映射。
+    /// 创建索引及字段映射；索引已存在时幂等补充当前版本新增字段。
     pub async fn ensure_index(&self) -> Result<()> {
+        if self.mapping_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let index_url = format!(
             "{}/{}",
             self.config.url.trim_end_matches('/'),
@@ -98,6 +104,11 @@ impl OpenSearchClient {
             .context("检查 OpenSearch 索引失败")?
             .status();
         if status.is_success() {
+            // 索引长期存在时，应用升级新增的字段不会被 ensure_index 自动带入。
+            // 本索引使用 dynamic=strict，缺一个字段就会让整批 Bulk 永久失败。
+            // OpenSearch 的 PUT _mapping 对已有同类型字段幂等，并可安全追加新字段。
+            self.ensure_mapping().await?;
+            self.mapping_ready.store(true, Ordering::Release);
             return Ok(());
         }
         if status != StatusCode::NOT_FOUND {
@@ -111,6 +122,7 @@ impl OpenSearchClient {
             .await
             .context("创建 OpenSearch 索引失败")?;
         if response.status().is_success() {
+            self.mapping_ready.store(true, Ordering::Release);
             Ok(())
         } else {
             let status = response.status();
@@ -118,10 +130,31 @@ impl OpenSearchClient {
             if status == StatusCode::BAD_REQUEST
                 && body.contains("resource_already_exists_exception")
             {
+                self.ensure_mapping().await?;
+                self.mapping_ready.store(true, Ordering::Release);
                 Ok(())
             } else {
                 Err(anyhow!("创建 OpenSearch 索引失败：HTTP {status}"))
             }
+        }
+    }
+
+    async fn ensure_mapping(&self) -> Result<()> {
+        let response = self
+            .request(Method::PUT, self.endpoint("_mapping"))
+            .json(&json!({"properties": index_properties()}))
+            .send()
+            .await
+            .context("更新 OpenSearch 索引映射失败")?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let summary: String = body.chars().take(500).collect();
+            Err(anyhow!(
+                "更新 OpenSearch 索引映射失败：HTTP {status}，{summary}"
+            ))
         }
     }
 
@@ -139,6 +172,7 @@ impl OpenSearchClient {
                 response.status()
             ));
         }
+        self.mapping_ready.store(false, Ordering::Release);
         self.ensure_index().await
     }
 
@@ -292,9 +326,9 @@ impl OpenSearchClient {
         })
     }
 
-    async fn bulk_documents(&self, documents: &[SearchDocument]) -> Result<()> {
+    async fn bulk_documents(&self, documents: &[SearchDocument]) -> Result<BulkWriteResult> {
         if documents.is_empty() {
-            return Ok(());
+            return Ok(BulkWriteResult::default());
         }
         let mut body = String::with_capacity(documents.len() * 1_024);
         for document in documents {
@@ -320,10 +354,45 @@ impl OpenSearchClient {
             return Err(anyhow!("OpenSearch Bulk 返回 HTTP {}", response.status()));
         }
         let result: BulkResponse = response.json().await?;
-        if result.errors {
-            return Err(anyhow!("OpenSearch Bulk 中存在失败项目，事件保留待重试"));
+        if !result.errors {
+            return Ok(BulkWriteResult {
+                succeeded: documents.iter().map(|document| document.id).collect(),
+                failed: HashSet::new(),
+            });
         }
-        Ok(())
+
+        let expected: HashSet<Uuid> = documents.iter().map(|document| document.id).collect();
+        let mut succeeded = HashSet::new();
+        let mut failure_summaries = Vec::new();
+        for item in result.items {
+            let Some(operation) = item.into_values().next() else {
+                continue;
+            };
+            let Ok(id) = Uuid::parse_str(&operation.id) else {
+                continue;
+            };
+            if operation.status < 300 && operation.error.is_none() {
+                succeeded.insert(id);
+            } else if failure_summaries.len() < 3 {
+                let reason = operation
+                    .error
+                    .as_ref()
+                    .and_then(|error| error.get("reason"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenSearch 未返回失败原因");
+                failure_summaries.push(format!("{id}: HTTP {} {reason}", operation.status));
+            }
+        }
+        let failed: HashSet<Uuid> = expected.difference(&succeeded).copied().collect();
+        if failed.is_empty() {
+            return Err(anyhow!("OpenSearch Bulk 报告失败但未返回可识别的失败项目"));
+        }
+        tracing::warn!(
+            failed = failed.len(),
+            samples = %failure_summaries.join("；"),
+            "OpenSearch Bulk 部分项目失败，成功项目将继续确认"
+        );
+        Ok(BulkWriteResult { succeeded, failed })
     }
 
     async fn delete_documents(&self, ids: &[Uuid]) -> Result<()> {
@@ -383,17 +452,31 @@ pub async fn process_outbox_events(
         .filter(|id| !existing.contains(id))
         .collect();
 
-    client.bulk_documents(&documents).await?;
+    let write_result = client.bulk_documents(&documents).await?;
     client.delete_documents(&deleted).await?;
 
-    let ids: Vec<i64> = events.iter().map(|event| event.id).collect();
-    sqlx::query(
-        "UPDATE catalog_outbox SET status = '已同步', synced_at = now() WHERE id = ANY($1)",
+    let mut acknowledged_aggregates = write_result.succeeded;
+    acknowledged_aggregates.extend(deleted);
+    if acknowledged_aggregates.is_empty() {
+        return Err(anyhow!("OpenSearch Bulk 中所有项目均失败，事件保留待重试"));
+    }
+
+    // 只确认本批次里对应成功文档的事件；失败项目继续留在队列重试，但不再阻塞
+    // 同批其他版本。重复 aggregate 在批内自然合并为一次文档写入。
+    let ids: Vec<i64> = events
+        .iter()
+        .filter(|event| acknowledged_aggregates.contains(&event.aggregate_id))
+        .map(|event| event.id)
+        .collect();
+    let acknowledged = sqlx::query(
+        "UPDATE catalog_outbox SET status = '已同步', synced_at = now() \
+         WHERE status = '待同步' AND id = ANY($1)",
     )
     .bind(&ids)
     .execute(pool)
-    .await?;
-    Ok(events.len())
+    .await?
+    .rows_affected() as usize;
+    Ok(acknowledged)
 }
 
 /// 启动常驻 Outbox 同步器。OpenSearch 故障不会拖垮主服务，事件会保留并退避重试。
@@ -407,7 +490,6 @@ pub fn spawn_outbox_sync(pool: PgPool, client: OpenSearchClient, config: OpenSea
                         failures = 0;
                         if processed > 0 {
                             tracing::info!(processed, "OpenSearch 书目索引增量同步完成");
-                            continue;
                         }
                     }
                     Err(error) => {
@@ -445,7 +527,13 @@ pub async fn reindex_catalog(
             break;
         }
         cursor = rows.last().map(|row| row.id);
-        client.bulk_documents(&rows).await?;
+        let result = client.bulk_documents(&rows).await?;
+        if !result.failed.is_empty() {
+            return Err(anyhow!(
+                "OpenSearch 全量索引批次有 {} 条写入失败",
+                result.failed.len()
+            ));
+        }
         total += rows.len() as u64;
         tracing::info!(total, "OpenSearch 全量索引构建中");
     }
@@ -562,32 +650,36 @@ fn index_mapping() -> Value {
         "settings": {"number_of_shards": 1, "number_of_replicas": 0},
         "mappings": {
             "dynamic": "strict",
-            "properties": {
-                "id": {"type": "keyword"},
-                "work_id": {"type": "keyword"},
-                "work_type": {"type": "keyword"},
-                "title": {"type": "wildcard"},
-                "authors": {"type": "wildcard"},
-                "publisher": {"type": "wildcard"},
-                "publisher_exact": {"type": "keyword", "ignore_above": 256},
-                "publisher_id": {"type": "keyword"},
-                "publish_year": {"type": "integer"},
-                "language": {"type": "keyword"},
-                "identifiers": {"type": "wildcard"},
-                "identifiers_exact": {"type": "keyword", "ignore_above": 512},
-                "source_formats": {"type": "keyword"},
-                "holding_formats": {"type": "keyword"},
-                "acquisition_status": {"type": "keyword"},
-                "worker_name": {"type": "keyword", "ignore_above": 512},
-                "acquisition_stage": {"type": "keyword"},
-                "attempts": {"type": "integer"},
-                "max_attempts": {"type": "integer"},
-                "next_attempt_at": {"type": "date"},
-                "last_error": {"type": "keyword", "index": false, "doc_values": false},
-                "resolution_status": {"type": "keyword"},
-                "updated_at": {"type": "date"}
-            }
+            "properties": index_properties()
         }
+    })
+}
+
+fn index_properties() -> Value {
+    json!({
+        "id": {"type": "keyword"},
+        "work_id": {"type": "keyword"},
+        "work_type": {"type": "keyword"},
+        "title": {"type": "wildcard"},
+        "authors": {"type": "wildcard"},
+        "publisher": {"type": "wildcard"},
+        "publisher_exact": {"type": "keyword", "ignore_above": 256},
+        "publisher_id": {"type": "keyword"},
+        "publish_year": {"type": "integer"},
+        "language": {"type": "keyword"},
+        "identifiers": {"type": "wildcard"},
+        "identifiers_exact": {"type": "keyword", "ignore_above": 512},
+        "source_formats": {"type": "keyword"},
+        "holding_formats": {"type": "keyword"},
+        "acquisition_status": {"type": "keyword"},
+        "worker_name": {"type": "keyword", "ignore_above": 512},
+        "acquisition_stage": {"type": "keyword"},
+        "attempts": {"type": "integer"},
+        "max_attempts": {"type": "integer"},
+        "next_attempt_at": {"type": "date"},
+        "last_error": {"type": "keyword", "index": false, "doc_values": false},
+        "resolution_status": {"type": "keyword"},
+        "updated_at": {"type": "date"}
     })
 }
 
@@ -643,6 +735,23 @@ struct AggregationBucket {
 struct BulkResponse {
     #[serde(default)]
     errors: bool,
+    #[serde(default)]
+    items: Vec<HashMap<String, BulkItemResult>>,
+}
+
+#[derive(Deserialize)]
+struct BulkItemResult {
+    #[serde(rename = "_id")]
+    id: String,
+    #[serde(default)]
+    status: u16,
+    error: Option<Value>,
+}
+
+#[derive(Default)]
+struct BulkWriteResult {
+    succeeded: HashSet<Uuid>,
+    failed: HashSet<Uuid>,
 }
 
 fn buckets(aggregations: Option<&HashMap<String, Aggregation>>, name: &str) -> Vec<(String, i64)> {
@@ -661,6 +770,33 @@ fn buckets(aggregations: Option<&HashMap<String, Aggregation>>, name: &str) -> V
 mod tests {
     use super::*;
 
+    fn sample_document(id: Uuid) -> SearchDocument {
+        SearchDocument {
+            id,
+            work_id: Uuid::new_v4(),
+            work_type: "图书".to_string(),
+            title: "测试图书".to_string(),
+            authors: vec!["测试作者".to_string()],
+            publisher: Some("测试出版社".to_string()),
+            publisher_id: None,
+            publish_year: Some(2026),
+            language: "zh".to_string(),
+            identifiers: Vec::new(),
+            identifiers_exact: Vec::new(),
+            source_formats: vec!["pdf".to_string()],
+            holding_formats: Vec::new(),
+            acquisition_status: "待下载".to_string(),
+            worker_name: None,
+            acquisition_stage: String::new(),
+            attempts: 0,
+            max_attempts: 5,
+            next_attempt_at: None,
+            last_error: None,
+            resolution_status: "已确认".to_string(),
+            updated_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn wildcard_metacharacters_are_escaped() {
         assert_eq!(escape_wildcard("a*b?c\\d"), "a\\*b\\?c\\\\d");
@@ -674,5 +810,54 @@ mod tests {
             mapping["mappings"]["properties"]["title"]["type"],
             "wildcard"
         );
+    }
+
+    #[tokio::test]
+    async fn partial_bulk_failure_keeps_only_the_rejected_document_pending() {
+        use axum::body::Bytes;
+        use axum::routing::post;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/catalog-editions-v1/_bulk",
+            post(|body: Bytes| async move {
+                let ids: Vec<String> = std::str::from_utf8(&body)
+                    .unwrap()
+                    .lines()
+                    .step_by(2)
+                    .map(|line| {
+                        serde_json::from_str::<Value>(line).unwrap()["index"]["_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect();
+                axum::Json(json!({
+                    "errors": true,
+                    "items": [
+                        {"index": {"_id": ids[0], "status": 201}},
+                        {"index": {"_id": ids[1], "status": 400, "error": {"reason": "字段不兼容"}}}
+                    ]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = OpenSearchClient::new(OpenSearchConfig {
+            enabled: true,
+            url: format!("http://{address}"),
+            ..Default::default()
+        })
+        .unwrap();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let result = client
+            .bulk_documents(&[sample_document(first), sample_document(second)])
+            .await
+            .unwrap();
+        assert_eq!(result.succeeded, HashSet::from([first]));
+        assert_eq!(result.failed, HashSet::from([second]));
     }
 }

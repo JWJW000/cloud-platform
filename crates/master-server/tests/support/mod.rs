@@ -144,6 +144,7 @@ impl TestDb {
             links: master_server::state::NodeLinks::new(),
             search: None,
             catalog_stats_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            catalog_stats_refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
