@@ -838,6 +838,24 @@ async fn handle_session_ready(
     store::session::activate_session(&state.pool, session_id).await?;
     let session = store::session::get_session(&state.pool, session_id).await?;
 
+    // SessionReady 只会在 Worker 完成代理启动、浏览器导航和站点登录后上报。
+    // 因此这是把恢复账号重新启用的最早安全时点；分配阶段绝不能提前恢复，
+    // 否则登录/找回失败释放租约后，同一坏账号会被连续分配。
+    if session.task_type == "图书下载" {
+        if let Some(account_id) = session.account_id {
+            sqlx::query(
+                "UPDATE accounts SET status = $2, last_error = NULL, \
+                     login_recovery_attempted_at = NULL, updated_at = now() \
+                 WHERE id = $1 AND status = $3 AND login_recovery_attempted_at IS NOT NULL",
+            )
+            .bind(account_id)
+            .bind(platform_domain::AccountStatus::Registered.as_str())
+            .bind(platform_domain::AccountStatus::LoginFailed.as_str())
+            .execute(&state.pool)
+            .await?;
+        }
+    }
+
     if !ready.exit_ip.trim().is_empty() {
         if let Some(proxy_id) = session.proxy_id {
             let _ =

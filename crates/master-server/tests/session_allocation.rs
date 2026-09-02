@@ -210,7 +210,7 @@ async fn 会话独占锁定账号代理与槽位() {
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(recovered_state.0, AccountStatus::Registered.as_str());
+    assert_eq!(recovered_state.0, AccountStatus::LoginFailed.as_str());
     assert!(recovered_state.1, "恢复账号必须记录已尝试，防止失败后循环");
 
     // 8. 恢复仍失败后标记并切换，不得再分配同一账号。
@@ -238,6 +238,35 @@ async fn 会话独占锁定账号代理与槽位() {
         no_repeat,
         master_server::scheduler::AllocationOutcome::Unavailable(_)
     ));
+
+    // 9. 管理员重新允许恢复后，只有 Worker 完成登录并上报 SessionReady，
+    // 才能把账号恢复为“已注册”。
+    sqlx::query(
+        "UPDATE accounts SET status = '登录失败', login_recovery_attempted_at = NULL WHERE id = $1",
+    )
+    .bind(account.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let recovery_success = allocate_session(&state, node.id, TaskType::BookDownload, Some(0))
+        .await
+        .unwrap();
+    let recovery_success_grant = match recovery_success {
+        master_server::scheduler::AllocationOutcome::Granted(grant) => grant,
+        other => panic!("登录恢复成功测试应获得会话，实际得到 {other:?}"),
+    };
+    master_server::scheduler::allocate::activate(&state, recovery_success_grant.session_id)
+        .await
+        .unwrap();
+    let activated_state: (String, bool) = sqlx::query_as(
+        "SELECT status, login_recovery_attempted_at IS NULL FROM accounts WHERE id = $1",
+    )
+    .bind(account.id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(activated_state.0, AccountStatus::Registered.as_str());
+    assert!(activated_state.1);
 
     db.teardown().await;
 }

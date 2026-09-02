@@ -347,14 +347,15 @@ pub async fn allocate_session(
 
     if let Some(row) = &account {
         // 历史“登录失败”账号允许进入一次新的邮箱恢复流程。
-        // 先在同一分配事务内记录尝试，可以防止多槽位重复抢到它。
+        // 这里只记录恢复尝试，不能提前改回“已注册”：Worker 完成登录并上报
+        // SessionReady 之前，账号都必须保持隔离，避免暂时性页面错误释放租约后
+        // 又被下一槽位立即领取。
         if row.status == AccountStatus::LoginFailed.as_str() {
             sqlx::query(
-                "UPDATE accounts SET status = $2, last_error = NULL, \
-                     login_recovery_attempted_at = now(), updated_at = now() WHERE id = $1",
+                "UPDATE accounts SET login_recovery_attempted_at = now(), updated_at = now() \
+                     WHERE id = $1",
             )
             .bind(row.id)
-            .bind(AccountStatus::Registered.as_str())
             .execute(&mut *tx)
             .await?;
         }
@@ -521,7 +522,7 @@ async fn claim_account(
                 "SELECT id, email, nickname, password_cipher, status, daily_used, daily_limit FROM accounts \
                  WHERE status IN ($1, $2) AND lease_session_id IS NULL AND daily_used < daily_limit \
                    AND (status = $1 OR login_recovery_attempted_at IS NULL) \
-                 ORDER BY CASE WHEN status = $2 THEN 0 ELSE 1 END, daily_used, created_at \
+                 ORDER BY CASE WHEN status = $2 THEN 0 ELSE 1 END, daily_used, updated_at, created_at \
                  FOR UPDATE SKIP LOCKED LIMIT 1",
             )
             .bind(AccountStatus::Registered.as_str())
@@ -533,7 +534,7 @@ async fn claim_account(
             sqlx::query_as::<_, ClaimedAccount>(
                 "SELECT id, email, nickname, password_cipher, status, daily_used, daily_limit FROM accounts \
                  WHERE status = $1 AND lease_session_id IS NULL AND daily_used < daily_limit \
-                 ORDER BY daily_used, created_at \
+                 ORDER BY daily_used, updated_at, created_at \
                  FOR UPDATE SKIP LOCKED LIMIT 1",
             )
             .bind(AccountStatus::Registered.as_str())
@@ -634,6 +635,18 @@ async fn lease_proxy(
 pub async fn activate(state: &AppState, session_id: Uuid) -> AppResult<()> {
     let session = store::session::get_session(&state.pool, session_id).await?;
     store::session::activate_session(&state.pool, session_id).await?;
+    if let Some(account_id) = session.account_id {
+        sqlx::query(
+            "UPDATE accounts SET status = $2, last_error = NULL, \
+                 login_recovery_attempted_at = NULL, updated_at = now() \
+             WHERE id = $1 AND status = $3 AND login_recovery_attempted_at IS NOT NULL",
+        )
+        .bind(account_id)
+        .bind(AccountStatus::Registered.as_str())
+        .bind(AccountStatus::LoginFailed.as_str())
+        .execute(&state.pool)
+        .await?;
+    }
     store::node::set_slot(
         &state.pool,
         session.node_id,

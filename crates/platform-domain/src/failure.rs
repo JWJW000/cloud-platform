@@ -181,14 +181,10 @@ pub fn classify_failure(reason: &str, quota_indicator: Option<(u32, u32)>) -> Fa
     ]) {
         return FailureClass::BookNotFound;
     }
-    // 这两类错误只能说明站点页面状态未能确认，不能证明账号密码错误。
-    // 旧版 Worker 会给它们加上 `authentication failed:` 前缀，因此必须在
-    // 通用认证标记之前截获，避免 Master 继续停用有效账号。
-    if hits(&[
-        "页面显示为已登录，但无法找到退出入口",
-        "login form is still visible after submit",
-        "登录提交后未确认成功，登录表单仍可见",
-    ]) {
+    // 找不到退出入口只能说明页面结构或加载状态异常，不能证明账号密码错误。
+    // 登录提交后表单持续可见则由新版 Worker 加上 authentication failed 标记，
+    // 必须继续落入下面的认证失败分支，避免同一密码被反复提交。
+    if hits(&["页面显示为已登录，但无法找到退出入口"]) {
         return FailureClass::Retryable;
     }
     if hits(&[
@@ -279,20 +275,25 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_login_page_state_never_disables_account() {
-        for reason in [
-            "authentication failed: login form is still visible after submit",
-            "会话异常退出：authentication failed: 页面显示为已登录，但无法找到退出入口核验当前账号，已拒绝复用该登录态",
-            "登录提交后未确认成功，登录表单仍可见",
-        ] {
-            let attribution = classify_failure(reason, None).attribution();
-            assert!(attribution.account_status.is_none(), "{reason}");
-            assert_ne!(
-                classify_failure(reason, None),
-                FailureClass::AuthFailed,
-                "{reason}"
-            );
-        }
+    fn ambiguous_logged_in_page_state_never_disables_account() {
+        let reason = "会话异常退出：authentication failed: 页面显示为已登录，但无法找到退出入口核验当前账号，已拒绝复用该登录态";
+        let attribution = classify_failure(reason, None).attribution();
+        assert!(attribution.account_status.is_none(), "{reason}");
+        assert_ne!(
+            classify_failure(reason, None),
+            FailureClass::AuthFailed,
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn rejected_login_form_marks_account_when_worker_adds_auth_marker() {
+        let reason = "authentication failed: 登录提交后未确认成功，登录表单仍可见";
+        assert_eq!(classify_failure(reason, None), FailureClass::AuthFailed);
+        assert_eq!(
+            classify_failure(reason, None).attribution().account_status,
+            Some(AccountStatus::LoginFailed)
+        );
     }
 
     #[test]

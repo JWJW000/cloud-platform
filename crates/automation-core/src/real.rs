@@ -1591,14 +1591,17 @@ fn should_retry_navigation(err: &AutomationError) -> bool {
     ) || site::navigation_error_is_site_unavailable(&err.reason)
 }
 
-/// 与 Tauri `navigate_page` 对齐：网络/`net::err_`/隧道失败重试 3 次，窗口保持打开。
+/// 与 Tauri `navigate_page` 对齐：网络/`net::err_`/隧道失败重试 5 次，窗口保持打开。
 async fn navigate_page(page: &ChromiumPage, url: &str) -> Result<(), AutomationError> {
-    const MAX_ATTEMPTS: usize = 3;
+    // Webshare 的本地 GOST listener 已就绪后，上游首次 CONNECT 仍可能短暂返回
+    // ERR_TUNNEL_CONNECTION_FAILED；在同一浏览器内多刷新几次通常即可恢复，
+    // 不应立刻关闭窗口并重新分配账号与代理。
+    const MAX_ATTEMPTS: usize = 5;
     for attempt in 1..=MAX_ATTEMPTS {
         if let Err(err) = page.get(url) {
             let mapped = navigation_failure(url, &err.to_string());
             if should_retry_navigation(&mapped) && attempt < MAX_ATTEMPTS {
-                tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
+                tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
                 continue;
             }
             return Err(mapped);
@@ -1627,7 +1630,7 @@ async fn navigate_page(page: &ChromiumPage, url: &str) -> Result<(), AutomationE
                 format!("站点返回 Connection Problem 页面: {url}"),
             );
             if attempt < MAX_ATTEMPTS {
-                tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
+                tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
                 continue;
             }
             return Err(err);
@@ -1635,7 +1638,7 @@ async fn navigate_page(page: &ChromiumPage, url: &str) -> Result<(), AutomationE
         if let Some(reason) = site_unavailable_reason(page) {
             let err = unavailable_page_error(reason);
             if should_retry_navigation(&err) && attempt < MAX_ATTEMPTS {
-                tokio::time::sleep(Duration::from_secs(2 + attempt as u64 * 2)).await;
+                tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
                 continue;
             }
             return Err(err);
@@ -1918,7 +1921,10 @@ async fn login_attempt(
         }
         if Instant::now() >= result_deadline {
             return Err(AutomationError::new(
-                FailureClass::Retryable,
+                // 提交凭据后登录表单持续可见，说明本次登录没有被接受。
+                // 按认证失败进入一次官方邮箱恢复流程；恢复失败后 Master 会隔离
+                // 该账号，而不是继续用同一密码反复提交。
+                FailureClass::AuthFailed,
                 "登录提交后未确认成功，登录表单仍可见",
             ));
         }
