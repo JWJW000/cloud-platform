@@ -925,6 +925,63 @@ export interface ImportRun {
   updated_at: string;
 }
 
+export type ImportRunOutcome =
+  | "downloaded"
+  | "already_owned"
+  | "pending"
+  | "running"
+  | "retryable"
+  | "site_not_found"
+  | "failed"
+  | "needs_review"
+  | "quarantined";
+
+export interface ImportRunOutcomeCounts {
+  total: number;
+  downloaded: number;
+  already_owned: number;
+  pending: number;
+  running: number;
+  retryable: number;
+  site_not_found: number;
+  failed: number;
+  needs_review: number;
+  quarantined: number;
+}
+
+export interface ImportRunItem {
+  item_id: string;
+  row_kind: "record" | "quarantine";
+  sheet_name: string;
+  row_number: number;
+  title: string;
+  author: string | null;
+  publisher: string | null;
+  isbn: string | null;
+  edition_id: string | null;
+  target_id: string | null;
+  outcome: ImportRunOutcome;
+  acquisition_status: string | null;
+  is_downloaded: boolean;
+  retryable: boolean;
+  failure_reason: string | null;
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string | null;
+  execution_result: string | null;
+  execution_stage: string | null;
+  error_code: string | null;
+  worker_name: string | null;
+  nas_object_key: string | null;
+  updated_at: string;
+}
+
+export interface ImportRunItemsPage {
+  summary: ImportRunOutcomeCounts | null;
+  items: ImportRunItem[];
+  next_cursor: string | null;
+}
+
 export interface QuarantinedRecord {
   id: string;
   import_run_id: string | null;

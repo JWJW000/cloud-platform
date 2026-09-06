@@ -1,7 +1,11 @@
 //! 图书馆总库与索引 REST API 接口（第 16 节）。
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::Response;
 use axum::Json;
+use rust_xlsxwriter::{Color, Format, FormatAlign, Workbook};
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::{Component, Path as FsPath, PathBuf};
@@ -26,9 +30,10 @@ use crate::catalog::storage::{
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::store::catalog_v1::{
-    get_catalog_stats, get_import_run, get_or_create_source, list_import_runs,
+    get_catalog_stats, get_import_run, get_import_run_outcome_counts, get_or_create_source,
+    list_import_run_items, list_import_run_items_export_chunk, list_import_runs,
     list_quarantined_records, list_sources, CatalogSourceRow, CatalogStats, EditionDetail,
-    ImportRunRow, QuarantinedRecordRow,
+    ImportRunItemsPage, ImportRunRow, QuarantinedRecordRow,
 };
 
 /// 创建数据源请求。
@@ -79,6 +84,36 @@ pub struct MergeImpactItem {
 pub struct MergePreviewResponse {
     pub source: MergeImpactItem,
     pub target: MergeImpactItem,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportRunItemsQuery {
+    pub outcome: Option<String>,
+    pub query: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+    pub include_summary: Option<bool>,
+}
+
+const IMPORT_OUTCOMES: &[&str] = &[
+    "downloaded",
+    "already_owned",
+    "pending",
+    "running",
+    "retryable",
+    "site_not_found",
+    "failed",
+    "needs_review",
+    "quarantined",
+];
+
+fn validate_import_outcome(outcome: Option<&str>) -> AppResult<()> {
+    if let Some(value) = outcome.filter(|value| !value.is_empty()) {
+        if !IMPORT_OUTCOMES.contains(&value) {
+            return Err(AppError::bad("未知的导入明细结果分类"));
+        }
+    }
+    Ok(())
 }
 
 async fn merge_impact(state: &AppState, work_id: Uuid) -> AppResult<MergeImpactItem> {
@@ -400,6 +435,234 @@ pub async fn get_import_run_handler(
 ) -> AppResult<Json<ImportRunRow>> {
     let run = get_import_run(&state.pool, id).await?;
     Ok(Json(run))
+}
+
+/// GET /api/catalog/imports/runs/:id/items
+pub async fn list_import_run_items_handler(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ImportRunItemsQuery>,
+) -> AppResult<Json<ImportRunItemsPage>> {
+    validate_import_outcome(params.outcome.as_deref())?;
+    let page = list_import_run_items(
+        &state.pool,
+        id,
+        params.outcome.as_deref(),
+        params.query.as_deref(),
+        params.cursor.as_deref(),
+        params.limit.unwrap_or(50),
+        params.include_summary.unwrap_or(true),
+    )
+    .await?;
+    Ok(Json(page))
+}
+
+fn import_outcome_label(value: &str) -> &str {
+    match value {
+        "downloaded" => "本批下载成功",
+        "already_owned" => "总库已有，无需下载",
+        "pending" => "等待下载",
+        "running" => "正在下载",
+        "retryable" => "下载失败，可重试",
+        "site_not_found" => "站点未收录",
+        "needs_review" => "需人工确认",
+        "quarantined" => "导入隔离",
+        _ => "下载失败",
+    }
+}
+
+/// GET /api/catalog/imports/runs/:id/export.xlsx
+pub async fn export_import_run_items_handler(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ImportRunItemsQuery>,
+) -> AppResult<Response> {
+    validate_import_outcome(params.outcome.as_deref())?;
+    let run = get_import_run(&state.pool, id).await?;
+    let summary = get_import_run_outcome_counts(&state.pool, id).await?;
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_font_color(Color::White)
+        .set_background_color(Color::RGB(0x0F172A))
+        .set_align(FormatAlign::Center);
+    let mut workbook = Workbook::new();
+    {
+        let sheet = workbook.add_worksheet();
+        sheet
+            .set_name("汇总")
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        sheet
+            .write_row_with_format(0, 0, ["分类", "数量"], &header_format)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let summary_rows = [
+            ("明细总数", summary.total),
+            ("本批下载成功", summary.downloaded),
+            ("总库已有，无需下载", summary.already_owned),
+            ("等待下载", summary.pending),
+            ("正在下载", summary.running),
+            ("下载失败，可重试", summary.retryable),
+            ("站点未收录", summary.site_not_found),
+            ("下载失败", summary.failed),
+            ("需人工确认", summary.needs_review),
+            ("导入隔离", summary.quarantined),
+        ];
+        for (index, (label, count)) in summary_rows.iter().enumerate() {
+            let row = (index + 1) as u32;
+            sheet
+                .write_string(row, 0, *label)
+                .and_then(|sheet| sheet.write_number(row, 1, *count as f64))
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        sheet
+            .set_column_width(0, 24)
+            .and_then(|sheet| sheet.set_column_width(1, 14))
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+
+    const HEADERS: [&str; 23] = [
+        "导入行号",
+        "工作表",
+        "书名",
+        "作者",
+        "出版社",
+        "ISBN",
+        "结果分类",
+        "当前下载状态",
+        "是否已下载",
+        "是否可重试",
+        "未成功原因",
+        "尝试次数",
+        "最大尝试次数",
+        "下次重试时间",
+        "最近执行结果",
+        "最近执行阶段",
+        "错误代码",
+        "Worker",
+        "NAS 对象路径",
+        "版本 ID",
+        "下载目标 ID",
+        "记录类型",
+        "最后更新时间",
+    ];
+    const MAX_DATA_ROWS_PER_SHEET: u32 = 1_000_000;
+    let mut cursor = String::new();
+    let mut sheet_number = 1_u32;
+    let mut finished = false;
+    while !finished {
+        let sheet_name = if sheet_number == 1 {
+            "下载明细".to_string()
+        } else {
+            format!("下载明细{sheet_number}")
+        };
+        let sheet = workbook.add_worksheet_with_constant_memory();
+        sheet
+            .set_name(&sheet_name)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        sheet
+            .write_row_with_format(0, 0, HEADERS, &header_format)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        sheet
+            .set_freeze_panes(1, 0)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        for (column, width) in [
+            12.0, 12.0, 36.0, 22.0, 24.0, 18.0, 20.0, 16.0, 12.0, 12.0, 48.0, 10.0, 12.0, 22.0,
+            14.0, 18.0, 18.0, 18.0, 36.0, 38.0, 38.0, 12.0, 22.0,
+        ]
+        .iter()
+        .enumerate()
+        {
+            sheet
+                .set_column_width(column as u16, *width)
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+
+        let mut worksheet_row = 1_u32;
+        while worksheet_row <= MAX_DATA_ROWS_PER_SHEET {
+            let remaining = i64::from(MAX_DATA_ROWS_PER_SHEET - worksheet_row + 1);
+            let requested_limit = remaining.min(5_000);
+            let chunk = list_import_run_items_export_chunk(
+                &state.pool,
+                id,
+                params.outcome.as_deref(),
+                params.query.as_deref(),
+                (!cursor.is_empty()).then_some(cursor.as_str()),
+                requested_limit,
+            )
+            .await?;
+            if chunk.is_empty() {
+                finished = true;
+                break;
+            }
+            let chunk_len = chunk.len();
+            for item in chunk {
+                let values = [
+                    item.row_number.to_string(),
+                    item.sheet_name,
+                    item.title,
+                    item.author.unwrap_or_default(),
+                    item.publisher.unwrap_or_default(),
+                    item.isbn.unwrap_or_default(),
+                    import_outcome_label(&item.outcome).to_string(),
+                    item.acquisition_status.unwrap_or_default(),
+                    if item.is_downloaded { "是" } else { "否" }.to_string(),
+                    if item.retryable { "是" } else { "否" }.to_string(),
+                    item.failure_reason.unwrap_or_default(),
+                    item.attempts.to_string(),
+                    item.max_attempts.to_string(),
+                    item.next_attempt_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_default(),
+                    item.execution_result.unwrap_or_default(),
+                    item.execution_stage.unwrap_or_default(),
+                    item.error_code.unwrap_or_default(),
+                    item.worker_name.unwrap_or_default(),
+                    item.nas_object_key.unwrap_or_default(),
+                    item.edition_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    item.target_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    if item.row_kind == "quarantine" {
+                        "隔离记录"
+                    } else {
+                        "书目记录"
+                    }
+                    .to_string(),
+                    item.updated_at.to_rfc3339(),
+                ];
+                sheet
+                    .write_row(worksheet_row, 0, values)
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+                cursor = format!("{}:{}", item.row_number, item.item_id);
+                worksheet_row += 1;
+            }
+            if chunk_len < requested_limit as usize {
+                finished = true;
+                break;
+            }
+        }
+        sheet_number += 1;
+    }
+
+    let bytes = workbook
+        .save_to_buffer()
+        .map_err(|error| AppError::internal(format!("生成 Excel 失败：{error}")))?;
+    let file_name = format!("catalog-import-{}-details.xlsx", &run.id.to_string()[..8]);
+    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\""))
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .body(Body::from(bytes))
+        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// GET /api/catalog/imports/quarantine

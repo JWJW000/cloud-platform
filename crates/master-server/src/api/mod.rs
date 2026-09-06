@@ -262,6 +262,14 @@ pub fn router(state: AppState) -> Router {
             get(catalog_v1::get_import_run_handler),
         )
         .route(
+            "/api/catalog/imports/runs/:id/items",
+            get(catalog_v1::list_import_run_items_handler),
+        )
+        .route(
+            "/api/catalog/imports/runs/:id/export.xlsx",
+            get(catalog_v1::export_import_run_items_handler),
+        )
+        .route(
             "/api/catalog/imports/quarantine",
             get(catalog_v1::list_quarantined_records_handler),
         )

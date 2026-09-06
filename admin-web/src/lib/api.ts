@@ -455,6 +455,30 @@ export async function getCatalogImportRun(id: string): Promise<import("./types")
   return api.get<import("./types").ImportRun>(`/api/catalog/imports/runs/${id}`);
 }
 
+export async function listCatalogImportRunItems(
+  id: string,
+  params: {
+    outcome?: import("./types").ImportRunOutcome;
+    query?: string;
+    cursor?: string;
+    limit?: number;
+    include_summary?: boolean;
+  }
+): Promise<import("./types").ImportRunItemsPage> {
+  return api.get<import("./types").ImportRunItemsPage>(`/api/catalog/imports/runs/${id}/items`, params);
+}
+
+export function catalogImportRunExportUrl(
+  id: string,
+  params: { outcome?: import("./types").ImportRunOutcome; query?: string }
+): string {
+  const search = new URLSearchParams();
+  if (params.outcome) search.set("outcome", params.outcome);
+  if (params.query) search.set("query", params.query);
+  const suffix = search.toString();
+  return `/api/catalog/imports/runs/${id}/export.xlsx${suffix ? `?${suffix}` : ""}`;
+}
+
 export async function listCatalogQuarantined(): Promise<import("./types").QuarantinedRecord[]> {
   return api.get<import("./types").QuarantinedRecord[]>("/api/catalog/imports/quarantine");
 }

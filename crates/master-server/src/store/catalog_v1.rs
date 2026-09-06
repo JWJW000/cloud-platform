@@ -86,6 +86,61 @@ pub struct ImportRunRow {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 导入批次中单本书的导入与下载结果明细。
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(missing_docs)]
+pub struct ImportRunItemRow {
+    pub item_id: Uuid,
+    pub row_kind: String,
+    pub sheet_name: String,
+    pub row_number: i64,
+    pub title: String,
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub isbn: Option<String>,
+    pub edition_id: Option<Uuid>,
+    pub target_id: Option<Uuid>,
+    pub outcome: String,
+    pub acquisition_status: Option<String>,
+    pub is_downloaded: bool,
+    pub retryable: bool,
+    pub failure_reason: Option<String>,
+    pub attempts: i32,
+    pub max_attempts: i32,
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    pub execution_result: Option<String>,
+    pub execution_stage: Option<String>,
+    pub error_code: Option<String>,
+    pub worker_name: Option<String>,
+    pub nas_object_key: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 导入批次下载结果的全量分类计数。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, FromRow)]
+#[allow(missing_docs)]
+pub struct ImportRunOutcomeCounts {
+    pub total: i64,
+    pub downloaded: i64,
+    pub already_owned: i64,
+    pub pending: i64,
+    pub running: i64,
+    pub retryable: i64,
+    pub site_not_found: i64,
+    pub failed: i64,
+    pub needs_review: i64,
+    pub quarantined: i64,
+}
+
+/// 可分页的导入批次明细响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(missing_docs)]
+pub struct ImportRunItemsPage {
+    pub summary: Option<ImportRunOutcomeCounts>,
+    pub items: Vec<ImportRunItemRow>,
+    pub next_cursor: Option<String>,
+}
+
 /// 来源原始记录。
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct SourceRecordRow {
@@ -771,6 +826,214 @@ pub async fn get_import_run(executor: impl PgExecutor<'_>, id: Uuid) -> AppResul
     .fetch_optional(executor)
     .await?
     .ok_or_else(|| AppError::missing("导入运行记录不存在"))
+}
+
+const IMPORT_RUN_ITEMS_CTE: &str = r#"
+WITH selected_run AS (
+    SELECT id, import_file_id, started_at, created_at
+    FROM import_runs WHERE id = $1
+), raw_items AS (
+    SELECT sr.id AS item_id, 'record'::text AS row_kind, sr.sheet_name, sr.row_number,
+           COALESCE(NULLIF(e.edition_title, ''), sr.normalized_title) AS title,
+           sr.normalized_author AS author, sr.normalized_publisher AS publisher,
+           sr.raw_isbn AS isbn, rr.edition_id, at.id AS target_id,
+           at.status AS acquisition_status, COALESCE(at.attempts, 0) AS attempts,
+           COALESCE(at.max_attempts, 0) AS max_attempts, at.next_attempt_at,
+           at.last_error, e.owned_at, sr.created_at AS imported_at,
+           selected_run.started_at AS run_started_at,
+           latest.result AS execution_result, latest.stage AS execution_stage,
+           latest.error_code, latest.error_message, wn.name AS worker_name,
+           stored.object_key AS nas_object_key, stored.created_at AS holding_created_at,
+           GREATEST(sr.created_at, COALESCE(at.updated_at, sr.created_at),
+                    COALESCE(latest.finished_at, latest.started_at, sr.created_at)) AS updated_at
+    FROM selected_run
+    JOIN source_records sr ON sr.import_file_id = selected_run.import_file_id
+    LEFT JOIN record_resolutions rr ON rr.source_record_id = sr.id
+    LEFT JOIN editions e ON e.id = rr.edition_id
+    LEFT JOIN acquisition_targets at ON at.edition_id = rr.edition_id
+    LEFT JOIN LATERAL (
+        SELECT ae.result, ae.stage, ae.error_code, ae.error_message, ae.node_id,
+               ae.started_at, ae.finished_at
+        FROM acquisition_executions ae
+        WHERE ae.target_id = at.id
+        ORDER BY ae.started_at DESC LIMIT 1
+    ) latest ON TRUE
+    LEFT JOIN worker_nodes wn ON wn.id = latest.node_id
+    LEFT JOIN LATERAL (
+        SELECT lf.object_key, h.created_at
+        FROM holdings h
+        JOIN library_files lf ON lf.id = h.library_file_id
+        WHERE h.edition_id = rr.edition_id AND lf.verify_status = '有效'
+        ORDER BY h.created_at DESC LIMIT 1
+    ) stored ON TRUE
+
+    UNION ALL
+
+    SELECT qr.id, 'quarantine'::text, qr.sheet_name, qr.row_number,
+           COALESCE(NULLIF(qr.raw_content->>'title', ''),
+                    NULLIF(qr.raw_content->>'书名', ''), '(无法识别书名)') AS title,
+           COALESCE(qr.raw_content->>'author', qr.raw_content->>'作者') AS author,
+           COALESCE(qr.raw_content->>'publisher', qr.raw_content->>'出版社') AS publisher,
+           COALESCE(qr.raw_content->>'isbn', qr.raw_content->>'ISBN') AS isbn,
+           NULL::uuid, NULL::uuid, NULL::text, 0::int, 0::int, NULL::timestamptz,
+           qr.error_reason, NULL::timestamptz, qr.created_at, selected_run.started_at,
+           NULL::text, NULL::text, NULL::text, qr.error_reason, NULL::text,
+           NULL::text, NULL::timestamptz, qr.created_at
+    FROM selected_run
+    JOIN quarantined_records qr ON qr.import_run_id = selected_run.id AND qr.resolved = FALSE
+), classified AS (
+    SELECT raw_items.*,
+           CASE
+             WHEN row_kind = 'quarantine' THEN 'quarantined'
+             WHEN edition_id IS NULL THEN 'failed'
+             WHEN acquisition_status = '来源无效' THEN 'site_not_found'
+             WHEN holding_created_at IS NOT NULL
+                  AND holding_created_at >= COALESCE(run_started_at, imported_at) THEN 'downloaded'
+             WHEN owned_at IS NOT NULL THEN 'already_owned'
+             WHEN acquisition_status IN ('已领取', '下载中', '校验中') THEN 'running'
+             WHEN acquisition_status IN ('待下载', '排队中') OR acquisition_status IS NULL THEN 'pending'
+             WHEN acquisition_status = '暂时失败' AND attempts < max_attempts THEN 'retryable'
+             WHEN acquisition_status = '人工确认' THEN 'needs_review'
+             ELSE 'failed'
+           END AS outcome
+    FROM raw_items
+)
+"#;
+
+/// 读取一个导入批次的下载结果分类汇总。
+pub async fn get_import_run_outcome_counts(
+    executor: impl PgExecutor<'_>,
+    run_id: Uuid,
+) -> AppResult<ImportRunOutcomeCounts> {
+    let sql = format!(
+        "{IMPORT_RUN_ITEMS_CTE} \
+         SELECT count(*)::bigint AS total, \
+                count(*) FILTER (WHERE outcome = 'downloaded')::bigint AS downloaded, \
+                count(*) FILTER (WHERE outcome = 'already_owned')::bigint AS already_owned, \
+                count(*) FILTER (WHERE outcome = 'pending')::bigint AS pending, \
+                count(*) FILTER (WHERE outcome = 'running')::bigint AS running, \
+                count(*) FILTER (WHERE outcome = 'retryable')::bigint AS retryable, \
+                count(*) FILTER (WHERE outcome = 'site_not_found')::bigint AS site_not_found, \
+                count(*) FILTER (WHERE outcome = 'failed')::bigint AS failed, \
+                count(*) FILTER (WHERE outcome = 'needs_review')::bigint AS needs_review, \
+                count(*) FILTER (WHERE outcome = 'quarantined')::bigint AS quarantined \
+         FROM classified"
+    );
+    Ok(sqlx::query_as::<_, ImportRunOutcomeCounts>(&sql)
+        .bind(run_id)
+        .fetch_one(executor)
+        .await?)
+}
+
+/// 按导入行号游标读取批次明细，避免大批次使用 OFFSET 越翻越慢。
+pub async fn list_import_run_items(
+    pool: &PgPool,
+    run_id: Uuid,
+    outcome: Option<&str>,
+    query: Option<&str>,
+    cursor: Option<&str>,
+    limit: i64,
+    include_summary: bool,
+) -> AppResult<ImportRunItemsPage> {
+    // 先验证批次存在，避免空结果与不存在混淆。
+    let _ = get_import_run(pool, run_id).await?;
+    let summary = if include_summary {
+        Some(get_import_run_outcome_counts(pool, run_id).await?)
+    } else {
+        None
+    };
+    let fetch_limit = limit.clamp(1, 200) + 1;
+    let mut items =
+        fetch_import_run_items(pool, run_id, outcome, query, cursor, fetch_limit).await?;
+    let has_more = items.len() as i64 == fetch_limit;
+    if has_more {
+        items.pop();
+    }
+    let next_cursor = has_more
+        .then(|| {
+            items
+                .last()
+                .map(|item| format!("{}:{}", item.row_number, item.item_id))
+        })
+        .flatten();
+    Ok(ImportRunItemsPage {
+        summary,
+        items,
+        next_cursor,
+    })
+}
+
+async fn fetch_import_run_items(
+    pool: &PgPool,
+    run_id: Uuid,
+    outcome: Option<&str>,
+    query: Option<&str>,
+    cursor: Option<&str>,
+    limit: i64,
+) -> AppResult<Vec<ImportRunItemRow>> {
+    let outcome = outcome.unwrap_or("").trim();
+    let search = query.unwrap_or("").trim().to_lowercase();
+    let search_pattern = if search.is_empty() {
+        String::new()
+    } else {
+        format!("%{search}%")
+    };
+    let (cursor_row, cursor_id) = match cursor.filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let (row, id) = value
+                .split_once(':')
+                .ok_or_else(|| AppError::bad("导入明细游标格式无效"))?;
+            let row = row
+                .parse::<i64>()
+                .map_err(|_| AppError::bad("导入明细游标格式无效"))?;
+            let id = Uuid::parse_str(id).map_err(|_| AppError::bad("导入明细游标格式无效"))?;
+            (row, id)
+        }
+        None => (0, Uuid::nil()),
+    };
+    let sql = format!(
+        "{IMPORT_RUN_ITEMS_CTE} \
+         SELECT item_id, row_kind, sheet_name, row_number, title, author, publisher, isbn, \
+                edition_id, target_id, outcome, acquisition_status, \
+                (outcome = 'downloaded') AS is_downloaded, \
+                (outcome = 'retryable') AS retryable, \
+                CASE \
+                  WHEN outcome = 'quarantined' THEN last_error \
+                  WHEN outcome = 'site_not_found' THEN COALESCE(error_message, last_error, '站点未收录或没有精确匹配') \
+                  WHEN outcome = 'failed' AND edition_id IS NULL THEN '导入记录未能解析到书目版本' \
+                  WHEN outcome IN ('retryable', 'failed', 'needs_review') THEN COALESCE(error_message, last_error, '下载执行未成功') \
+                  ELSE NULLIF(COALESCE(error_message, last_error, ''), '') \
+                END AS failure_reason, \
+                attempts, max_attempts, next_attempt_at, execution_result, execution_stage, \
+                error_code, worker_name, nas_object_key, updated_at \
+         FROM classified \
+         WHERE ($2 = '' OR outcome = $2) \
+           AND ($3 = '' OR lower(concat_ws(' ', title, author, publisher, isbn, last_error, error_message)) LIKE $3) \
+           AND (row_number, item_id) > ($4, $5) \
+         ORDER BY row_number, item_id LIMIT $6"
+    );
+    let items = sqlx::query_as::<_, ImportRunItemRow>(&sql)
+        .bind(run_id)
+        .bind(outcome)
+        .bind(search_pattern)
+        .bind(cursor_row.max(0))
+        .bind(cursor_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(items)
+}
+
+/// 读取导出使用的明细分片。调用方应按返回的最后行号继续读取。
+pub async fn list_import_run_items_export_chunk(
+    pool: &PgPool,
+    run_id: Uuid,
+    outcome: Option<&str>,
+    query: Option<&str>,
+    cursor: Option<&str>,
+    limit: i64,
+) -> AppResult<Vec<ImportRunItemRow>> {
+    fetch_import_run_items(pool, run_id, outcome, query, cursor, limit.clamp(1, 5_000)).await
 }
 
 /// 隔离一条解析异常记录。
