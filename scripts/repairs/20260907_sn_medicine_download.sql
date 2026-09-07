@@ -15,8 +15,12 @@ WHERE r.id = 'eadfde3c-9e41-49f8-ac02-6f8b0a3a172c'
 CREATE UNIQUE INDEX ON repair_editions(id);
 ANALYZE repair_editions;
 DO $$ BEGIN
- IF (SELECT count(*) FROM repair_editions) <> 27523 THEN
-   RAISE EXCEPTION 'Repair scope mismatch: expected exactly 27523 editions';
+ IF (SELECT count(*) FROM repair_editions) <> 21776 THEN
+   RAISE EXCEPTION 'Repair scope mismatch: expected exactly 21776 unique editions from 27523 rows';
+ END IF;
+ IF (SELECT count(*) FROM source_records sr JOIN import_runs r ON r.import_file_id = sr.import_file_id
+     WHERE r.id = 'eadfde3c-9e41-49f8-ac02-6f8b0a3a172c') <> 27523 THEN
+   RAISE EXCEPTION 'Repair scope mismatch: expected exactly 27523 source rows';
  END IF;
 END $$;
 -- 仅撤销该次导入中新建且没有其他来源或有效馆藏支持的已拥有标记。
