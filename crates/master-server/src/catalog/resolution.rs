@@ -78,6 +78,17 @@ pub async fn resolve_item(
     source_record_id: Uuid,
     item: &ParsedCatalogItem,
 ) -> AppResult<ResolutionResult> {
+    resolve_item_for_import(tx, source_id, source_record_id, item, true).await
+}
+
+/// 按导入用途解析，待下载书目不会被标记为已拥有。
+pub async fn resolve_item_for_import(
+    tx: &mut Transaction<'_, Postgres>,
+    source_id: Uuid,
+    source_record_id: Uuid,
+    item: &ParsedCatalogItem,
+    mark_owned: bool,
+) -> AppResult<ResolutionResult> {
     let clean_title = clean_text(&item.raw_title);
     let norm_title = normalize_title(&clean_title);
     let norm_author = item
@@ -121,6 +132,7 @@ pub async fn resolve_item(
         if let Some((edition_id, work_id)) = existing_edition {
             let res = attach_source_and_assets(
                 tx,
+                mark_owned,
                 source_record_id,
                 work_id,
                 edition_id,
@@ -151,6 +163,7 @@ pub async fn resolve_item(
         if let Some((edition_id, work_id)) = existing_edition {
             let res = attach_source_and_assets(
                 tx,
+                mark_owned,
                 source_record_id,
                 work_id,
                 edition_id,
@@ -182,6 +195,7 @@ pub async fn resolve_item(
         if let Some((work_id, edition_id)) = existing_res {
             let res = attach_source_and_assets(
                 tx,
+                mark_owned,
                 source_record_id,
                 work_id,
                 edition_id,
@@ -219,6 +233,7 @@ pub async fn resolve_item(
             let (edition_id, work_id) = matches[0];
             let res = attach_source_and_assets(
                 tx,
+                mark_owned,
                 source_record_id,
                 work_id,
                 edition_id,
@@ -315,8 +330,8 @@ pub async fn resolve_item(
 
     // 创建 Edition
     sqlx::query(
-        "INSERT INTO editions (id, work_id, edition_title, language, publisher, publisher_id, publish_year, publish_date_text, intro, format_summary, status) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+        "INSERT INTO editions (id, work_id, edition_title, language, publisher, publisher_id, publish_year, publish_date_text, intro, format_summary, status, owned_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL)"
     )
     .bind(edition_id)
     .bind(work_id)
@@ -436,6 +451,7 @@ pub async fn resolve_item(
     // 绑定映射、候选文件与获取目标
     let mut res = attach_source_and_assets(
         tx,
+        mark_owned,
         source_record_id,
         work_id,
         edition_id,
@@ -456,6 +472,7 @@ pub async fn resolve_item(
 #[allow(clippy::too_many_arguments)]
 async fn attach_source_and_assets(
     tx: &mut Transaction<'_, Postgres>,
+    mark_owned: bool,
     source_record_id: Uuid,
     work_id: Uuid,
     edition_id: Uuid,
@@ -468,12 +485,14 @@ async fn attach_source_and_assets(
 ) -> AppResult<ResolutionResult> {
     // 进入“我的书目总库”的显式导入会把已存在的候选版本转为已拥有；仅下载
     // 调度创建的候选版本保持 owned_at 为空，直至文件校验成功。
-    sqlx::query(
+    if mark_owned {
+        sqlx::query(
         "UPDATE editions SET owned_at = COALESCE(owned_at, now()), updated_at = now() WHERE id = $1",
     )
     .bind(edition_id)
     .execute(&mut **tx)
     .await?;
+    }
 
     // 写入消歧映射
     sqlx::query(
@@ -535,6 +554,12 @@ async fn attach_source_and_assets(
         }
     }
 
+    // 已有有效文件（例如 MD5 命中）才允许待下载候选进入已拥有总库。
+    if !mark_owned {
+        sqlx::query("UPDATE editions e SET owned_at = COALESCE(owned_at, now()) WHERE e.id = $1 AND EXISTS (SELECT 1 FROM holdings h JOIN library_files lf ON lf.id = h.library_file_id WHERE h.edition_id = e.id AND h.meets_strategy AND lf.verify_status = '有效')")
+            .bind(edition_id).execute(&mut **tx).await?;
+    }
+
     Ok(ResolutionResult {
         work_id,
         edition_id,
@@ -555,7 +580,7 @@ pub async fn ensure_acquisition_target(
     edition_id: Uuid,
 ) -> AppResult<()> {
     let holding_exists: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM holdings WHERE edition_id = $1 AND meets_strategy LIMIT 1",
+        "SELECT h.id FROM holdings h JOIN library_files lf ON lf.id = h.library_file_id WHERE h.edition_id = $1 AND h.meets_strategy AND lf.verify_status = '有效' LIMIT 1",
     )
     .bind(edition_id)
     .fetch_optional(&mut **tx)

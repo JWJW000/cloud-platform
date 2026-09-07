@@ -49,6 +49,7 @@ async fn existing_index_receives_additive_mapping_updates() {
 async fn outbox_is_acknowledged_only_after_bulk_api_success() {
     let db = require_db!();
     let request = StartImportRequest {
+            import_mode: Default::default(),
         source_name: "opensearch_test".to_string(),
         source_type: Some("csv".to_string()),
         file_name: "opensearch.csv".to_string(),
@@ -105,6 +106,7 @@ async fn one_rejected_bulk_item_does_not_block_successful_items() {
     execute_import(
         &db.pool,
         &StartImportRequest {
+            import_mode: Default::default(),
             source_name: "opensearch_partial_test".to_string(),
             source_type: Some("csv".to_string()),
             file_name: "opensearch_partial.csv".to_string(),

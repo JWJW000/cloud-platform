@@ -76,6 +76,7 @@ export function CatalogImportsPage() {
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
 
   // 导入模态框状态
+  const [importMode, setImportMode] = useState<"owned" | "download">("download");
   const [showModal, setShowModal] = useState(false);
   const [sourceName, setSourceName] = useState("");
   const [fileName, setFileName] = useState("");
@@ -213,6 +214,7 @@ export function CatalogImportsPage() {
     try {
       setImporting(true);
       const res = await submitCatalogImport({
+        import_mode: importMode,
         source_name: sourceName,
         file_name: fileName,
         text_content: serverManifest ? undefined : textContent,
@@ -639,6 +641,12 @@ export function CatalogImportsPage() {
             <h3 className="text-lg font-bold text-slate-900">新建数据导入与预检</h3>
 
             <div className="space-y-3 text-sm">
+              <label className="block font-semibold">导入用途
+                <select aria-label="导入用途" value={importMode} onChange={(e) => setImportMode(e.target.value as "owned" | "download")} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2">
+                  <option value="download">待下载书单：缺少有效文件的书自动排队</option>
+                  <option value="owned">已拥有书目：仅登记总库，不创建下载任务</option>
+                </select>
+              </label>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">数据源名称</label>
                 <Input value={sourceName} onChange={(e) => setSourceName(e.target.value)} placeholder="如 cn, en, 图书书目1, 补充书单..." />
@@ -737,7 +745,7 @@ export function CatalogImportsPage() {
                 预检解析
               </Button>
               <Button variant="primary" onClick={handleSubmitImport} disabled={importing}>
-                {importing ? "正在导入..." : "确认加入书目总库"}
+                {importing ? "正在导入..." : (importMode === "download" ? "确认导入并排队下载" : "确认加入已拥有书目")}
               </Button>
             </div>
           </div>

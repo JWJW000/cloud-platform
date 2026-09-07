@@ -50,6 +50,7 @@ title,author,publisher,isbn,doi,format,md5,filesize,id
 
     // 2. 执行导入
     let start_req = StartImportRequest {
+        import_mode: Default::default(),
         source_name: "cn_test".to_string(),
         source_type: Some("csv".to_string()),
         file_name: "cn_books_01.csv".to_string(),
@@ -166,6 +167,7 @@ async fn 全局获取池_并发领取_租约与证据入库闭环() {
     // 1. 导入一本书
     let csv_content = "title,author,publisher,isbn,format,md5,filesize\n分布式系统概念与设计,Coulouris,机械工业出版社,9787111400000,pdf,11111111111111111111111111111111,5000000\n";
     let start_req = StartImportRequest {
+        import_mode: Default::default(),
         source_name: "acq_test".to_string(),
         source_type: Some("csv".to_string()),
         file_name: "acq_test.csv".to_string(),
@@ -279,6 +281,7 @@ async fn 总库目标_可物化为现有worker任务并双向同步状态() {
     execute_import(
         &db.pool,
         &StartImportRequest {
+            import_mode: Default::default(),
             source_name: "worker_bridge_test".to_string(),
             source_type: Some("csv".to_string()),
             file_name: "worker_bridge_test.csv".to_string(),
@@ -418,6 +421,7 @@ async fn 下载批次_总库已有则跳过_成功后新书才进入总库() {
     execute_import(
         &db.pool,
         &StartImportRequest {
+            import_mode: Default::default(),
             source_name: "owned_catalog_test".to_string(),
             source_type: Some("csv".to_string()),
             file_name: "owned_catalog_test.csv".to_string(),
@@ -590,4 +594,78 @@ async fn 下载批次_总库已有则跳过_成功后新书才进入总库() {
         .await
         .unwrap();
     assert_eq!(holdings, 1, "下载文件必须登记为总库版本的文件资产");
+}
+
+#[tokio::test]
+async fn 待下载导入_不提前拥有_已有元数据仍排队_重复幂等_有效文件跳过() {
+    use master_server::catalog::ingestion::ImportMode;
+    use master_server::store::catalog_v1::get_import_run_outcome_counts;
+    let db = require_db!();
+    let mut req = StartImportRequest {
+        import_mode: ImportMode::Owned,
+        source_name: "mode_test".into(),
+        source_type: None,
+        file_name: "owned.csv".into(),
+        sheet_name: None,
+        server_manifest: None,
+        text_content: Some(
+            "title,doi,format\n已有书目,10.1234/owned,pdf\n已有文件,10.1234/file,pdf\n".into(),
+        ),
+    };
+    execute_import(&db.pool, &req).await.unwrap();
+    let existing: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM editions ORDER BY edition_title")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    let file_edition: Uuid =
+        sqlx::query_scalar("SELECT id FROM editions WHERE edition_title = '已有文件'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let file_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO library_files(id, object_key, format, actual_size_bytes, sha256) VALUES ($1, 'existing.pdf', 'pdf', 100, 'mode-test-sha')")
+        .bind(file_id).execute(&db.pool).await.unwrap();
+    sqlx::query("INSERT INTO holdings(id, edition_id, library_file_id, match_type, meets_strategy) VALUES ($1, $2, $3, 'MD5命中', TRUE)")
+        .bind(Uuid::new_v4()).bind(file_edition).bind(file_id).execute(&db.pool).await.unwrap();
+    req.import_mode = ImportMode::Download;
+    req.file_name = "download.csv".into();
+    req.text_content = Some("title,doi,format\n已有书目,10.1234/owned,pdf\n已有文件,10.1234/file,pdf\n新书,10.1234/new,pdf\n".into());
+    let run = execute_import(&db.pool, &req).await.unwrap();
+    let counts = get_import_run_outcome_counts(&db.pool, run.run_id)
+        .await
+        .unwrap();
+    assert_eq!(counts.pending, 2);
+    assert_eq!(counts.already_owned, 1);
+    let owned: bool = sqlx::query_scalar(
+        "SELECT owned_at IS NOT NULL FROM editions WHERE edition_title = '新书'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(!owned);
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM editions WHERE id = ANY($1) AND owned_at IS NOT NULL",
+    )
+    .bind(&existing)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(kept, 2);
+    let duplicate = execute_import(&db.pool, &req).await.unwrap();
+    assert_eq!(duplicate.duplicate_count, 3);
+    let targets: i64 = sqlx::query_scalar("SELECT count(*) FROM acquisition_targets")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(targets, 3);
+    // 已拥有入口的同一文件再次明确用于下载时，不能被行去重吞掉用途。
+    req.file_name = "owned.csv".into();
+    req.text_content =
+        Some("title,doi,format\n已有书目,10.1234/owned,pdf\n已有文件,10.1234/file,pdf\n".into());
+    let converted = execute_import(&db.pool, &req).await.unwrap();
+    let counts = get_import_run_outcome_counts(&db.pool, converted.run_id)
+        .await
+        .unwrap();
+    assert_eq!(counts.pending, 1);
+    assert_eq!(counts.already_owned, 1);
 }

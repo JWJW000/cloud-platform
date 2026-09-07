@@ -8,7 +8,9 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::catalog::resolution::{resolve_item, ParsedCatalogItem};
+use crate::catalog::resolution::{
+    ensure_acquisition_target, resolve_item_for_import, ParsedCatalogItem,
+};
 use crate::error::{AppError, AppResult};
 use crate::store::catalog_v1::{
     create_import_run, get_or_create_source, register_import_file, update_import_run_progress,
@@ -77,9 +79,23 @@ pub struct ParsedCatalogItemSummary {
     pub md5: Option<String>,
 }
 
+/// 导入用途；旧客户端保持已拥有导入语义。
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    /// 登记已拥有书目，不自动下载。
+    #[default]
+    Owned,
+    /// 缺少有效文件时创建下载目标。
+    Download,
+}
+
 /// 执行导入请求。
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct StartImportRequest {
+    /// 显式导入用途。
+    #[serde(default)]
+    pub import_mode: ImportMode,
     /// 数据源名称。
     pub source_name: String,
     /// 数据源类型。
@@ -222,6 +238,13 @@ pub async fn execute_import(
 
     let run = create_import_run(pool, import_file.id, total_rows).await?;
 
+    let mark_owned = matches!(req.import_mode, ImportMode::Owned);
+    sqlx::query("UPDATE import_runs SET import_mode = $2 WHERE id = $1")
+        .bind(run.id)
+        .bind(if mark_owned { "owned" } else { "download" })
+        .execute(pool)
+        .await?;
+
     let mut imported_count = 0i64;
     let mut duplicate_count = 0i64;
     let mut quarantined_count = 0i64;
@@ -282,12 +305,27 @@ pub async fn execute_import(
             .await?;
 
             let Some(actual_record_id) = inserted else {
+                // 相同行重复提交也要兑现显式下载用途，目标按版本保持幂等。
+                if !mark_owned {
+                    let edition_id: Option<Uuid> = sqlx::query_scalar(
+                        "SELECT rr.edition_id FROM source_records sr JOIN record_resolutions rr ON rr.source_record_id = sr.id WHERE sr.import_file_id = $1 AND sr.sheet_name = $2 AND sr.row_number = $3"
+                    ).bind(import_file.id).bind(sheet).bind(row_number)
+                    .fetch_optional(&mut *tx).await?;
+                    if let Some(edition_id) = edition_id {
+                        ensure_acquisition_target(&mut tx, edition_id).await?;
+                    }
+                }
                 duplicate_count += 1;
                 continue;
             };
 
             // 进行规范化与消歧处理
-            let resolution_res = resolve_item(&mut tx, source.id, actual_record_id, item).await?;
+            let resolution_res =
+                resolve_item_for_import(&mut tx, source.id, actual_record_id, item, mark_owned)
+                    .await?;
+            if !mark_owned {
+                ensure_acquisition_target(&mut tx, resolution_res.edition_id).await?;
+            }
 
             // 写入 Outbox 事件
             let outbox_payload = serde_json::json!({

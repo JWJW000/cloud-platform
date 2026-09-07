@@ -456,6 +456,7 @@ export async function previewCatalogImport(data: {
 }
 
 export async function submitCatalogImport(data: {
+  import_mode: "owned" | "download";
   source_name: string;
   source_type?: string;
   file_name: string;

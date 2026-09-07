@@ -58,6 +58,8 @@ pub struct ImportFileRow {
 /// 导入运行批次记录。
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ImportRunRow {
+    /// 导入用途：owned 或 download。
+    pub import_mode: String,
     /// 运行编号。
     pub id: Uuid,
     /// 关联的导入文件编号。
@@ -748,7 +750,7 @@ pub async fn create_import_run(
              (id, import_file_id, status, checkpoint_row, total_rows, imported_count, quarantined_count, duplicate_count, started_at) \
          VALUES ($1, $2, '运行中', 0, $3, 0, 0, 0, now()) \
          RETURNING id, import_file_id, status, checkpoint_row, total_rows, imported_count, \
-                   quarantined_count, duplicate_count, error_summary, started_at, completed_at, created_at, updated_at"
+                   quarantined_count, duplicate_count, error_summary, started_at, completed_at, created_at, updated_at, import_mode"
     )
     .bind(Uuid::new_v4())
     .bind(import_file_id)
@@ -805,7 +807,7 @@ pub async fn list_import_runs(
 ) -> AppResult<Vec<ImportRunRow>> {
     let runs = sqlx::query_as::<_, ImportRunRow>(
         "SELECT id, import_file_id, status, checkpoint_row, total_rows, imported_count, \
-                quarantined_count, duplicate_count, error_summary, started_at, completed_at, created_at, updated_at \
+                quarantined_count, duplicate_count, error_summary, started_at, completed_at, created_at, updated_at, import_mode \
          FROM import_runs ORDER BY created_at DESC LIMIT $1"
     )
     .bind(limit.clamp(1, 200))
@@ -819,7 +821,7 @@ pub async fn list_import_runs(
 pub async fn get_import_run(executor: impl PgExecutor<'_>, id: Uuid) -> AppResult<ImportRunRow> {
     sqlx::query_as::<_, ImportRunRow>(
         "SELECT id, import_file_id, status, checkpoint_row, total_rows, imported_count, \
-                quarantined_count, duplicate_count, error_summary, started_at, completed_at, created_at, updated_at \
+                quarantined_count, duplicate_count, error_summary, started_at, completed_at, created_at, updated_at, import_mode \
          FROM import_runs WHERE id = $1"
     )
     .bind(id)
@@ -830,7 +832,7 @@ pub async fn get_import_run(executor: impl PgExecutor<'_>, id: Uuid) -> AppResul
 
 const IMPORT_RUN_ITEMS_CTE: &str = r#"
 WITH selected_run AS (
-    SELECT id, import_file_id, started_at, created_at
+    SELECT id, import_file_id, started_at, created_at, import_mode
     FROM import_runs WHERE id = $1
 ), raw_items AS (
     SELECT sr.id AS item_id, 'record'::text AS row_kind, sr.sheet_name, sr.row_number,
@@ -839,7 +841,7 @@ WITH selected_run AS (
            sr.raw_isbn AS isbn, rr.edition_id, at.id AS target_id,
            at.status AS acquisition_status, COALESCE(at.attempts, 0) AS attempts,
            COALESCE(at.max_attempts, 0) AS max_attempts, at.next_attempt_at,
-           at.last_error, e.owned_at, sr.created_at AS imported_at,
+           at.last_error, e.owned_at, selected_run.import_mode, sr.created_at AS imported_at,
            selected_run.started_at AS run_started_at,
            latest.result AS execution_result, latest.stage AS execution_stage,
            latest.error_code, latest.error_message, wn.name AS worker_name,
@@ -876,7 +878,7 @@ WITH selected_run AS (
            COALESCE(qr.raw_content->>'publisher', qr.raw_content->>'出版社') AS publisher,
            COALESCE(qr.raw_content->>'isbn', qr.raw_content->>'ISBN') AS isbn,
            NULL::uuid, NULL::uuid, NULL::text, 0::int, 0::int, NULL::timestamptz,
-           qr.error_reason, NULL::timestamptz, qr.created_at, selected_run.started_at,
+           qr.error_reason, NULL::timestamptz, selected_run.import_mode, qr.created_at, selected_run.started_at,
            NULL::text, NULL::text, NULL::text, qr.error_reason, NULL::text,
            NULL::text, NULL::timestamptz, qr.created_at
     FROM selected_run
@@ -889,7 +891,7 @@ WITH selected_run AS (
              WHEN acquisition_status = '来源无效' THEN 'site_not_found'
              WHEN holding_created_at IS NOT NULL
                   AND holding_created_at >= COALESCE(run_started_at, imported_at) THEN 'downloaded'
-             WHEN owned_at IS NOT NULL THEN 'already_owned'
+             WHEN holding_created_at IS NOT NULL OR (import_mode = 'owned' AND owned_at IS NOT NULL) THEN 'already_owned'
              WHEN acquisition_status IN ('已领取', '下载中', '校验中') THEN 'running'
              WHEN acquisition_status IN ('待下载', '排队中') OR acquisition_status IS NULL THEN 'pending'
              WHEN acquisition_status = '暂时失败' AND attempts < max_attempts THEN 'retryable'
