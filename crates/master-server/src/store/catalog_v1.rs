@@ -538,7 +538,7 @@ pub struct CatalogOutboxRow {
 }
 
 /// 总库核心统计数据。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, sqlx::FromRow)]
 pub struct CatalogStats {
     /// 数据源总数。
     pub total_sources: i64,
@@ -1088,12 +1088,11 @@ pub async fn list_quarantined_records(
 }
 
 /// 统计总库核心指标。
-pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
-    use sqlx::Row;
-    // 采用单一联合聚合查询，同时命中部分索引，将 9~14 次扫描合并为单次查询
-    let row = sqlx::query(
-        r#"
-        SELECT
+pub async fn get_catalog_stats(executor: impl PgExecutor<'_>) -> AppResult<CatalogStats> {
+    // 一个 SQL 使用同一份 MVCC 快照；任意指标失败都不发布，保留上一份成功快照。
+    Ok(sqlx::query_as::<_, CatalogStats>(r#"
+        SELECT s.*, greatest(total_editions - editions_with_files, 0)::bigint AS editions_without_files
+        FROM (SELECT
           (SELECT count(*) FROM catalog_sources)::bigint as total_sources,
           (SELECT count(*) FROM source_records)::bigint as total_source_records,
           (SELECT count(*) FROM works w WHERE work_type != '章节' AND EXISTS
@@ -1121,62 +1120,15 @@ pub async fn get_catalog_stats(pool: &PgPool) -> AppResult<CatalogStats> {
           (SELECT count(DISTINCT work_id) FROM editions
              WHERE owned_at IS NOT NULL
                AND COALESCE(NULLIF(owned_at, '-infinity'::timestamptz), created_at) >= CURRENT_DATE
-               AND work_id IN (SELECT id FROM works WHERE work_type != '章节'))::bigint as today_added_works_count
-        "#,
-    )
-    .fetch_one(pool)
-    .await;
-
-    let mut stats = match row {
-        Ok(r) => CatalogStats {
-            total_sources: r.try_get("total_sources").unwrap_or(0),
-            total_source_records: r.try_get("total_source_records").unwrap_or(0),
-            total_works: r.try_get("total_works").unwrap_or(0),
-            total_chapters: r.try_get("total_chapters").unwrap_or(0),
-            total_editions: r.try_get("total_editions").unwrap_or(0),
-            total_holdings: r.try_get("total_holdings").unwrap_or(0),
-            total_library_files: r.try_get("total_library_files").unwrap_or(0),
-            editions_with_files: r.try_get("editions_with_files").unwrap_or(0),
-            editions_without_files: (r.try_get::<i64, _>("total_editions").unwrap_or(0)
-                - r.try_get::<i64, _>("editions_with_files").unwrap_or(0))
-            .max(0),
-            total_library_bytes: r.try_get("total_library_bytes").unwrap_or(0),
-            acquired_targets: r.try_get("acquired_targets").unwrap_or(0),
-            pending_targets: r.try_get("pending_targets").unwrap_or(0),
-            downloading_targets: r.try_get("downloading_targets").unwrap_or(0),
-            failed_targets: r.try_get("failed_targets").unwrap_or(0),
-            needs_confirm_targets: r.try_get("needs_confirm_targets").unwrap_or(0),
-            total_quarantined: r.try_get("total_quarantined").unwrap_or(0),
-            missing_isbn_count: 0,
-            missing_author_count: 0,
-            ambiguous_works_count: r.try_get("ambiguous_works_count").unwrap_or(0),
-            today_downloaded_count: r.try_get("today_downloaded_count").unwrap_or(0),
-            today_added_works_count: r.try_get("today_added_works_count").unwrap_or(0),
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, "获取图书总库统计指标失败，使用默认值");
-            CatalogStats::default()
-        }
-    };
-
-    // 缺失 ISBN 与作者的计数采用轻量独立计算
-    let missing_isbn: i64 = sqlx::query_scalar(
-        r#"SELECT count(*) FROM editions e WHERE e.owned_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.identifier_type IN ('isbn13', 'isbn10') AND i.is_valid)"#
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
-    stats.missing_isbn_count = missing_isbn;
-
-    let missing_author: i64 = sqlx::query_scalar(
-        r#"SELECT count(*) FROM editions e WHERE e.owned_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM edition_contributors ec WHERE ec.edition_id = e.id)"#
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
-    stats.missing_author_count = missing_author;
-
-    Ok(stats)
+               AND work_id IN (SELECT id FROM works WHERE work_type != '章节'))::bigint as today_added_works_count,
+          (SELECT count(*) FROM editions e WHERE e.owned_at IS NOT NULL AND NOT EXISTS
+             (SELECT 1 FROM identifiers i WHERE i.object_id = e.id AND i.identifier_type IN ('isbn13', 'isbn10') AND i.is_valid))::bigint AS missing_isbn_count,
+          (SELECT count(*) FROM editions e WHERE e.owned_at IS NOT NULL AND NOT EXISTS
+             (SELECT 1 FROM edition_contributors ec WHERE ec.edition_id = e.id))::bigint AS missing_author_count
+        ) s
+        "#)
+        .fetch_one(executor)
+        .await?)
 }
 
 // ============================================================ 检索与详情查询
@@ -1212,6 +1164,7 @@ pub async fn search_editions(
     language: Option<&str>,
     format: Option<&str>,
     resolution_status: Option<&str>,
+    publisher: Option<&str>,
     limit: i64,
     cursor_updated_at: Option<DateTime<Utc>>,
     cursor_id: Option<Uuid>,
@@ -1222,94 +1175,88 @@ pub async fn search_editions(
 
     let fetch_limit = limit.clamp(1, 100) + 1;
 
-    let sql = if kw_like.is_some() {
-        // 存在关键词搜索时：使用 WITH matched_ids (利用各字段独立的 GIN/B-Tree 索引 UNION 极速求并)，百倍提速
-        "WITH matched_ids AS ( \
-             SELECT id FROM editions WHERE edition_title ILIKE $1 OR publisher ILIKE $1 \
-             UNION \
-             SELECT e.id FROM works w JOIN editions e ON e.work_id = w.id WHERE w.normalized_title ILIKE $1 OR w.preferred_title ILIKE $1 \
-             UNION \
-             SELECT object_id AS id FROM identifiers WHERE normalized_value = $11 OR raw_value ILIKE $1 \
-             UNION \
-             SELECT ec.edition_id AS id FROM contributors c JOIN edition_contributors ec ON ec.contributor_id = c.id WHERE c.name ILIKE $1 \
-         ) \
-         SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publisher_id, e.publish_year, e.language, \
-                CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
-                     THEN '总库已拥有' ELSE at.status END as acq_status, \
-                w.resolution_status, e.updated_at, \
-                wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
-         FROM matched_ids m \
-         JOIN editions e ON e.id = m.id \
-         JOIN works w ON w.id = e.work_id \
-         LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-         LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
-         LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
-         WHERE e.owned_at IS NOT NULL \
-           AND ($2::text IS NULL \
-                OR ($2 = '__actionable__' AND at.status IN \
-                    ('待下载', '排队中', '已领取', '下载中', '校验中', '暂时失败', '来源无效', '人工确认')) \
-                OR CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
-                        THEN '总库已拥有' ELSE at.status END = $2) \
-           AND ($3::text IS NULL OR w.work_type = $3) \
-           AND ($4::text IS NULL OR e.language = $4) \
-           AND ($5::text IS NULL OR e.format_summary ILIKE $5) \
-           AND ($6::text IS NULL OR w.resolution_status = $6) \
-           AND ($7::timestamptz IS NULL OR \
-                ($9::bool AND (e.updated_at, e.id) < ($7, $8)) OR \
-                (NOT $9::bool AND (e.updated_at, e.id) > ($7, $8))) \
-         ORDER BY \
-           CASE WHEN $9::bool THEN e.updated_at END DESC, \
-           CASE WHEN $9::bool THEN e.id END DESC, \
-           CASE WHEN NOT $9::bool THEN e.updated_at END ASC, \
-           CASE WHEN NOT $9::bool THEN e.id END ASC \
-         LIMIT $10"
-    } else {
-        // 无关键词搜索时：直接走 (updated_at, id) 覆盖索引与外键关联，1~2ms 响应
-        "SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publisher_id, e.publish_year, e.language, \
-                CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
-                     THEN '总库已拥有' ELSE at.status END as acq_status, \
-                w.resolution_status, e.updated_at, \
-                wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
-         FROM editions e \
-         JOIN works w ON w.id = e.work_id \
-         LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
-         LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
-         LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
-         WHERE e.owned_at IS NOT NULL \
-           AND ($2::text IS NULL \
-                OR ($2 = '__actionable__' AND at.status IN \
-                    ('待下载', '排队中', '已领取', '下载中', '校验中', '暂时失败', '来源无效', '人工确认')) \
-                OR CASE WHEN at.status IS NULL OR at.status = '暂不获取' \
-                        THEN '总库已拥有' ELSE at.status END = $2) \
-           AND ($3::text IS NULL OR w.work_type = $3) \
-           AND ($4::text IS NULL OR e.language = $4) \
-           AND ($5::text IS NULL OR e.format_summary ILIKE $5) \
-           AND ($6::text IS NULL OR w.resolution_status = $6) \
-           AND ($7::timestamptz IS NULL OR \
-                ($9::bool AND (e.updated_at, e.id) < ($7, $8)) OR \
-                (NOT $9::bool AND (e.updated_at, e.id) > ($7, $8))) \
-         ORDER BY \
-           CASE WHEN $9::bool THEN e.updated_at END DESC, \
-           CASE WHEN $9::bool THEN e.id END DESC, \
-           CASE WHEN NOT $9::bool THEN e.updated_at END ASC, \
-           CASE WHEN NOT $9::bool THEN e.id END ASC \
-         LIMIT $10"
-    };
-
-    let kw_exact = keyword.map(|k| k.trim().to_string());
-
-    let mut rows: Vec<EditionSearchDbRow> = sqlx::query_as(sql)
-        .bind(kw_like)
-        .bind(acquisition_status)
-        .bind(work_type)
-        .bind(language)
-        .bind(fmt_like)
-        .bind(resolution_status)
-        .bind(cursor_updated_at)
-        .bind(cursor_id)
-        .bind(forward)
-        .bind(fetch_limit)
-        .bind(kw_exact)
+    // 只拼接受控 SQL 片段；值全部绑定。避免可选条件/CASE 排序退化成通用计划。
+    let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH ");
+    if let Some(pattern) = &kw_like {
+        query.push("matched_ids AS (SELECT id FROM editions WHERE edition_title ILIKE ")
+            .push_bind(pattern).push(" OR publisher ILIKE ").push_bind(pattern)
+            .push(" UNION SELECT e.id FROM works w JOIN editions e ON e.work_id = w.id WHERE w.normalized_title ILIKE ")
+            .push_bind(pattern).push(" OR w.preferred_title ILIKE ").push_bind(pattern)
+            .push(" UNION SELECT object_id FROM identifiers WHERE object_type = 'edition' AND (normalized_value = ")
+            .push_bind(keyword.unwrap_or_default().trim()).push(" OR raw_value ILIKE ").push_bind(pattern)
+            .push(") UNION SELECT ec.edition_id FROM contributors c JOIN edition_contributors ec ON ec.contributor_id = c.id WHERE c.name ILIKE ")
+            .push_bind(pattern).push("), ");
+    }
+    query.push("page AS MATERIALIZED (SELECT e.id, e.updated_at FROM editions e ");
+    if kw_like.is_some() {
+        query.push("JOIN matched_ids m ON m.id = e.id ");
+    }
+    if work_type.is_some() || resolution_status.is_some() {
+        query.push("JOIN works w ON w.id = e.work_id ");
+    }
+    if acquisition_status.is_some() {
+        query.push("LEFT JOIN acquisition_targets at ON at.edition_id = e.id ");
+    }
+    query.push("WHERE e.owned_at IS NOT NULL ");
+    if let Some(status) = acquisition_status {
+        if status == "__actionable__" {
+            query.push("AND at.status IN ('待下载', '排队中', '已领取', '下载中', '校验中', '暂时失败', '来源无效', '人工确认') ");
+        } else {
+            query.push("AND CASE WHEN at.status IS NULL OR at.status = '暂不获取' THEN '总库已拥有' ELSE at.status END = ")
+                .push_bind(status).push(" ");
+        }
+    }
+    for (column, value) in [
+        ("w.work_type", work_type),
+        ("w.resolution_status", resolution_status),
+        ("e.language", language),
+    ] {
+        if let Some(value) = value {
+            query
+                .push("AND ")
+                .push(column)
+                .push(" = ")
+                .push_bind(value)
+                .push(" ");
+        }
+    }
+    if let Some(publisher) = publisher {
+        query
+            .push("AND e.publisher = ")
+            .push_bind(publisher)
+            .push(" ");
+    }
+    if let Some(pattern) = &fmt_like {
+        query
+            .push("AND e.format_summary ILIKE ")
+            .push_bind(pattern)
+            .push(" ");
+    }
+    if let (Some(updated_at), Some(id)) = (cursor_updated_at, cursor_id) {
+        query
+            .push(if forward {
+                "AND (e.updated_at, e.id) < ("
+            } else {
+                "AND (e.updated_at, e.id) > ("
+            })
+            .push_bind(updated_at)
+            .push(", ")
+            .push_bind(id)
+            .push(") ");
+    }
+    let direction = if forward { " DESC" } else { " ASC" };
+    query.push("ORDER BY e.updated_at").push(direction).push(", e.id").push(direction)
+        .push(" LIMIT ").push_bind(fetch_limit).push(") ")
+        .push("SELECT e.id, e.work_id, w.work_type, e.edition_title, e.publisher, e.publisher_id, e.publish_year, e.language, \
+            CASE WHEN at.status IS NULL OR at.status = '暂不获取' THEN '总库已拥有' ELSE at.status END AS acq_status, \
+            w.resolution_status, e.updated_at, wn.name, ae.stage, at.attempts, at.max_attempts, at.next_attempt_at, at.last_error \
+            FROM page JOIN editions e ON e.id = page.id JOIN works w ON w.id = e.work_id \
+            LEFT JOIN acquisition_targets at ON at.edition_id = e.id \
+            LEFT JOIN worker_nodes wn ON wn.id = at.lease_node_id \
+            LEFT JOIN LATERAL (SELECT stage FROM acquisition_executions x WHERE x.target_id = at.id ORDER BY x.started_at DESC LIMIT 1) ae ON TRUE \
+            ORDER BY page.updated_at").push(direction).push(", page.id").push(direction);
+    let mut rows = query
+        .build_query_as::<EditionSearchDbRow>()
         .fetch_all(pool)
         .await?;
 

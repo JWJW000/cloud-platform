@@ -82,6 +82,7 @@ describe("我的书目总库页面渲染与交互测试", () => {
     await waitFor(() => {
       expect(screen.getByText("算法导论（第3版）")).toBeDefined();
       expect(screen.getByText("Thomas Cormen")).toBeDefined();
+      expect(screen.getByText("本页 1 条")).toBeDefined();
     });
   });
 });

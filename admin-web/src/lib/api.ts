@@ -10,9 +10,13 @@
 
 import { ApiError } from "./types";
 
+// 仅合并正在执行的相同读取；完成后立即移除，不缓存业务数据。
+const pendingReads = new Map<string, Promise<unknown>>();
+
 let onUnauthorized: (() => void) | null = null;
 
 export function setUnauthorizedHandler(handler: (() => void) | null) {
+  pendingReads.clear();
   onUnauthorized = handler;
 }
 
@@ -66,6 +70,17 @@ function defaultMessage(status: number): string {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // 写操作前后都隔离读取，避免写后刷新复用写前的在途快照。
+  const isWrite = init.method && !["GET", "HEAD"].includes(init.method);
+  if (isWrite) pendingReads.clear();
+  try {
+    return await performRequest<T>(path, init);
+  } finally {
+    if (isWrite) pendingReads.clear();
+  }
+}
+
+async function performRequest<T>(path: string, init: RequestInit): Promise<T> {
   const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
   const defaultHeaders: Record<string, string> = {
     "X-Requested-With": "fetch",
@@ -86,6 +101,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (resp.status === 401) {
     // 全局会话失效：通知 AuthProvider 清理登录态
     const err = await toApiError(resp);
+    pendingReads.clear();
     onUnauthorized?.();
     throw err;
   }
@@ -100,14 +116,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   get<T>(path: string, params?: Record<string, string | number | boolean | undefined>) {
-    const qs = params
-      ? "?" +
-        Object.entries(params)
-          .filter(([, v]) => v !== undefined && v !== null && v !== "")
-          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-          .join("&")
-      : "";
-    return request<T>(`${path}${qs}`);
+    const query = Object.entries(params ?? {})
+      .filter(([, v]) => v !== undefined && v !== null && v !== "")
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+      .join("&");
+    const url = query ? `${path}${path.includes("?") ? "&" : "?"}${query}` : path;
+    const existing = pendingReads.get(url);
+    if (existing) return existing as Promise<T>;
+
+    const pending = request<T>(url).finally(() => {
+      // 写请求可能已清空旧条目并启动新查询，旧请求不能移除新条目。
+      if (pendingReads.get(url) === pending) pendingReads.delete(url);
+    });
+    pendingReads.set(url, pending);
+    return pending;
   },
 
   post<T>(path: string, body?: unknown) {

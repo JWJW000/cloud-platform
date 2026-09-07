@@ -12,6 +12,52 @@ function mockFetch(status: number, body: unknown, headers?: Record<string, strin
 }
 
 describe("api 客户端", () => {
+  it("合并相同在途读取，完成后重新查询", async () => {
+    const spy = mockFetch(200, { total: 3 });
+    const first = api.get("/api/books", { limit: 20, query: "book" });
+    const second = api.get("/api/books", { query: "book", limit: 20 });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(await first).toEqual(await second);
+    await api.get("/api/books", { query: "book", limit: 20 });
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("不同参数独立请求，失败后可重试", async () => {
+    const spy = mockFetch(500, {});
+    await Promise.allSettled([api.get("/api/books", { limit: 1 }), api.get("/api/books", { limit: 2 })]);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response);
+    await expect(api.get("/api/books", { limit: 1 })).resolves.toEqual([]);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it("写后刷新不复用旧读取，旧读取不能删除新读取", async () => {
+    let resolveOld!: (value: Response) => void;
+    let resolveNew!: (value: Response) => void;
+    const spy = mockFetch(200, {});
+    spy.mockImplementationOnce(() => new Promise<Response>(resolve => { resolveOld = resolve; }));
+    const old = api.get("/api/books");
+    await api.post("/api/books", {});
+    spy.mockImplementationOnce(() => new Promise<Response>(resolve => { resolveNew = resolve; }));
+    const fresh = api.get("/api/books");
+    resolveOld({ ok: true, status: 200, json: async () => ["old"] } as Response);
+    await old;
+    const shared = api.get("/api/books");
+    expect(spy).toHaveBeenCalledTimes(3);
+    resolveNew({ ok: true, status: 200, json: async () => ["new"] } as Response);
+    expect(await fresh).toEqual(["new"]);
+    expect(await shared).toEqual(["new"]);
+  });
+
+  it("会话切换隔离在途读取", async () => {
+    const spy = mockFetch(200, {});
+    const first = api.get("/api/auth/me");
+    setUnauthorizedHandler(null);
+    const second = api.get("/api/auth/me");
+    await Promise.all([first, second]);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
   it("成功请求返回 JSON 数据", async () => {
     mockFetch(200, { id: "1" });
     const data = await api.get<{ id: string }>("/api/workers/1");

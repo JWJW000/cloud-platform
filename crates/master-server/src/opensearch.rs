@@ -186,6 +186,7 @@ impl OpenSearchClient {
         language: Option<&str>,
         format: Option<&str>,
         resolution_status: Option<&str>,
+        publisher: Option<&str>,
         limit: i64,
         cursor_updated_at: Option<DateTime<Utc>>,
         cursor_id: Option<Uuid>,
@@ -223,6 +224,7 @@ impl OpenSearchClient {
             ("work_type", work_type),
             ("language", language),
             ("resolution_status", resolution_status),
+            ("publisher_exact", publisher),
         ] {
             if let Some(value) = value {
                 filters.push(json!({"term": {field: value}}));

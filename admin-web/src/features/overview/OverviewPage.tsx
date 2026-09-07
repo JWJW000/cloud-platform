@@ -1,3 +1,5 @@
+import { useCatalogStats } from "../../hooks/useCatalogStats";
+import { StatsSnapshotStatus } from "../../components/StatsSnapshotStatus";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -11,8 +13,8 @@ import {
   Clock,
   ArrowRight,
 } from "lucide-react";
-import { getCatalogStats, listCatalogImportRuns, api } from "../../lib/api";
-import { CatalogStats, ImportRun, Overview } from "../../lib/types";
+import { listCatalogImportRuns, api } from "../../lib/api";
+import { ImportRun, Overview } from "../../lib/types";
 import { formatBytes, formatTime } from "../../lib/format";
 import { Card, Skeleton, SkeletonCard } from "../../components/ui";
 
@@ -27,31 +29,25 @@ interface RecentExecution {
 }
 
 export function OverviewPage() {
-  const [stats, setStats] = useState<CatalogStats | null>(null);
+  const { stats, error: statsError } = useCatalogStats();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [recentRuns, setRecentRuns] = useState<ImportRun[]>([]);
   const [recentExecs, setRecentExecs] = useState<RecentExecution[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
-      setLoading(true);
       setError(null);
-      const [s, o, runs, execs] = await Promise.all([
-        getCatalogStats().catch(() => null),
+      const [o, runs, execs] = await Promise.all([
         api.get<Overview>("/api/overview").catch(() => null),
         listCatalogImportRuns().catch(() => []),
         api.get<RecentExecution[]>("/api/overview/recent-executions").catch(() => []),
       ]);
-      setStats(s);
       setOverview(o);
       setRecentRuns(runs ? runs.slice(0, 5) : []);
       setRecentExecs(execs ? execs.slice(0, 5) : []);
     } catch (err: any) {
       setError(err.message || "加载总览数据失败");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -71,6 +67,7 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-6">
+      <StatsSnapshotStatus stats={stats} error={statsError} />
       {/* 顶栏标题与快捷入口 */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -113,7 +110,7 @@ export function OverviewPage() {
           </div>
           <div className="text-xs text-slate-500">
             文件归档率:{" "}
-            {loading && !stats ? (
+            {!stats ? (
               <Skeleton className="inline-block h-3 w-10 align-middle" />
             ) : (
               <span className="font-bold text-blue-600">{fileArchiveRate}%</span>
@@ -125,28 +122,28 @@ export function OverviewPage() {
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
             <div className="text-[11px] font-medium text-slate-500">1. 拥有作品</div>
             <div className="mt-1 text-lg font-bold text-slate-900">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_works?.toLocaleString() || 0)}
+              {!stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_works?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-slate-400">我的书目总库</div>
           </div>
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
             <div className="text-[11px] font-medium text-slate-500">2. 来源记录</div>
             <div className="mt-1 text-lg font-bold text-slate-900">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_source_records?.toLocaleString() || 0)}
+              {!stats ? <Skeleton className="h-6 w-16" /> : (stats?.total_source_records?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-slate-400">出处记录</div>
           </div>
           <div className="rounded-lg bg-blue-50/50 p-3 border border-blue-100">
             <div className="text-[11px] font-medium text-blue-700">3. 排队待抓</div>
             <div className="mt-1 text-lg font-bold text-blue-700">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.pending_targets?.toLocaleString() || 0)}
+              {!stats ? <Skeleton className="h-6 w-16" /> : (stats?.pending_targets?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-blue-500">待调度任务</div>
           </div>
           <div className="rounded-lg bg-amber-50/50 p-3 border border-amber-100">
             <div className="text-[11px] font-medium text-amber-700">4. 获取执行中</div>
             <div className="mt-1 text-lg font-bold text-amber-700">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.downloading_targets?.toLocaleString() || 0)}
+              {!stats ? <Skeleton className="h-6 w-16" /> : (stats?.downloading_targets?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-amber-500">
               {overview ? `占用 ${overview.slots.running} 槽位` : "Worker 下载中"}
@@ -155,17 +152,17 @@ export function OverviewPage() {
           <div className="rounded-lg bg-purple-50/50 p-3 border border-purple-100">
             <div className="text-[11px] font-medium text-purple-700">5. 有文件版本</div>
             <div className="mt-1 text-lg font-bold text-purple-700">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.editions_with_files?.toLocaleString() || 0)}
+              {!stats ? <Skeleton className="h-6 w-16" /> : (stats?.editions_with_files?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-purple-500">SHA-256 完好</div>
           </div>
           <div className="rounded-lg bg-green-50/50 p-3 border border-green-100">
             <div className="text-[11px] font-medium text-green-700">6. 仅书目版本</div>
             <div className="mt-1 text-lg font-bold text-green-700">
-              {loading && !stats ? <Skeleton className="h-6 w-16" /> : (stats?.editions_without_files?.toLocaleString() || 0)}
+              {!stats ? <Skeleton className="h-6 w-16" /> : (stats?.editions_without_files?.toLocaleString() || 0)}
             </div>
             <div className="text-[11px] text-green-500">
-              {loading && !stats ? <Skeleton className="h-3 w-12" /> : formatSize(stats?.total_library_bytes || 0)}
+              {!stats ? <Skeleton className="h-3 w-12" /> : formatSize(stats?.total_library_bytes || 0)}
             </div>
           </div>
         </div>
@@ -173,7 +170,7 @@ export function OverviewPage() {
 
       {/* 核心指标卡片 */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {loading && !stats ? (
+        {!stats ? (
           <>
             <SkeletonCard className="border-l-4 border-l-blue-500" />
             <SkeletonCard className="border-l-4 border-l-emerald-500" />

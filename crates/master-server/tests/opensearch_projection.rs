@@ -166,3 +166,48 @@ async fn one_rejected_bulk_item_does_not_block_successful_items() {
 
     db.teardown().await;
 }
+
+#[tokio::test]
+async fn keyword_search_applies_publisher_filter_and_cursor_limit() {
+    let received = Arc::new(Mutex::new(serde_json::Value::Null));
+    let app = Router::new().route("/catalog-editions-v1/_search", post(
+        |State(received): State<Arc<Mutex<serde_json::Value>>>, axum::Json(body): axum::Json<serde_json::Value>| async move {
+            *received.lock().unwrap() = body;
+            axum::Json(serde_json::json!({"timed_out":false,"hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}))
+        }
+    )).with_state(received.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = OpenSearchClient::new(OpenSearchConfig {
+        enabled: true,
+        url: format!("http://{address}"),
+        ..Default::default()
+    })
+    .unwrap();
+    let page = client
+        .search(
+            "book",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("Publisher A"),
+            200,
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(page.items.is_empty());
+    let body = received.lock().unwrap();
+    assert_eq!(body["size"], 101);
+    assert_eq!(body["track_total_hits"], true);
+    assert!(body["query"]["bool"]["filter"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!({"term":{"publisher_exact":"Publisher A"}})));
+    server.abort();
+}

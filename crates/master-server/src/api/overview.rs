@@ -166,8 +166,10 @@ pub async fn get_overview(
         }
     }
 
-    let batches = store::catalog::list_batches(&state.pool).await?;
-    let running_batches = batches.iter().filter(|b| b.status == "执行中").count();
+    let running_batches: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM download_batches WHERE status = '执行中'")
+            .fetch_one(&state.pool)
+            .await?;
 
     let open_alerts = store::admin::open_alert_count(&state.pool).await?;
 
@@ -221,7 +223,7 @@ pub async fn get_overview(
             completed: completed_tasks,
             failed: failed_tasks,
             needs_confirm: needs_confirm_tasks,
-            running_batches,
+            running_batches: running_batches as usize,
         },
         open_alerts,
     }))

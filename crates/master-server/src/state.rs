@@ -248,8 +248,8 @@ pub struct AppState {
     pub links: NodeLinks,
     /// 可选 OpenSearch 搜索投影客户端。
     pub search: Option<OpenSearchClient>,
-    /// 书目统计内存快照缓存（(获取时间戳秒, CatalogStats)）
-    pub catalog_stats_cache: Arc<Mutex<Option<(u64, crate::store::catalog_v1::CatalogStats)>>>,
+    /// 最近一次成功的持久化书目统计快照。
+    pub catalog_stats_cache: Arc<Mutex<Option<crate::catalog::stats::CatalogStatsSnapshot>>>,
     /// 书目统计刷新单飞锁，避免启动预热、定时任务和 HTTP 请求并发执行全表统计。
     pub catalog_stats_refresh_lock: Arc<AsyncMutex<()>>,
 }

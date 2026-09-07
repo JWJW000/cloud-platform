@@ -1,3 +1,5 @@
+import { useCatalogStats } from "../hooks/useCatalogStats";
+import { StatsSnapshotStatus } from "../components/StatsSnapshotStatus";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -10,30 +12,22 @@ import {
   AlertCircle,
   TrendingUp,
 } from "lucide-react";
-import { getCatalogStats, listCatalogImportRuns } from "../lib/api";
-import { CatalogStats, ImportRun } from "../lib/types";
-import { Card, CardHeader, Spinner } from "../components/ui";
+import { listCatalogImportRuns } from "../lib/api";
+import { ImportRun } from "../lib/types";
+import { Card, CardHeader } from "../components/ui";
 
 export function CatalogOverviewPage() {
-  const [stats, setStats] = useState<CatalogStats | null>(null);
+  const { stats, error: statsError } = useCatalogStats();
   const [recentRuns, setRecentRuns] = useState<ImportRun[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
-      setLoading(true);
       setError(null);
-      const [s, runs] = await Promise.all([
-        getCatalogStats(),
-        listCatalogImportRuns(),
-      ]);
-      setStats(s);
+      const runs = await listCatalogImportRuns();
       setRecentRuns(runs.slice(0, 5));
     } catch (err: any) {
       setError(err.message || "加载总库统计失败");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -41,9 +35,7 @@ export function CatalogOverviewPage() {
     loadData();
   }, []);
 
-  if (loading && !stats) {
-    return <Spinner label="正在汇总总库与索引全局指标..." />;
-  }
+  if (!stats) return <StatsSnapshotStatus stats={stats} error={statsError} />;
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 B";
@@ -60,6 +52,7 @@ export function CatalogOverviewPage() {
 
   return (
     <div className="space-y-6">
+      <StatsSnapshotStatus stats={stats} error={statsError} />
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-bold text-slate-900">我的书目总库</h1>

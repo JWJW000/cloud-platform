@@ -55,8 +55,10 @@ pub struct FacetCount {
 pub struct CatalogSearchResponse {
     /// 匹配项列表。
     pub items: Vec<EditionSearchItem>,
-    /// 总匹配数估计。
+    /// 精确总数或已知下界；由 total_is_exact 区分。
     pub total: i64,
+    /// PostgreSQL 分页回退不执行全表计数。
+    pub total_is_exact: bool,
     /// 分页大小。
     pub limit: i64,
     /// 当前偏移。
@@ -153,6 +155,7 @@ pub async fn search_catalog_with_opensearch(
                 params.language.as_deref(),
                 params.format.as_deref(),
                 params.resolution_status.as_deref(),
+                params.publisher.as_deref(),
                 limit,
                 cursor.as_ref().map(|cursor| cursor.updated_at),
                 cursor.as_ref().map(|cursor| cursor.id),
@@ -181,6 +184,7 @@ pub async fn search_catalog_with_opensearch(
                 return Ok(CatalogSearchResponse {
                     items: page.items,
                     total: page.total,
+                    total_is_exact: true,
                     limit,
                     offset: 0,
                     next_cursor,
@@ -221,6 +225,7 @@ pub async fn search_catalog_with_opensearch(
         params.language.as_deref(),
         params.format.as_deref(),
         params.resolution_status.as_deref(),
+        params.publisher.as_deref(),
         limit,
         cursor.as_ref().map(|cursor| cursor.updated_at),
         cursor.as_ref().map(|cursor| cursor.id),
@@ -242,75 +247,20 @@ pub async fn search_catalog_with_opensearch(
             .flatten()
     });
 
-    // 2. 总数估算：完全避免同步阻塞全表统计，立即返回
-    let total: i64 = if keyword.is_none() {
-        // 无关键词时：直接读取 pg_class 估算行数（0ms，瞬时返回）
-        sqlx::query_scalar(
-            "SELECT greatest(coalesce(reltuples, 0)::bigint, 0) FROM pg_class WHERE oid = 'editions'::regclass",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0)
-    } else {
-        // 存在关键词时：基于当前页结果是否存在更多进行轻量估计（如 > 20 或估算），绝不阻塞扫描百万行
-        if has_more {
-            items.len() as i64 + 1000
-        } else {
-            items.len() as i64
-        }
-    };
-
-    // 3. 分面统计：采用预置固定类别，彻底消除每次列表查询触发全表 GROUP BY 扫全库的性能损耗
-    let status_facets = vec![
-        FacetCount {
-            key: "已下载".into(),
-            count: total,
-        },
-        FacetCount {
-            key: "待下载".into(),
-            count: 0,
-        },
-        FacetCount {
-            key: "下载中".into(),
-            count: 0,
-        },
-        FacetCount {
-            key: "暂时失败".into(),
-            count: 0,
-        },
-        FacetCount {
-            key: "人工确认".into(),
-            count: 0,
-        },
-    ];
-    let language_facets = vec![
-        FacetCount {
-            key: "zh".into(),
-            count: total,
-        },
-        FacetCount {
-            key: "en".into(),
-            count: 0,
-        },
-        FacetCount {
-            key: "de".into(),
-            count: 0,
-        },
-        FacetCount {
-            key: "ru".into(),
-            count: 0,
-        },
-    ];
+    // 回退路径只报告能证明的结果数量，不为展示总数扫描全库或虚构分面。
+    let total = items.len() as i64 + i64::from(has_more);
+    let total_is_exact = cursor.is_none() && !has_more;
 
     Ok(CatalogSearchResponse {
         items,
         total,
+        total_is_exact,
         limit,
         offset: 0,
         next_cursor,
         previous_cursor,
-        status_facets,
-        language_facets,
+        status_facets: Vec::new(),
+        language_facets: Vec::new(),
         format_facets: Vec::new(),
         publisher_facets: Vec::new(),
     })

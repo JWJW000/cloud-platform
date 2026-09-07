@@ -559,6 +559,9 @@ export interface TaskExecution {
 // ---------------------------------------------------------------- 图书馆总库与索引 V1
 
 export interface CatalogStats {
+  ready?: boolean;
+  computed_at?: string | null;
+  stale?: boolean;
   total_sources: number;
   total_source_records: number;
   total_works: number;
@@ -614,6 +617,7 @@ export interface FacetCount {
 export interface CatalogSearchResponse {
   items: EditionSearchItem[];
   total: number;
+  total_is_exact?: boolean;
   limit: number;
   offset: number;
   next_cursor?: string | null;

@@ -176,47 +176,8 @@ async fn main() -> Result<()> {
                 );
             }
 
-            // 启动书目统计后台预热与刷新协程。精确统计会扫描百万级表，5 分钟刷新
-            // 足以满足仪表盘展示；单飞锁避免与 HTTP 冷启动请求重复执行。
-            {
-                let state_clone = state.clone();
-                tokio::spawn(async move {
-                    // 启动即刻预热一次
-                    {
-                        let _refresh_guard = state_clone.catalog_stats_refresh_lock.lock().await;
-                        if let Ok(stats) =
-                            master_server::store::catalog_v1::get_catalog_stats(&state_clone.pool)
-                                .await
-                        {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            if let Ok(mut guard) = state_clone.catalog_stats_cache.lock() {
-                                *guard = Some((now, stats));
-                            }
-                        }
-                    }
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-                    interval.tick().await; // skip initial immediate tick
-                    loop {
-                        interval.tick().await;
-                        let _refresh_guard = state_clone.catalog_stats_refresh_lock.lock().await;
-                        if let Ok(stats) =
-                            master_server::store::catalog_v1::get_catalog_stats(&state_clone.pool)
-                                .await
-                        {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            if let Ok(mut guard) = state_clone.catalog_stats_cache.lock() {
-                                *guard = Some((now, stats));
-                            }
-                        }
-                    }
-                });
-            }
+            // HTTP 只读统计快照；启动与周期刷新共用同一后台计算路径。
+            master_server::catalog::stats::spawn_refresh_worker(state.clone());
 
             // 启动 gRPC 服务
             let grpc_addr: SocketAddr =

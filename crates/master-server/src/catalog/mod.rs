@@ -16,6 +16,7 @@ pub mod inventory_matcher;
 pub mod outbox;
 pub mod resolution;
 pub mod search;
+pub mod stats;
 pub mod storage;
 
 pub use acquisition::{

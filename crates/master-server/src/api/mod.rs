@@ -29,7 +29,7 @@ pub mod webhook;
 pub mod workers;
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, MatchedPath, State};
 use axum::http::header::{
     ACCEPT, AUTHORIZATION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ORIGIN, REFERRER_POLICY,
     STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
@@ -43,6 +43,39 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
+
+/// 统一观测 GET 接口的首包耗时，不记录查询字符串或业务参数。
+async fn query_timing_middleware(req: Request<Body>, next: Next) -> Response<Body> {
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|p| p.as_str().to_owned());
+    let is_query = req.method() == Method::GET
+        && route
+            .as_deref()
+            .is_some_and(|p| p.starts_with("/api/") && p != "/api/events");
+    let started = std::time::Instant::now();
+    let mut response = next.run(req).await;
+    if is_query {
+        let elapsed = started.elapsed();
+        if let Ok(value) =
+            HeaderValue::from_str(&format!("app;dur={:.1}", elapsed.as_secs_f64() * 1000.0))
+        {
+            response
+                .headers_mut()
+                .append(HeaderName::from_static("server-timing"), value);
+        }
+        if elapsed >= std::time::Duration::from_secs(1) {
+            tracing::warn!(
+                route = route.as_deref().unwrap_or_default(),
+                elapsed_ms = elapsed.as_millis() as u64,
+                status = response.status().as_u16(),
+                "慢查询接口"
+            );
+        }
+    }
+    response
+}
 
 /// 安全响应头中间件。
 async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response<Body> {
@@ -493,6 +526,44 @@ pub fn router(state: AppState) -> Router {
             csrf_origin_middleware,
         ))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        .layer(middleware::from_fn(query_timing_middleware))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+#[cfg(test)]
+mod query_timing_tests {
+    use super::*;
+    use tower::Service;
+
+    #[tokio::test]
+    async fn query_timing_only_measures_api_reads() {
+        let app = Router::new()
+            .route(
+                "/api/books/:id",
+                get(|| async { "ok" }).post(|| async { "ok" }),
+            )
+            .route("/api/events", get(|| async { "ok" }))
+            .route("/health/live", get(|| async { "ok" }))
+            .layer(middleware::from_fn(query_timing_middleware));
+        for (method, uri, measured) in [
+            (Method::GET, "/api/books/1?query=private", true),
+            (Method::POST, "/api/books/1", false),
+            (Method::GET, "/api/events", false),
+            (Method::GET, "/health/live", false),
+        ] {
+            let response = app
+                .clone()
+                .call(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.headers().contains_key("server-timing"), measured);
+        }
+    }
 }

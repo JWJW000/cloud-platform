@@ -1,21 +1,21 @@
+import { useCatalogStats } from "../hooks/useCatalogStats";
+import { StatsSnapshotStatus } from "../components/StatsSnapshotStatus";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, GitMerge, Sparkles } from "lucide-react";
 import {
-  getCatalogStats,
   mergeCatalogWorks,
   previewCatalogWorksMerge,
   searchCatalog,
   type MergeImpactItem,
 } from "../lib/api";
-import type { CatalogSearchResponse, CatalogStats, EditionSearchItem } from "../lib/types";
-import { Card, Spinner, Button } from "../components/ui";
+import type { CatalogSearchResponse, EditionSearchItem } from "../lib/types";
+import { Card, Button } from "../components/ui";
 import { useToast } from "../context/ToastContext";
 
 export function CatalogQualityPage() {
-  const [stats, setStats] = useState<CatalogStats | null>(null);
+  const { stats, error: statsError } = useCatalogStats();
   const [candidates, setCandidates] = useState<CatalogSearchResponse | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<EditionSearchItem | null>(null);
   const [target, setTarget] = useState<EditionSearchItem | null>(null);
@@ -26,18 +26,11 @@ export function CatalogQualityPage() {
 
   const loadData = async () => {
     try {
-      setLoading(true);
       setError(null);
-      const [nextStats, result] = await Promise.all([
-        getCatalogStats(),
-        searchCatalog({ limit: 20, resolution_status: "待消歧" }),
-      ]);
-      setStats(nextStats);
+      const result = await searchCatalog({ limit: 20, resolution_status: "待消歧" });
       setCandidates(result);
     } catch (caught: any) {
       setError(caught.message || "加载数据质量指标失败");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -92,7 +85,7 @@ export function CatalogQualityPage() {
     }
   };
 
-  if (loading && !stats) return <Spinner label="正在计算总库数据质量与消歧状态..." />;
+  if (!stats) return <StatsSnapshotStatus stats={stats} error={statsError} />;
 
   const metrics = [
     ["待消歧作品", stats?.ambiguous_works_count ?? 0, "text-amber-600", "信息不足或存在多候选"],
@@ -103,6 +96,7 @@ export function CatalogQualityPage() {
 
   return (
     <div className="space-y-6">
+      <StatsSnapshotStatus stats={stats} error={statsError} />
       <div>
         <h1 className="text-xl font-bold text-slate-900">数据质量与书目消歧治理</h1>
         <p className="text-xs text-slate-500">选择疑似重复作品，并排核对后预览影响并确认合并。</p>

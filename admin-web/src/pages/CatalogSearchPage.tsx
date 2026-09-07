@@ -228,9 +228,9 @@ export function CatalogSearchPage() {
         <div className="md:col-span-3 h-full flex flex-col min-h-0 overflow-hidden">
           <div className="flex items-center justify-between text-xs text-slate-500 pb-2 shrink-0">
             <span>
-              {query
-                ? (data?.next_cursor ? "已找到匹配结果（超过 1,000 条）" : `已找到匹配结果（共 ${data?.items.length || 0} 条）`)
-                : `总库现有约 ${(data?.total || 0).toLocaleString()} 条记录`}
+              {data?.total_is_exact
+                ? `共 ${data.total.toLocaleString()} 条匹配记录`
+                : `本页 ${data?.items.length || 0} 条${data?.next_cursor ? "，可继续翻页" : ""}`}
             </span>
             <span>{cursor ? "游标分页" : "首屏结果"}</span>
           </div>
