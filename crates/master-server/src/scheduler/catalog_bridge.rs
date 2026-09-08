@@ -49,8 +49,18 @@ pub async fn next_target_priority(pool: &PgPool) -> AppResult<Option<i32>> {
 /// 目标行使用 `FOR UPDATE SKIP LOCKED`，镜像 task 与 target 共用 UUID；并发 Worker
 /// 不会为同一目标生成两份任务。没有待下载目标时是正常空操作。
 pub async fn materialize_next_target(tx: &mut Transaction<'_, Postgres>) -> AppResult<bool> {
+    // 先锁定一个目标，再查附件；附件排序不能把整个待下载库都展开。
     let candidate = sqlx::query_as::<_, CatalogCandidate>(
-        "SELECT at.id AS target_id, e.id AS edition_id, e.edition_title AS title, \
+        "WITH candidate AS MATERIALIZED ( \
+             SELECT at.* FROM acquisition_targets at \
+             WHERE at.status IN ('待下载', '排队中', '暂时失败') \
+               AND at.next_attempt_at <= now() \
+               AND (at.lease_expires_at IS NULL OR at.lease_expires_at < now()) \
+               AND NOT EXISTS (SELECT 1 FROM book_tasks bt WHERE bt.id = at.id) \
+             ORDER BY at.priority DESC, at.next_attempt_at, at.created_at \
+             FOR UPDATE OF at SKIP LOCKED LIMIT 1 \
+         ) \
+         SELECT at.id AS target_id, e.id AS edition_id, e.edition_title AS title, \
                 (SELECT c.name FROM edition_contributors ec \
                  JOIN contributors c ON c.id = ec.contributor_id \
                  WHERE ec.edition_id = e.id ORDER BY ec.sort_order LIMIT 1) AS author, \
@@ -60,7 +70,7 @@ pub async fn materialize_next_target(tx: &mut Transaction<'_, Postgres>) -> AppR
                    AND i.is_valid ORDER BY (i.identifier_type = 'isbn13') DESC LIMIT 1) AS isbn, \
                 COALESCE(asset.format, 'pdf') AS format, asset.id AS source_asset_id, \
                 at.max_attempts \
-         FROM acquisition_targets at \
+         FROM candidate at \
          JOIN editions e ON e.id = at.edition_id \
          LEFT JOIN LATERAL ( \
              SELECT sa.id, lower(sa.format) AS format \
@@ -69,13 +79,7 @@ pub async fn materialize_next_target(tx: &mut Transaction<'_, Postgres>) -> AppR
              WHERE rr.edition_id = at.edition_id AND sa.status = '可用' \
                AND lower(sa.format) IN ('pdf', 'epub') \
              ORDER BY (lower(sa.format) = 'epub') DESC, sa.created_at ASC LIMIT 1 \
-         ) asset ON TRUE \
-         WHERE at.status IN ('待下载', '排队中', '暂时失败') \
-           AND at.next_attempt_at <= now() \
-           AND (at.lease_expires_at IS NULL OR at.lease_expires_at < now()) \
-           AND NOT EXISTS (SELECT 1 FROM book_tasks bt WHERE bt.id = at.id) \
-         ORDER BY at.priority DESC, (asset.id IS NOT NULL) DESC, at.next_attempt_at, at.created_at \
-         FOR UPDATE OF at SKIP LOCKED LIMIT 1",
+         ) asset ON TRUE",
     )
     .fetch_optional(&mut **tx)
     .await?;

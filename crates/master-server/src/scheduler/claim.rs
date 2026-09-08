@@ -168,6 +168,31 @@ pub async fn claim_next_task(
             retry_after_secs: 20,
         }));
     }
+    // 同一会话的超时重试必须串行裁决，不能为一个槽位积压多份分配。
+    let current_status: String =
+        sqlx::query_scalar("SELECT status FROM execution_sessions WHERE id = $1 FOR UPDATE")
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !matches!(current_status.as_str(), "创建中" | "运行中") {
+        return Ok(ClaimOutcome::SessionShouldEnd {
+            reason: format!("会话状态为{current_status}，不再分配新任务"),
+        });
+    }
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM book_tasks WHERE lease_session_id = $1 \
+         AND lease_expires_at IS NOT NULL \
+         AND status IN ('已分配', '执行中', '等待入库'))",
+    )
+    .bind(session_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active {
+        return Ok(ClaimOutcome::Unavailable(Unavailable {
+            reason: "会话已有进行中的图书任务".to_string(),
+            retry_after_secs: 20,
+        }));
+    }
     // 先领取已经物化的镜像任务。旧实现每领取一本书前都会先扫描
     // acquisition_targets 并对 book_tasks 做反连接；当数万条目标都已经物化时，
     // 这条必然返回空的查询仍会消耗数秒并打满 PostgreSQL。只有现有队列确实为空

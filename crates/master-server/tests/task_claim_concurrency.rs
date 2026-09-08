@@ -173,5 +173,46 @@ async fn 五个worker并发领取同一任务只能有一个成功() {
     );
     assert!(task.lease_session_id.is_some(), "必须记录 lease_session_id");
 
+    // 网络超时重发 NextTaskRequest 时，即使还有其他书，也不能给同一会话多发。
+    let extra = vec![ImportRow {
+        title: "重复请求不能预领的第二本书".to_string(),
+        author: None,
+        publisher: None,
+        isbn: None,
+    }];
+    let extra_batch = store::catalog::import_books(&db.pool, &import_req, &extra)
+        .await
+        .unwrap();
+    store::catalog::set_batch_status(
+        &db.pool,
+        extra_batch.batch_id.unwrap(),
+        BatchStatus::Running,
+    )
+    .await
+    .unwrap();
+    let session_id = task.lease_session_id.unwrap();
+    let node_id = task.lease_node_id.unwrap();
+    let repeated = join_all((0..5).map(|_| claim_next_task(&state, node_id, session_id))).await;
+    assert!(repeated
+        .into_iter()
+        .all(|r| matches!(r.unwrap(), ClaimOutcome::Unavailable(_))));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM task_executions")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "重试不得生成额外执行或消耗尝试次数");
+
+    sqlx::query("UPDATE book_tasks SET status = '已取消', lease_expires_at = NULL, lease_session_id = NULL, lease_execution_id = NULL WHERE id = $1")
+        .bind(task.id).execute(&db.pool).await.unwrap();
+    let repeated = join_all((0..5).map(|_| claim_next_task(&state, node_id, session_id))).await;
+    assert_eq!(
+        repeated
+            .into_iter()
+            .filter(|r| matches!(r, Ok(ClaimOutcome::Assigned(_))))
+            .count(),
+        1,
+        "空闲会话并发申请也只能新领一本"
+    );
+
     db.teardown().await;
 }
