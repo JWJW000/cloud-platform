@@ -484,6 +484,7 @@ impl RealAutomationEngine {
         cancel: &CancelToken,
     ) -> Result<SearchHit, AutomationError> {
         let deadline = Instant::now() + RESULTS_TIMEOUT;
+        let mut empty_hint_since = None;
         loop {
             cancel.check()?;
             let snapshot = self.with_session(&session.session_id, |sess| {
@@ -506,55 +507,61 @@ impl RealAutomationEngine {
                         )
                     });
                 }
-                if js_flag(&sess.page, site::NOT_FOUND_SCRIPT) {
-                    return Err(AutomationError::new(
-                        FailureClass::BookNotFound,
-                        format!("book not found: {}", spec.book.title),
-                    ));
-                }
-                if js_flag(&sess.page, site::SIMILAR_BOOKS_SCRIPT) {
-                    return Err(AutomationError::new(
-                        FailureClass::BookNotFound,
-                        "站点仅返回相似图书（搜索无精确匹配），已跳过",
-                    ));
-                }
-                Ok((page_title(&sess.page), collect_site_cards(&sess.page)))
+                Ok((
+                    page_title(&sess.page),
+                    collect_site_cards(&sess.page),
+                    js_flag(&sess.page, site::NOT_FOUND_SCRIPT)
+                        || js_flag(&sess.page, site::SIMILAR_BOOKS_SCRIPT),
+                ))
             })?;
 
-            let (title, cards) = snapshot;
-            if title.contains(site::SEARCH_PAGE_TITLE_MARK) || !cards.is_empty() {
-                if let Some(card) = site::find_download_in_cards(
-                    &cards,
-                    &spec.book.title,
-                    spec.book.isbn.as_deref(),
-                ) {
-                    let target = MatchTarget {
-                        title: &spec.book.title,
-                        author: spec.book.author.as_deref(),
-                        publisher: spec.book.publisher.as_deref(),
-                        isbn: spec.book.isbn.as_deref(),
-                    };
-                    let candidates: Vec<_> = cards.iter().map(SiteCard::to_candidate).collect();
-                    let basis = match select_candidate(&target, &candidates) {
-                        crate::matching::MatchOutcome::Matched { basis, .. } => basis,
-                        _ => crate::matching::MatchBasis::UniqueTitle,
-                    };
-                    return Ok(SearchHit {
-                        card: card.clone(),
-                        candidate_count: cards.len(),
-                        basis,
-                    });
+            let (title, cards, no_exact_hint) = snapshot;
+            let target = MatchTarget {
+                title: &spec.book.title,
+                author: spec.book.author.as_deref(),
+                publisher: spec.book.publisher.as_deref(),
+                isbn: spec.book.isbn.as_deref(),
+            };
+            let candidates: Vec<_> = cards.iter().map(SiteCard::to_candidate).collect();
+            match select_candidate(&target, &candidates) {
+                crate::matching::MatchOutcome::Matched { candidate, basis } => {
+                    if let Some(card) = cards.iter().find(|card| card.index == candidate.index) {
+                        return Ok(SearchHit {
+                            card: card.clone(),
+                            candidate_count: cards.len(),
+                            basis,
+                        });
+                    }
                 }
-                if !cards.is_empty() && title.contains(site::SEARCH_PAGE_TITLE_MARK) {
-                    events.log(
-                        "信息",
-                        format!("搜索页已渲染 {} 张卡片，但都不匹配目标书", cards.len()),
-                    );
+                outcome
+                    if !cards.is_empty()
+                        && (no_exact_hint || title.contains(site::SEARCH_PAGE_TITLE_MARK)) =>
+                {
+                    let reason = match outcome {
+                        crate::matching::MatchOutcome::NeedsConfirm { reason }
+                        | crate::matching::MatchOutcome::NotFound { reason } => reason,
+                        _ => unreachable!(),
+                    };
+                    events.log("信息", &reason);
+                    return Err(AutomationError::new(FailureClass::BookNotFound, reason));
+                }
+                _ => {}
+            }
+            // 给“无结果”提示后的异步卡片两秒渲染时间，避免每本空结果都等满 20 秒。
+            if no_exact_hint && cards.is_empty() {
+                if empty_hint_since.get_or_insert_with(Instant::now).elapsed()
+                    >= Duration::from_secs(2)
+                {
                     return Err(AutomationError::new(
                         FailureClass::BookNotFound,
-                        format!("book not found: {}", spec.book.title),
+                        format!(
+                            "book not found after checking search cards: {}",
+                            spec.book.title
+                        ),
                     ));
                 }
+            } else {
+                empty_hint_since = None;
             }
 
             if Instant::now() >= deadline {
@@ -2362,7 +2369,7 @@ impl AutomationEngine for RealAutomationEngine {
                 referer: &referer,
                 url: download_url.clone(),
                 staging_dir: &spec.staging_dir,
-                title: &spec.book.title,
+                title: &chosen.card.title,
                 task_id: &spec.task_id,
                 timeout: spec.stall_timeout,
             };
@@ -2372,7 +2379,7 @@ impl AutomationEngine for RealAutomationEngine {
                     events.stage("入库中");
                     let evidence = verify_and_collect(
                         &staged_file,
-                        &spec.book.title,
+                        &chosen.card.title,
                         &format,
                         spec.minimum_size_bytes,
                     )

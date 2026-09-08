@@ -8,7 +8,6 @@ use serde_json::Value;
 use url::Url;
 
 use crate::matching::CandidateBook;
-use crate::verify::filename_matches_title;
 
 /// 注册页路径（不是 `/register`）。
 pub const REGISTRATION_PATH: &str = "/registration";
@@ -28,7 +27,9 @@ pub const CARD_SCRAPE_SCRIPT: &str = r#"
             }
             const root = card.shadowRoot || card;
             const titleEl = root.querySelector('.title, .book-title, h3, .name, a[href*="/book/"]');
-            let title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
+            const slottedTitle = card.querySelector('[slot="title"]');
+            let title = card.getAttribute('title') || (slottedTitle ? slottedTitle.textContent.trim() : '')
+                || (titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '');
             if (!title) {
                 const href = card.getAttribute('href') || '';
                 const slug = href.split('/').pop() || '';
@@ -41,7 +42,14 @@ pub const CARD_SCRAPE_SCRIPT: &str = r#"
             }
             const download = card.getAttribute('download') || '';
             const isbn = card.getAttribute('isbn') || '';
-            results.push({ title, download, isbn });
+            const text = (name) => {
+                const attr = card.getAttribute(name);
+                if (attr && attr.trim()) return attr.trim();
+                const selector = `.${name}, [slot="${name}"]`;
+                const el = card.querySelector(selector) || root.querySelector(selector);
+                return el ? (el.innerText || el.textContent || '').trim() : '';
+            };
+            results.push({ title, download, isbn, author: text('author'), publisher: text('publisher') });
         }
         return results;
     })()
@@ -173,6 +181,10 @@ pub struct SiteCard {
     pub index: usize,
     /// 书名。
     pub title: String,
+    /// 作者，可能为空。
+    pub author: String,
+    /// 出版社，可能为空。
+    pub publisher: String,
     /// ISBN，可能为空。
     pub isbn: String,
     /// `/dl/...` 下载路径；空字符串表示这张卡不能下。
@@ -180,13 +192,13 @@ pub struct SiteCard {
 }
 
 impl SiteCard {
-    /// 转成匹配层候选。作者/出版社这个站的卡片属性里没有，留空走书名/ISBN。
+    /// 将卡片元数据交给统一匹配层。
     pub fn to_candidate(&self) -> CandidateBook {
         CandidateBook {
             index: self.index,
             title: self.title.clone(),
-            author: String::new(),
-            publisher: String::new(),
+            author: self.author.clone(),
+            publisher: self.publisher.clone(),
             isbn: self.isbn.clone(),
         }
     }
@@ -227,39 +239,23 @@ pub fn parse_cards(value: &Value) -> Vec<SiteCard> {
         cards.push(SiteCard {
             index: cards.len(),
             title,
+            author: item
+                .get("author")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            publisher: item
+                .get("publisher")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
             isbn,
             download,
         });
     }
     cards
-}
-
-/// 在卡片中挑目标书：ISBN 优先，否则书名双向包含。
-pub fn find_download_in_cards<'a>(
-    cards: &'a [SiteCard],
-    title: &str,
-    isbn: Option<&str>,
-) -> Option<&'a SiteCard> {
-    let target_isbn = isbn.map(normalize_isbn).filter(|s| !s.is_empty());
-    if let Some(target) = &target_isbn {
-        if let Some(card) = cards.iter().find(|card| {
-            let card_isbn = normalize_isbn(&card.isbn);
-            !card_isbn.is_empty() && card_isbn == *target
-        }) {
-            return Some(card);
-        }
-    }
-    cards
-        .iter()
-        .find(|card| filename_matches_title(std::path::Path::new(&card.title), title))
-}
-
-/// ISBN 归一化：字母数字并转大写。
-pub fn normalize_isbn(raw: &str) -> String {
-    raw.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_uppercase())
-        .collect()
 }
 
 /// 从 JS 返回值读布尔。
@@ -470,44 +466,14 @@ mod tests {
     fn hidden_and_empty_download_cards_are_dropped() {
         let value = json!([
             {"title": "孤独天涯行", "download": "", "isbn": "123"},
-            {"title": "目标书", "download": "/dl/abc", "isbn": "9787111407010"}
+            {"title": "目标书", "download": "/dl/abc", "isbn": "9787111407010", "author":"Author A", "publisher":"Publisher B"}
         ]);
         let cards = parse_cards(&value);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].title, "目标书");
         assert_eq!(cards[0].download, "/dl/abc");
-    }
-
-    #[test]
-    fn isbn_match_beats_title() {
-        let cards = vec![
-            SiteCard {
-                index: 0,
-                title: "算法导论习题解答".into(),
-                isbn: "9780000000000".into(),
-                download: "/dl/wrong".into(),
-            },
-            SiteCard {
-                index: 1,
-                title: "别的".into(),
-                isbn: "978-7-111-40701-0".into(),
-                download: "/dl/right".into(),
-            },
-        ];
-        let chosen = find_download_in_cards(&cards, "算法导论", Some("9787111407010")).unwrap();
-        assert_eq!(chosen.download, "/dl/right");
-    }
-
-    #[test]
-    fn edition_suffix_title_still_matches() {
-        let cards = vec![SiteCard {
-            index: 0,
-            title: "水利工程建设投资控制 第2版".into(),
-            isbn: String::new(),
-            download: "/dl/ok".into(),
-        }];
-        let chosen = find_download_in_cards(&cards, "水利工程建设投资控制", None).unwrap();
-        assert_eq!(chosen.download, "/dl/ok");
+        assert_eq!(cards[0].to_candidate().author, "Author A");
+        assert_eq!(cards[0].to_candidate().publisher, "Publisher B");
     }
 
     #[test]

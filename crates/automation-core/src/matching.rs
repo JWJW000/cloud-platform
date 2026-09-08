@@ -9,7 +9,7 @@
 //!
 //! 1. ISBN 标准化后完全一致 —— 站点自己给出的强标识，最可信；
 //! 2. 书名标准化后完全一致，且作者也对得上；
-//! 3. 书名 + 作者 + 出版社的综合评分明显领先；
+//! 3. 书名轻微差异且作者、出版社归一化后均一致；
 //! 4. 只有书名对得上而候选不唯一 —— 返回「待确认」，交给人或后续核验。
 //!
 //! 所有比较都在标准化之后进行：去掉空白、标点、大小写差异与全角字符，
@@ -39,7 +39,7 @@ pub enum MatchBasis {
     Isbn,
     /// 书名一致且作者一致。
     TitleAndAuthor,
-    /// 书名、作者、出版社综合评分领先。
+    /// 书名精确或轻微差异，作者和出版社均一致。
     Composite,
     /// 书名一致且候选唯一。
     UniqueTitle,
@@ -79,15 +79,42 @@ pub enum MatchOutcome {
     },
 }
 
-/// 标准化 ISBN：只保留数字与 X，并把 ISBN-10 视作与 ISBN-13 不同的字符串。
-///
-/// 不做 10↔13 位换算：站点上两种写法同时出现时，直接比较会漏掉一部分匹配，
-/// 但**漏掉只会让流程退回下一层匹配**，而错误换算会让两本不同的书被判为同一本。
+/// 使用领域层的校验位检查，将有效 ISBN-10/13 统一为 ISBN-13。
 pub fn normalize_isbn(raw: &str) -> String {
-    raw.chars()
-        .filter(|c| c.is_ascii_digit() || *c == 'X' || *c == 'x')
-        .map(|c| c.to_ascii_uppercase())
-        .collect()
+    platform_domain::isbn::normalize_isbn(raw)
+        .map(|isbn| isbn.to_string())
+        .unwrap_or_default()
+}
+
+/// 标题轻微差异：至少 8 字符、编辑距离不超过 10%，卷号/版本数字必须一致。
+fn similar_title(left: &str, right: &str) -> bool {
+    let a: Vec<char> = normalize_title(left).chars().collect();
+    let b: Vec<char> = normalize_title(right).chars().collect();
+    let max_len = a.len().max(b.len());
+    if a == b {
+        return !a.is_empty();
+    }
+    if a.len().min(b.len()) < 8 || max_len > 1000 || a.len().abs_diff(b.len()) > max_len / 10 {
+        return false;
+    }
+    if a.iter().filter(|c| c.is_numeric()).collect::<Vec<_>>()
+        != b.iter().filter(|c| c.is_numeric()).collect::<Vec<_>>()
+    {
+        return false;
+    }
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (row[j] + 1)
+                .min(above + 1)
+                .min(diagonal + usize::from(ca != cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()] <= max_len / 10
 }
 
 /// 标准化人名/机构名：去空白与常见标点，转小写，剥掉国别方括号。
@@ -185,15 +212,9 @@ pub struct MatchTarget<'a> {
 
 /// 在候选列表中挑出唯一确定的一本（第 8.3 节的四层顺序）。
 pub fn select_candidate(target: &MatchTarget<'_>, candidates: &[CandidateBook]) -> MatchOutcome {
-    if candidates.is_empty() {
-        return MatchOutcome::NotFound {
-            reason: "搜索结果为空".to_string(),
-        };
-    }
-
-    // 第 1 层：ISBN。站点自己标出的 ISBN 与任务 ISBN 一致，就没有再猜的必要。
-    if let Some(isbn) = target.isbn.map(normalize_isbn).filter(|s| s.len() >= 10) {
-        let hits: Vec<&CandidateBook> = candidates
+    let isbn = target.isbn.map(normalize_isbn).unwrap_or_default();
+    if !isbn.is_empty() {
+        let hits: Vec<_> = candidates
             .iter()
             .filter(|c| normalize_isbn(&c.isbn) == isbn)
             .collect();
@@ -203,114 +224,66 @@ pub fn select_candidate(target: &MatchTarget<'_>, candidates: &[CandidateBook]) 
                 basis: MatchBasis::Isbn,
             };
         }
-        // 多个候选带同一个 ISBN：通常是同一本书的重复上架，此时交由下面的层级处理。
+        if hits.len() > 1 {
+            return MatchOutcome::NeedsConfirm {
+                reason: "多个可下载候选 ISBN 等价，无法确定唯一结果".to_string(),
+            };
+        }
     }
-
-    let want_title = normalize_title(target.title);
-    let exact_hits: Vec<&CandidateBook> = candidates
-        .iter()
-        .filter(|c| normalize_title(&c.title) == want_title)
-        .collect();
-    // 桌面版用双向包含兼容「第2版」等后缀；精确命中优先，避免「习题解答」抢走正书。
-    let title_hits: Vec<&CandidateBook> = if exact_hits.is_empty() {
-        candidates
-            .iter()
-            .filter(|c| {
-                crate::verify::filename_matches_title(std::path::Path::new(&c.title), target.title)
-            })
-            .collect()
-    } else {
-        exact_hits
-    };
-
-    if title_hits.is_empty() {
-        return MatchOutcome::NotFound {
+    let title = normalize_title(target.title);
+    let author = target.author.map(normalize_person).unwrap_or_default();
+    let publisher = target.publisher.map(normalize_person).unwrap_or_default();
+    let mut hits = Vec::new();
+    let mut title_seen = false;
+    for c in candidates {
+        let same_author = !author.is_empty() && normalize_person(&c.author) == author;
+        let same_publisher = !publisher.is_empty() && normalize_person(&c.publisher) == publisher;
+        let exact = !title.is_empty() && normalize_title(&c.title) == title;
+        let similar = same_author && same_publisher && similar_title(&c.title, target.title);
+        // 仅书名任务保留原有版本后缀兼容；有元数据时由作者/出版社约束。
+        let title_only = author.is_empty()
+            && publisher.is_empty()
+            && crate::verify::filename_matches_title(std::path::Path::new(&c.title), target.title);
+        if !(exact || similar || title_only) {
+            continue;
+        }
+        title_seen = true;
+        if (!author.is_empty() && !same_author) || (!publisher.is_empty() && !same_publisher) {
+            continue;
+        }
+        let basis = if same_author && same_publisher {
+            MatchBasis::Composite
+        } else if same_author {
+            MatchBasis::TitleAndAuthor
+        } else {
+            MatchBasis::UniqueTitle
+        };
+        hits.push((c, basis, exact));
+    }
+    if hits.iter().any(|(_, _, exact)| *exact) {
+        hits.retain(|(_, _, exact)| *exact);
+    }
+    if hits.len() == 1 {
+        return MatchOutcome::Matched {
+            candidate: hits[0].0.clone(),
+            basis: hits[0].1,
+        };
+    }
+    if title_seen {
+        MatchOutcome::NeedsConfirm {
             reason: format!(
-                "{} 个候选中没有书名与《{}》一致的结果",
+                "候选书作者/出版社不一致、缺失或存在多个匹配（{} 个），不自动下载",
+                hits.len()
+            ),
+        }
+    } else {
+        MatchOutcome::NotFound {
+            reason: format!(
+                "{} 个候选中没有与《{}》匹配的图书",
                 candidates.len(),
                 target.title
             ),
-        };
-    }
-
-    // 第 2 层：书名一致 + 作者一致。
-    let want_author = target
-        .author
-        .map(normalize_person)
-        .filter(|s| !s.is_empty());
-    if let Some(author) = &want_author {
-        let hits: Vec<&&CandidateBook> = title_hits
-            .iter()
-            .filter(|c| {
-                let candidate_author = normalize_person(&c.author);
-                !candidate_author.is_empty()
-                    && (candidate_author.contains(author.as_str())
-                        || author.contains(candidate_author.as_str()))
-            })
-            .collect();
-        if hits.len() == 1 {
-            return MatchOutcome::Matched {
-                candidate: (*hits[0]).clone(),
-                basis: MatchBasis::TitleAndAuthor,
-            };
         }
-
-        // 第 3 层：作者也分不开时加上出版社综合评分。
-        if hits.len() > 1 {
-            if let Some(publisher) = target
-                .publisher
-                .map(normalize_person)
-                .filter(|s| !s.is_empty())
-            {
-                let narrowed: Vec<&&&CandidateBook> = hits
-                    .iter()
-                    .filter(|c| {
-                        let candidate_publisher = normalize_person(&c.publisher);
-                        !candidate_publisher.is_empty()
-                            && (candidate_publisher.contains(publisher.as_str())
-                                || publisher.contains(candidate_publisher.as_str()))
-                    })
-                    .collect();
-                if narrowed.len() == 1 {
-                    return MatchOutcome::Matched {
-                        candidate: (***narrowed[0]).clone(),
-                        basis: MatchBasis::Composite,
-                    };
-                }
-            }
-            return MatchOutcome::NeedsConfirm {
-                reason: format!(
-                    "书名与作者均一致的候选有 {} 个，无法确定唯一结果",
-                    hits.len()
-                ),
-            };
-        }
-
-        // 书名对得上但作者一个都对不上：这很可能不是同一本书。
-        return MatchOutcome::NeedsConfirm {
-            reason: format!(
-                "书名《{}》匹配到 {} 个候选，但作者均与「{}」不符",
-                target.title,
-                title_hits.len(),
-                target.author.unwrap_or_default()
-            ),
-        };
-    }
-
-    // 第 4 层：任务本身只给了书名。唯一候选才敢下载，多个候选一律「待确认」。
-    if title_hits.len() == 1 {
-        return MatchOutcome::Matched {
-            candidate: title_hits[0].clone(),
-            basis: MatchBasis::UniqueTitle,
-        };
-    }
-
-    MatchOutcome::NeedsConfirm {
-        reason: format!(
-            "任务只提供书名，而书名《{}》匹配到 {} 个候选，拒绝猜测",
-            target.title,
-            title_hits.len()
-        ),
     }
 }
 
@@ -346,6 +319,101 @@ mod tests {
             publisher,
             isbn,
         }
+    }
+
+    #[test]
+    fn valid_isbn10_and_13_are_equivalent_but_bad_checksums_are_not() {
+        for (ten, thirteen) in [
+            ("0262033844", "9780262033848"),
+            ("043942089X", "9780439420891"),
+        ] {
+            for (wanted, offered) in [(ten, thirteen), (thirteen, ten)] {
+                let result = select_candidate(
+                    &target("Wanted", None, None, Some(wanted)),
+                    &[candidate(0, "Different title", "", "", offered)],
+                );
+                assert!(matches!(
+                    result,
+                    MatchOutcome::Matched {
+                        basis: MatchBasis::Isbn,
+                        ..
+                    }
+                ));
+            }
+        }
+        assert_eq!(normalize_isbn("9787111407011"), "");
+        assert!(!matches!(
+            select_candidate(
+                &target("Wanted", None, None, Some("9787111407011")),
+                &[candidate(0, "Wrong book", "", "", "9787111407011")]
+            ),
+            MatchOutcome::Matched { .. }
+        ));
+    }
+
+    #[test]
+    fn slightly_different_title_requires_both_metadata_and_unique_candidate() {
+        let t = target(
+            "Digital Twins for Cities",
+            Some("Alice Smith"),
+            Some("Example Press"),
+            None,
+        );
+        let book = candidate(
+            0,
+            "Digital Twin for Cities",
+            "Alice Smith",
+            "Example Press",
+            "",
+        );
+        assert!(matches!(
+            select_candidate(&t, std::slice::from_ref(&book)),
+            MatchOutcome::Matched {
+                basis: MatchBasis::Composite,
+                ..
+            }
+        ));
+        for (author, publisher) in [
+            ("", "Example Press"),
+            ("Alice Smith", ""),
+            ("Bob", "Example Press"),
+            ("Alice Smith", "Other Press"),
+        ] {
+            assert!(!matches!(
+                select_candidate(&t, &[candidate(0, &book.title, author, publisher, "")]),
+                MatchOutcome::Matched { .. }
+            ));
+        }
+        assert!(matches!(
+            select_candidate(
+                &t,
+                &[
+                    book.clone(),
+                    candidate(1, &book.title, &book.author, &book.publisher, "")
+                ]
+            ),
+            MatchOutcome::NeedsConfirm { .. }
+        ));
+        assert!(!similar_title(
+            "Digital Twins Volume 1",
+            "Digital Twins Volume 2"
+        ));
+        assert!(!similar_title(
+            "Digital Twins for Cities",
+            "Cooking for Beginners"
+        ));
+    }
+
+    #[test]
+    fn exact_title_does_not_override_conflicting_publisher() {
+        let t = target("Digital Twins", Some("Alice"), Some("Publisher A"), None);
+        assert!(matches!(
+            select_candidate(
+                &t,
+                &[candidate(0, "Digital Twins", "Alice", "Publisher B", "")]
+            ),
+            MatchOutcome::NeedsConfirm { .. }
+        ));
     }
 
     #[test]
@@ -479,7 +547,7 @@ mod tests {
     #[test]
     fn isbn_normalization_ignores_separators() {
         assert_eq!(normalize_isbn("978-7-111-40701-0"), "9787111407010");
-        assert_eq!(normalize_isbn("isbn 0-306-40615-X"), "030640615X");
+        assert_eq!(normalize_isbn("0-262-03384-4"), "9780262033848");
     }
 
     #[test]
