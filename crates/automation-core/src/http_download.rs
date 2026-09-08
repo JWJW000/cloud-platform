@@ -129,7 +129,8 @@ pub fn download_file(
                 format!("failed to create {}: {err}", html_path.display()),
             )
         })?;
-        let mut reader = first_response.into_reader();
+        // HTML 仅用于诊断，限制读取量，避免错误页占满内存或暂存盘。
+        let mut reader = first_response.into_reader().take(64 * 1024);
         let mut buf = Vec::new();
         reader.read_to_end(&mut buf).map_err(|err| {
             AutomationError::new(
@@ -143,7 +144,7 @@ pub fn download_file(
                 format!("failed to write HTML response: {err}"),
             )
         })?;
-        let snippet = String::from_utf8_lossy(&buf).chars().take(400).collect();
+        let snippet = String::from_utf8_lossy(&buf).into_owned();
         return Ok(HttpDownloadOutcome::Html {
             path: html_path,
             snippet,
@@ -630,6 +631,43 @@ fn unique_download_path(dir: &Path, file_name: &str) -> PathBuf {
     dir.join(file_name)
 }
 
+/// 只返回固定诊断标签，避免将 HTML 中的会话信息写入日志。
+/// 未识别页和登录/验证页允许调用方刷新一次；明确拒绝不立即重复请求。
+pub fn classify_html_response(html: &str) -> AutomationError {
+    let lower = html.to_ascii_lowercase();
+    let (class, reason) = if html_looks_like_quota(html) {
+        (FailureClass::SiteRateLimited, "下载限额页面")
+    } else if lower.contains("too many requests") || html.contains("请求过于频繁") {
+        (FailureClass::SiteRateLimited, "请求频率受限")
+    } else if lower.contains("access denied") || lower.contains("<title>403") {
+        (FailureClass::Retryable, "访问被拒绝")
+    } else if lower.contains("file not found") || lower.contains("<title>404") {
+        (FailureClass::BookNotFound, "文件不存在")
+    } else if lower.contains("type=\"password\"") || lower.contains("type='password'") {
+        (FailureClass::Retryable, "登录页面")
+    } else if lower.contains("cf-chl-")
+        || lower.contains("just a moment")
+        || lower.contains("verify you are human")
+    {
+        (FailureClass::Retryable, "站点验证页面")
+    } else {
+        (FailureClass::Retryable, "未识别的 HTML 页面")
+    };
+    AutomationError::new(
+        class,
+        format!("download endpoint returned HTML instead of a book file: {reason}"),
+    )
+}
+
+/// 同一下载最多刷新一次；明确限流、拒绝访问、缺失文件不做立即重试。
+pub fn should_refresh_html(html: &str, attempt: usize) -> bool {
+    let error = classify_html_response(html);
+    attempt == 0
+        && error.class == FailureClass::Retryable
+        && !html.to_ascii_lowercase().contains("access denied")
+        && !html.to_ascii_lowercase().contains("<title>403")
+}
+
 /// HTML 响应是否像限额页。
 pub fn html_looks_like_quota(snippet: &str) -> bool {
     let lower = snippet.to_ascii_lowercase();
@@ -674,6 +712,85 @@ mod tests {
     fn quota_html_is_detected() {
         assert!(html_looks_like_quota("每日限额已用完"));
         assert!(!html_looks_like_quota("<html>hello</html>"));
+    }
+
+    #[test]
+    fn html_refresh_is_bounded_and_preserves_explicit_failures() {
+        for html in [
+            "<html>unknown</html>",
+            "<input type='password'>",
+            "<title>Just a moment</title>",
+        ] {
+            assert!(should_refresh_html(html, 0));
+            assert!(!should_refresh_html(html, 1));
+        }
+        for html in [
+            "daily download limit exceeded",
+            "Too many requests",
+            "Access denied",
+            "<title>403 Forbidden</title>",
+            "File not found",
+        ] {
+            assert!(!should_refresh_html(html, 0));
+        }
+        assert_eq!(
+            classify_html_response("File not found").class,
+            FailureClass::BookNotFound
+        );
+        assert_eq!(
+            classify_html_response("Too many requests").class,
+            FailureClass::SiteRateLimited
+        );
+        let private_html = "<input type='password' value='secret-session-value'>";
+        assert!(!classify_html_response(private_html)
+            .reason
+            .contains("secret-session-value"));
+    }
+
+    #[test]
+    fn html_response_keeps_diagnostics_past_head_and_bounds_body() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 4096);
+            }
+            let body = format!("{}Too many requests{}", " ".repeat(1000), " ".repeat(70000));
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(10);
+        let result = download_file(
+            HttpDownloadRequest {
+                proxy_url: None,
+                user_agent: "test",
+                cookies: &[],
+                referer: "",
+                url: Url::parse(&format!("http://{address}/book")).unwrap(),
+                staging_dir: dir.path(),
+                title: "test",
+                task_id: "test",
+                timeout: Duration::from_secs(20),
+            },
+            &EventSink::new(sender),
+            &CancelToken::new(),
+        )
+        .unwrap();
+        let HttpDownloadOutcome::Html { path, snippet } = result else {
+            panic!("HTML must not be a book file")
+        };
+        assert_eq!(snippet.len(), 64 * 1024);
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 64 * 1024);
+        assert_eq!(
+            classify_html_response(&snippet).class,
+            FailureClass::SiteRateLimited
+        );
+        server.join().unwrap();
     }
 
     #[test]

@@ -2425,10 +2425,13 @@ impl AutomationEngine for RealAutomationEngine {
                             )
                         });
                     }
-                    last_http_err = Some(AutomationError::new(
-                        FailureClass::Retryable,
-                        "download endpoint returned HTML instead of a book file",
-                    ));
+                    let error = http_download::classify_html_response(&snippet);
+                    events.log("警告", &error.reason);
+                    last_http_err = Some(error);
+                    if http_download::should_refresh_html(&snippet, token_attempt) {
+                        events.log("警告", "下载返回 HTML，刷新当前浏览器会话后重试一次");
+                        continue;
+                    }
                 }
                 Err(err) => {
                     let refresh_token = err.reason.contains("HTTP 503")
