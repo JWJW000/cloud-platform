@@ -84,6 +84,15 @@ fn is_browser_start_failure(reason: &str) -> bool {
         || reason.contains("Chrome did not become ready")
 }
 
+fn needs_proxy_backoff(error: &anyhow::Error) -> bool {
+    // 本地 GOST 故障也需要冷却，但不能因此把上游代理标记为坏代理。
+    error
+        .downcast_ref::<crate::proxy_runtime::ProxyRuntimeError>()
+        .is_some()
+        || platform_domain::classify_failure(&error.to_string(), None)
+            == platform_domain::FailureClass::ProxyFailure
+}
+
 fn browser_start_backoff(consecutive_failures: u32) -> Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(2);
     let seconds = BROWSER_START_BACKOFF_BASE_SECS
@@ -737,9 +746,7 @@ async fn run_slot_worker(
                             consecutive_browser_start_failures =
                                 consecutive_browser_start_failures.saturating_add(1);
                             Some(browser_start_backoff(consecutive_browser_start_failures))
-                        } else if platform_domain::classify_failure(&reason, None)
-                            == platform_domain::FailureClass::ProxyFailure
-                        {
+                        } else if needs_proxy_backoff(&err) {
                             consecutive_browser_start_failures = 0;
                             Some(PROXY_TUNNEL_BACKOFF)
                         } else {
@@ -2774,6 +2781,29 @@ mod tests {
         }
         assert!(!is_browser_start_failure("登录失败：密码错误"));
         assert!(!is_browser_start_failure("代理出口 IP 不匹配"));
+    }
+
+    #[test]
+    fn local_proxy_errors_cool_down_without_reclassifying_the_upstream() {
+        use crate::proxy_runtime::ProxyRuntimeError;
+        for error in [
+            ProxyRuntimeError::ProcessExited(Some(1)),
+            ProxyRuntimeError::ProcessSpawnFailed("missing executable".into()),
+            ProxyRuntimeError::ListenerTimeout(19001),
+        ] {
+            let error = anyhow::Error::new(error).context("session startup");
+            assert!(needs_proxy_backoff(&error));
+            assert_ne!(
+                platform_domain::classify_failure(&error.to_string(), None),
+                platform_domain::FailureClass::ProxyFailure
+            );
+        }
+        assert!(needs_proxy_backoff(&anyhow::anyhow!(
+            "Proxy failed to connect"
+        )));
+        assert!(!needs_proxy_backoff(&anyhow::anyhow!(
+            "authentication failed"
+        )));
     }
 
     #[test]

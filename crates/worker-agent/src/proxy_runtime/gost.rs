@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Command;
 use url::Url;
@@ -22,6 +23,20 @@ const IP_CHECK_URLS: &[&str] = &[
     "https://ifconfig.me/ip",
     "https://icanhazip.com",
 ];
+
+// 每个槽位只保留最近一次启动的前 64 KiB；达到上限后继续排空，避免阻塞 GOST。
+const STDERR_LIMIT: u64 = 64 * 1024;
+
+async fn capture_stderr(mut stderr: impl AsyncRead + Unpin, mut file: tokio::fs::File) {
+    let result = tokio::io::copy(&mut (&mut stderr).take(STDERR_LIMIT), &mut file).await;
+    if let Err(error) = result {
+        tracing::warn!(%error, "保存 GOST 错误日志失败");
+    }
+    if let Err(error) = file.flush().await {
+        tracing::warn!(%error, "刷新 GOST 错误日志失败");
+    }
+    let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+}
 
 /// 生产 GOST 代理运行时实现。
 #[derive(Clone)]
@@ -126,12 +141,16 @@ impl GostProxyRuntime {
     async fn wait_listener_ready(
         &self,
         port: u16,
+        child: &mut tokio::process::Child,
         timeout: Duration,
     ) -> Result<(), ProxyRuntimeError> {
         let deadline = Instant::now() + timeout;
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
         while Instant::now() < deadline {
+            if let Some(status) = child.try_wait()? {
+                return Err(ProxyRuntimeError::ProcessExited(status.code()));
+            }
             match TcpStream::connect(addr).await {
                 Ok(_) => return Ok(()),
                 Err(_) => {
@@ -201,6 +220,18 @@ impl ProxyRuntime for GostProxyRuntime {
             )));
         }
 
+        let logs_dir = self.work_dir.join("proxy_logs");
+        std::fs::create_dir_all(&logs_dir)?;
+        let log_path = logs_dir.join(format!("gost-slot-{}.stderr.log", spec.slot_index));
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        // 原始错误仅保存在本地文件，不上传可能包含凭据的输出。
+        let log_file = tokio::fs::File::from_std(options.open(&log_path)?);
         let config_path = self.write_private_config(&spec)?;
 
         // 启动 GOST 子进程，参数只传入配置文件路径，凭据绝不出现在命令行参数或环境变量中
@@ -209,14 +240,21 @@ impl ProxyRuntime for GostProxyRuntime {
             .arg(&config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| {
+            let _ = std::fs::remove_file(&config_path);
             ProxyRuntimeError::ProcessSpawnFailed(format!(
                 "无法执行 GOST ({}): {e}",
                 self.gost_bin.display()
             ))
         })?;
+
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(capture_stderr(stderr, log_file));
+        }
+        tracing::info!(slot = spec.slot_index, session_id = %spec.session_id,
+            path = %log_path.display(), "GOST 错误日志文件（本地保留，最多 64 KiB）");
 
         // 检查进程启动后是否立即退出
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -227,7 +265,7 @@ impl ProxyRuntime for GostProxyRuntime {
 
         // 等待本地 listener 就绪
         if let Err(e) = self
-            .wait_listener_ready(spec.local_port, Duration::from_secs(3))
+            .wait_listener_ready(spec.local_port, &mut child, Duration::from_secs(3))
             .await
         {
             let _ = child.kill().await;
@@ -275,5 +313,82 @@ impl ProxyRuntime for GostProxyRuntime {
         };
         handle.shutdown().await;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_gost_start_saves_stderr_and_removes_config() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("gost");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\necho 'bind: address already in use' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = GostProxyRuntime::with_custom_bin(bin, dir.path().to_path_buf());
+        let session_id = uuid::Uuid::new_v4();
+        let result = runtime
+            .start_verified(SessionProxySpec {
+                session_id,
+                slot_index: 0,
+                local_port: 19001,
+                upstream: platform_proto::v1::ProxyCredential {
+                    host: "127.0.0.1".into(),
+                    port: 8080,
+                    ..Default::default()
+                },
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(ProxyRuntimeError::ProcessExited(Some(1)))
+        ));
+        let path = dir.path().join("proxy_logs/gost-slot-0.stderr.log");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if tokio::fs::read_to_string(&path)
+                    .await
+                    .unwrap()
+                    .contains("address already in use")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!dir
+            .path()
+            .join(format!("proxy_configs/gost-session-{session_id}.yml"))
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn stderr_capture_is_bounded_and_drains_the_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stderr.log");
+        let file = tokio::fs::File::create(&path).await.unwrap();
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let capture = tokio::spawn(capture_stderr(reader, file));
+        let output = vec![b'x'; STDERR_LIMIT as usize * 2];
+        tokio::time::timeout(Duration::from_secs(5), async {
+            writer.write_all(&output).await.unwrap();
+            drop(writer);
+            capture.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read(path).await.unwrap(),
+            output[..STDERR_LIMIT as usize]
+        );
     }
 }
