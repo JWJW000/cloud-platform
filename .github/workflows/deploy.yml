@@ -73,11 +73,13 @@ jobs:
             cd "${APP_DIR}"
 
             echo "==> 部署前备份数据库..."
-            chmod +x manage.sh
-            ./manage.sh backup
+            umask 077
+            RELEASE_DIR=/data/ruoyi/releases/20260911-integration
+            cp .env "$RELEASE_DIR/backup/cloud-env-before-actions"
+            docker exec drission-postgres pg_dump -U postgres -Fc drission_book > "$RELEASE_DIR/backup/cloud-before-actions.dump"
 
             echo "==> 拉取本次构建的 Master 镜像..."
-            export MASTER_IMAGE="ghcr.io/${{ github.repository_owner }}/cloud-platform-master:release-${{ github.run_id }}-${{ github.run_attempt }}"
+            export MASTER_IMAGE="ghcr.io/jwjw000/cloud-platform-master:release-${{ github.run_id }}-${{ github.run_attempt }}"
             docker compose --env-file .env -f docker-compose.yml pull master
 
             echo "==> 仅更新 Master 服务..."
@@ -88,6 +90,11 @@ jobs:
               status="$(docker inspect --format '{{.State.Health.Status}}' drission-master 2>/dev/null || true)"
               if [ "${status}" = "healthy" ]; then
                 echo "Master 已就绪（第 ${attempt} 次检查）"
+                if grep -q '^MASTER_IMAGE=' .env; then
+                  sed -i "s|^MASTER_IMAGE=.*|MASTER_IMAGE=${MASTER_IMAGE}|" .env
+                else
+                  printf '\nMASTER_IMAGE=%s\n' "$MASTER_IMAGE" >> .env
+                fi
                 exit 0
               fi
               if [ "${status}" = "unhealthy" ]; then
