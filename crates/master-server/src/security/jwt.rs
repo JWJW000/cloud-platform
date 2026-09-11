@@ -33,26 +33,62 @@ fn default_token_ver() -> i64 {
     1
 }
 
+/// 若依等外部受信任系统委托身份声明（P1 统一鉴权）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegatedClaims {
+    /// 签发者，如 "ruoyi-plus"
+    pub iss: String,
+    /// 目标受众，如 "cloud-master"
+    pub aud: String,
+    /// 外部系统用户标识（如若依 userId: "1"）
+    pub sub: String,
+    /// 外部用户名（如 "admin"）
+    pub username: String,
+    /// 角色（如 "超级管理员"）
+    pub role: String,
+    /// 过期时间（Unix 秒）
+    pub exp: i64,
+    /// 签发时间（Unix 秒）
+    pub iat: i64,
+    /// 唯一请求追踪 ID
+    pub jti: String,
+}
+
 /// 令牌签发与校验。
 #[derive(Clone)]
 pub struct TokenIssuer {
     encoding: EncodingKey,
     decoding: DecodingKey,
+    delegated_decoding: Option<DecodingKey>,
     hours: i64,
 }
 
 impl std::fmt::Debug for TokenIssuer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TokenIssuer(有效期 {} 小时)", self.hours)
+        write!(f, "TokenIssuer(有效期 {} 小时, 独立委托验签: {})", self.hours, self.delegated_decoding.is_some())
     }
 }
 
 impl TokenIssuer {
-    /// 由共享密钥构造。
+    /// 由共享密钥构造（仅登录 JWT）。
     pub fn new(secret: &str, hours: i64) -> Self {
         Self {
             encoding: EncodingKey::from_secret(secret.as_bytes()),
             decoding: DecodingKey::from_secret(secret.as_bytes()),
+            delegated_decoding: None,
+            hours: hours.max(1),
+        }
+    }
+
+    /// 由会话密钥和独立委托密钥构造，确保密钥严格隔离。
+    pub fn with_delegated_secret(secret: &str, delegated_secret: Option<&str>, hours: i64) -> Self {
+        let delegated_decoding = delegated_secret
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| DecodingKey::from_secret(s.as_bytes()));
+        Self {
+            encoding: EncodingKey::from_secret(secret.as_bytes()),
+            decoding: DecodingKey::from_secret(secret.as_bytes()),
+            delegated_decoding,
             hours: hours.max(1),
         }
     }
@@ -92,6 +128,23 @@ impl TokenIssuer {
         decode::<Claims>(token, &self.decoding, &validation)
             .map(|data| data.claims)
             .map_err(|err| anyhow!("登录令牌无效或已过期：{err}"))
+    }
+
+    /// 校验委托身份令牌并返回委托声明（P1 统一鉴权）。
+    /// 必须使用独立的 internal_auth_secret 对应的 decoding key 验签，拒绝复用登录会话密钥。
+    pub fn verify_delegated(&self, token: &str, expected_aud: &str) -> Result<DelegatedClaims> {
+        let decoding = self
+            .delegated_decoding
+            .as_ref()
+            .ok_or_else(|| anyhow!("服务端未配置独立委托认证密钥 (INTERNAL_AUTH_SECRET)，拒绝委托访问"))?;
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.leeway = 5;
+        validation.set_audience(&[expected_aud]);
+        validation.set_issuer(&["ruoyi-plus"]);
+        decode::<DelegatedClaims>(token, decoding, &validation)
+            .map(|data| data.claims)
+            .map_err(|err| anyhow!("委托身份令牌无效或已过期：{err}"))
     }
 }
 
@@ -149,5 +202,54 @@ mod tests {
         );
         parts[1] = &forged_payload;
         assert!(issuer.verify(&parts.join(".")).is_err());
+    }
+
+    #[test]
+    fn delegated_token_verification() {
+        let login_secret = "master-login-jwt-secret-at-least-32-chars-long";
+        let delegated_secret = "independent-internal-auth-secret-16c";
+        let issuer = TokenIssuer::with_delegated_secret(login_secret, Some(delegated_secret), 1);
+        let now = Utc::now().timestamp();
+        let delegated = DelegatedClaims {
+            iss: "ruoyi-plus".to_string(),
+            aud: "cloud-master".to_string(),
+            sub: "1".to_string(),
+            username: "admin".to_string(),
+            role: "超级管理员".to_string(),
+            exp: now + 30,
+            iat: now,
+            jti: "req-123".to_string(),
+        };
+
+        // 使用独立委托密钥正确签名
+        let delegated_key = EncodingKey::from_secret(delegated_secret.as_bytes());
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &delegated,
+            &delegated_key,
+        )
+        .unwrap();
+
+        let claims = issuer.verify_delegated(&token, "cloud-master").unwrap();
+        assert_eq!(claims.username, "admin");
+        assert_eq!(claims.sub, "1");
+        assert_eq!(claims.role, "超级管理员");
+
+        // 验证受众不匹配被拒
+        assert!(issuer.verify_delegated(&token, "workflow-api").is_err());
+
+        // R1-2: 核心隔离验证——使用登录密钥签名的委托凭证必须被拒绝！
+        let login_key = EncodingKey::from_secret(login_secret.as_bytes());
+        let forged_by_login_secret = encode(
+            &Header::new(Algorithm::HS256),
+            &delegated,
+            &login_key,
+        )
+        .unwrap();
+        assert!(issuer.verify_delegated(&forged_by_login_secret, "cloud-master").is_err());
+
+        // R1-2: 未配置独立委托密钥时，必须拒绝委托验签
+        let issuer_no_delegated = TokenIssuer::new(login_secret, 1);
+        assert!(issuer_no_delegated.verify_delegated(&token, "cloud-master").is_err());
     }
 }

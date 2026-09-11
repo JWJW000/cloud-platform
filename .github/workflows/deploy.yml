@@ -1,8 +1,6 @@
 name: Build and Deploy
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 concurrency:
@@ -42,8 +40,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/cloud-platform-master
           tags: |
-            type=raw,value=latest
-            type=sha,prefix=,format=short
+            type=raw,value=release-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: 构建并推送镜像
         uses: docker/build-push-action@v5
@@ -71,26 +68,35 @@ jobs:
           script_stop: true
           script: |
             set -e
-            APP_DIR="/data/cloud-platform"
+            APP_DIR="/data/cloud-platform/deploy"
             echo "==> 进入部署目录: ${APP_DIR}"
             cd "${APP_DIR}"
 
             echo "==> 部署前备份数据库..."
-            chmod +x deploy/manage.sh
-            ./deploy/manage.sh backup
-
-            echo "==> 同步最新代码与配置..."
-            if [ -d ".git" ]; then
-              git fetch origin
-              git reset --hard origin/main || git reset --hard origin/master
-            fi
+            chmod +x manage.sh
+            ./manage.sh backup
 
             echo "==> 拉取本次构建的 Master 镜像..."
-            docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull master
+            export MASTER_IMAGE="ghcr.io/${{ github.repository_owner }}/cloud-platform-master:release-${{ github.run_id }}-${{ github.run_attempt }}"
+            docker compose --env-file .env -f docker-compose.yml pull master
 
-            echo "==> 启动/更新服务..."
-            ./deploy/manage.sh start
+            echo "==> 仅更新 Master 服务..."
+            docker compose --env-file .env -f docker-compose.yml up -d --no-deps master
 
-            echo "==> 验证容器健康状态..."
-            sleep 6
-            ./deploy/manage.sh status
+            echo "==> 精确轮询 Master 就绪状态..."
+            for attempt in $(seq 1 30); do
+              status="$(docker inspect --format '{{.State.Health.Status}}' drission-master 2>/dev/null || true)"
+              if [ "${status}" = "healthy" ]; then
+                echo "Master 已就绪（第 ${attempt} 次检查）"
+                exit 0
+              fi
+              if [ "${status}" = "unhealthy" ]; then
+                echo "Master 健康检查失败" >&2
+                docker compose --env-file .env -f docker-compose.yml logs --tail=100 master >&2 || true
+                exit 1
+              fi
+              sleep 10
+            done
+            echo "Master 在 300 秒内未达到 healthy" >&2
+            docker compose --env-file .env -f docker-compose.yml ps master >&2 || true
+            exit 1

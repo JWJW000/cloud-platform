@@ -175,6 +175,9 @@ fn default_true() -> bool {
 pub struct SecurityConfig {
     /// 管理后台会话签名密钥。
     pub jwt_secret: String,
+    /// 统一后台内部委托认证密钥 (INTERNAL_AUTH_SECRET)，与登录 JWT 密钥严格隔离。
+    #[serde(default)]
+    pub internal_auth_secret: String,
     /// 会话有效小时数。
     #[serde(default = "default_jwt_hours")]
     pub jwt_hours: i64,
@@ -356,6 +359,11 @@ impl MasterConfig {
                 self.security.jwt_secret = secret;
             }
         }
+        if let Ok(secret) = std::env::var("INTERNAL_AUTH_SECRET") {
+            if !secret.is_empty() {
+                self.security.internal_auth_secret = secret;
+            }
+        }
         if let Ok(key) = std::env::var("MASTER_FIELD_KEY") {
             if !key.is_empty() {
                 self.security.field_key_base64 = key;
@@ -435,6 +443,14 @@ impl MasterConfig {
         // V4 第 13.6 节：JWT secret 至少 32 个随机字节，不接受示例弱密钥用于生产
         if self.security.jwt_secret.len() < 32 {
             bail!("会话签名密钥过短：至少 32 个字符（推荐 64 字节随机串）");
+        }
+        if !self.security.internal_auth_secret.trim().is_empty() {
+            if self.security.internal_auth_secret.len() < 16 {
+                bail!("委托认证密钥 (INTERNAL_AUTH_SECRET) 强度不足：至少 16 个字符");
+            }
+            if self.security.internal_auth_secret == self.security.jwt_secret {
+                bail!("委托认证密钥 (INTERNAL_AUTH_SECRET) 不得复用管理后台会话签名密钥 (jwt_secret)");
+            }
         }
         for weak in [
             "0123456789abcdef",
@@ -526,6 +542,7 @@ mod tests {
             },
             security: SecurityConfig {
                 jwt_secret: "kX8pQ2mN7vR4tW9yA3cF6hJ1lS5uB0eG".to_string(),
+                internal_auth_secret: String::new(),
                 jwt_hours: 12,
                 field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
                 ca_cert_path: PathBuf::from("ca.crt"),

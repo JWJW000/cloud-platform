@@ -116,6 +116,7 @@ impl TestDb {
                 },
                 security: master_server::config::SecurityConfig {
                     jwt_secret: "1234567890123456".to_string(),
+                    internal_auth_secret: String::new(),
                     jwt_hours: 12,
                     field_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
                     ca_cert_path: std::path::PathBuf::from("data/ca.crt"),

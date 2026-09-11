@@ -323,6 +323,92 @@ async fn 会话表验证失败开放路径被堵死() {
     db.teardown().await;
 }
 
+#[tokio::test]
+async fn delegated_user_idempotent_and_isolated() {
+    let db = require_db!();
+
+    let _state = db.create_test_state();
+
+    // R1-3 验证：稳定影子身份 ext_{issuer}_{subject}，并发幂等且同名不同 subject 不串号
+    let user1 = store::admin::get_or_create_delegated_user(
+        &db.pool,
+        "ruoyi-plus",
+        "sub-1001",
+        "alice",
+        "超级管理员",
+    )
+    .await
+    .unwrap();
+    assert_eq!(user1.username, "ext_ruoyi-plus_sub-1001");
+    assert_eq!(user1.role, "超级管理员");
+
+    // 同名外部用户名 alice 但不同 subject "sub-1002"：必须生成独立用户，不得串号！
+    let user2 = store::admin::get_or_create_delegated_user(
+        &db.pool,
+        "ruoyi-plus",
+        "sub-1002",
+        "alice",
+        "只读用户",
+    )
+    .await
+    .unwrap();
+    assert_eq!(user2.username, "ext_ruoyi-plus_sub-1002");
+    assert_ne!(user1.id, user2.id, "同名不同 subject 绝不能串号同一用户");
+
+    // 相同 (issuer, subject) 重复调用：并发幂等，返回完全相同的同一用户
+    let user1_repeat = store::admin::get_or_create_delegated_user(
+        &db.pool,
+        "ruoyi-plus",
+        "sub-1001",
+        "alice_renamed",
+        "超级管理员",
+    )
+    .await
+    .unwrap();
+    assert_eq!(user1.id, user1_repeat.id, "重复映射必须返回同一数据库用户");
+
+    // 验证外键关联可正常写入业务表（如操作日志）
+    let log_res = store::admin::log(
+        &db.pool,
+        platform_domain::OperationSource::Admin,
+        platform_domain::LogLevel::Info,
+        &user1.username,
+        "测试委托业务操作",
+        "test_target",
+        "由委托身份写入的审计日志",
+    )
+    .await;
+    assert!(log_res.is_ok(), "委托影子用户必须可正常写入业务审计");
+
+    // 真实并发首次映射测试：验证多个并发任务同时请求同一个尚未存在的委托主体时，ON CONFLICT 保证幂等且不会报错
+    let pool = db.pool.clone();
+    let mut handles = Vec::new();
+    for i in 0..10 {
+        let p = pool.clone();
+        handles.push(tokio::spawn(async move {
+            store::admin::get_or_create_delegated_user(
+                &p,
+                "ruoyi-plus",
+                "concurrent-sub-999",
+                &format!("user_{i}"),
+                "超级管理员",
+            )
+            .await
+        }));
+    }
+    let mut resolved_uids = Vec::new();
+    for h in handles {
+        let res = h.await.unwrap().unwrap();
+        resolved_uids.push(res.id);
+    }
+    assert_eq!(resolved_uids.len(), 10);
+    for uid in &resolved_uids {
+        assert_eq!(uid, &resolved_uids[0], "10 个并发首次请求必须原子返回同一个映射用户");
+    }
+
+    db.teardown().await;
+}
+
 /// 用给定 jti 签发令牌。
 fn jwt_mint(
     state: &master_server::state::AppState,

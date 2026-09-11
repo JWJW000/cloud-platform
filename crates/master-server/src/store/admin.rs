@@ -89,6 +89,88 @@ pub async fn get_user_by_id(
     Ok(row)
 }
 
+/// 按用户名获取用户资料。
+pub async fn get_user_by_username(
+    executor: impl PgExecutor<'_>,
+    username: &str,
+) -> AppResult<Option<User>> {
+    let row = sqlx::query_as::<_, User>(&format!("SELECT {USER_COLUMNS} FROM users WHERE username = $1"))
+        .bind(username)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row)
+}
+
+/// 按 (issuer, subject) 获取委托身份映射对应的用户。
+/// R1-3: 影子身份由稳定主体区分 (例如 `ext_{issuer}_{subject}`)，消灭同名自动绑定安全隐患，
+/// 并具备并发幂等性（ON CONFLICT DO NOTHING / UPDATE），返回最终映射的用户。
+pub async fn get_or_create_delegated_user(
+    pool: &PgPool,
+    issuer: &str,
+    subject: &str,
+    _username: &str,
+    role: &str,
+) -> AppResult<User> {
+    // 1. 先查已建立的映射
+    let mapped: Option<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM user_delegated_identities WHERE issuer = $1 AND subject = $2"
+    )
+    .bind(issuer)
+    .bind(subject)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(uid) = mapped {
+        if let Some(user) = get_user_by_id(pool, uid).await? {
+            return Ok(user);
+        }
+    }
+
+    // 2. 映射不存在：使用稳定主体命名影子用户，杜绝不同 subject 撞名或串号
+    let valid_role = match role {
+        "超级管理员" | "任务管理员" | "只读用户" => role,
+        _ => "只读用户",
+    };
+    let stable_username = format!("ext_{}_{}", issuer, subject);
+    let placeholder_pw = "$argon2id$v=19$m=19456,t=2,p=1$ZGVsZWdhdGVkX2F1dGg$ZHVtbXlfcGFzc3dvcmRfaGFzaF9mb3JfZGVsZWdhdGVkX3VzZXI";
+
+    let mut tx = pool.begin().await?;
+
+    // 插入或获取已有稳定影子用户（并发幂等）
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (id, username, password_hash, role, status) \
+         VALUES ($1, $2, $3, $4, '启用') \
+         ON CONFLICT (username) DO UPDATE SET role = EXCLUDED.role, updated_at = now() \
+         RETURNING id"
+    )
+    .bind(Uuid::new_v4())
+    .bind(&stable_username)
+    .bind(placeholder_pw)
+    .bind(valid_role)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    // 建立持久映射（并发幂等）
+    sqlx::query(
+        "INSERT INTO user_delegated_identities (issuer, subject, user_id) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (issuer, subject) DO UPDATE SET user_id = EXCLUDED.user_id, updated_at = now()"
+    )
+    .bind(issuer)
+    .bind(subject)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let user = sqlx::query_as::<_, User>(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(user)
+}
+
 /// 递增用户 token_version 并撤销该用户全部已有会话。
 pub async fn invalidate_all_user_sessions(
     pool: &PgPool,

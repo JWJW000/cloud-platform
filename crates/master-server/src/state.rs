@@ -277,7 +277,16 @@ impl AppState {
 
         let cipher = FieldCipher::from_base64(&config.security.field_key_base64)
             .context("字段加密密钥无效：应为 base64 编码的 32 字节")?;
-        let tokens = TokenIssuer::new(&config.security.jwt_secret, config.security.jwt_hours);
+        let delegated_secret_opt = if config.security.internal_auth_secret.trim().is_empty() {
+            None
+        } else {
+            Some(config.security.internal_auth_secret.as_str())
+        };
+        let tokens = TokenIssuer::with_delegated_secret(
+            &config.security.jwt_secret,
+            delegated_secret_opt,
+            config.security.jwt_hours,
+        );
         let ca = NodeCa::load_or_create(
             &config.security.ca_cert_path,
             &config.security.ca_key_path,

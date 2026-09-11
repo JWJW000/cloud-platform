@@ -38,6 +38,8 @@ use crate::store;
 pub const SESSION_COOKIE_NAME: &str = "admin_session";
 /// 兼容旧版本的非 ASCII Cookie 名（只读）。
 const LEGACY_COOKIE_NAME: &str = "管理会话";
+/// 统一管理后台委托令牌头（P1 统一鉴权）。
+pub const DELEGATED_TOKEN_HEADER: &str = "x-delegated-token";
 
 /// 登录限流：IP 与用户名双维度、全局容量上限、指数退避。
 ///
@@ -210,6 +212,41 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // 1. 优先检查统一后台委托身份令牌 (x-delegated-token)
+        if let Some(delegated_header) = parts.headers.get(DELEGATED_TOKEN_HEADER) {
+            let token_str = delegated_header
+                .to_str()
+                .map_err(|_| AppError::Unauthorized("委托身份令牌格式无效".to_string()))?
+                .trim();
+            if !token_str.is_empty() {
+                let claims = state
+                    .tokens
+                    .verify_delegated(token_str, "cloud-master")
+                    .map_err(|err| AppError::Unauthorized(err.to_string()))?;
+
+                // A3: 按 (issuer, subject) 进行明确且持久的身份映射，确保满足旧表外键约束
+                let user = store::admin::get_or_create_delegated_user(
+                    &state.pool,
+                    &claims.iss,
+                    &claims.sub,
+                    &claims.username,
+                    &claims.role,
+                ).await?;
+
+                if user.status != "启用" {
+                    return Err(AppError::Unauthorized("该委托用户已被禁用".to_string()));
+                }
+
+                return Ok(AuthenticatedUser {
+                    id: user.id,
+                    username: claims.username,
+                    role: claims.role, // 使用委托令牌中的明确授权角色
+                    session_id: None,
+                });
+            }
+        }
+
+        // 2. 原现有 Cookie / Authorization 会话校验
         let token = extract_token_from_parts(parts)?;
 
         let claims = state
